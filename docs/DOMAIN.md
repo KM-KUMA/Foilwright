@@ -4,7 +4,7 @@ ALPS MD シリーズプリンタ(MD-5000 / MD-5500)を 64bit Windows からネ�
 
 配布元: JunkQuality
 ライセンス: GPL-3.0
-版: 0.2.0-draft(Claude Code 系統との統合版)
+版: 0.2.1-draft(Claude Code 系統との統合版)
 
 ---
 
@@ -79,7 +79,7 @@ Foilwright は、**任意のアプリケーションの印刷ダイアログか�
 | **パス** | プリンタが用紙を 1 回通す動作。原則 1 パス = 1 インク |
 | **マジックカラー** | 特定の RGB 値をインクに予約する方式。原稿中の該当画素がそのインクのプレーンに振り分けられる |
 | **ページ分割方式** | 1 ページ = 1 インクプレーンとする代替方式。マジックカラーが機能しない場合の逃げ道 |
-| **auto_backing** | インクが乗る全画素の裏に自動生成されるプレーン。白の下地に使う |
+| **auto_undercoat** | インクが乗る全画素の和集合として自動生成されるプレーン。白の下地に使い、**最初に刷られる**。旧称 `auto_backing`(裏打ちと誤解されるため改名) |
 | **golden** | ppmtomd が生成した既知正解のバイト列。実装の正しさを判定する基準 |
 | **LF 補正値** | パス間の紙送り誤差を補正する値。機体固有・実測値 |
 | **セッション 0** | Windows のサービス用セッション。spooler および変換器が動作する。ユーザーのデスクトップから隔離されており、**UI を表示できない** |
@@ -181,7 +181,16 @@ v4 プリンタドライバは Microsoft 製以外のポートモニタを使用
 
 **パスの実行順序**はパレット定義の `order` の昇順とする。
 
-**順序の意味:** デカールはクリアフィルムに刷り、裏面から見る。したがって **表から見て手前にあるものを先に刷る**。白の下地は最後になる。
+**順序の意味:先に刷ったものが下の層になる。** ウォータースライドデカールは刷った面を表として使うため、**表から見て奥にあるものを先に刷る**。したがって白の下地が最初、その上に色が乗る。
+
+**根拠(実測 + 一次情報の一致):**
+
+- 作者が 32bit 環境の公式ドライバで実作業していた際、**白を先に刷り、その上に色を重ねていた**(§10.5)
+- 公式ドライバの Print Using における白の項目名は **White (Undercoat)** である(§13.3)。Undercoat は下塗りを意味し、その上に別の層が乗ることを前提とした語である。VPhoto Primer (Undercoat) も同様
+
+**注意:** Back Print Film(裏面印刷フィルム)は透かして見る前提の媒体であり、順序が反転する。**ウォータースライドデカールとは別物であり、混同しないこと。**
+
+**重ね刷り:** 白は隠蔽力を上げるため同一プレーンを複数回刷ることがある。パレット定義の `passes` で回数を指定する(§6.1)。
 
 
 ### 4.4 機種差はプロファイルに隔離
@@ -280,43 +289,48 @@ ppmtomd 1.6 のソースに定義された 5000 系(MD-5000 / MD-5500 / DP-5000 
 
 ```yaml
 inks:
-  - name: black
-    label: ブラック
-    magic_rgb: [0, 0, 0]
+  - name: white
+    label: ホワイト
+    magic_rgb: [230, 230, 230]
     tolerance: 8
     order: 10
+    auto_undercoat: true
+    passes: 2
 
   - name: metallic_gold
     label: メタリックゴールド
     magic_rgb: [225, 160, 0]
     tolerance: 12
-    order: 20
+    order: 50
 
   - name: metallic_silver
     label: メタリックシルバー
     magic_rgb: [189, 193, 197]
     tolerance: 12
-    order: 20
+    order: 50
 
   - name: metallic_magenta
     label: メタリックマゼンタ
     magic_rgb: [163, 36, 115]
     tolerance: 12
-    order: 20
+    order: 50
 
   - name: metallic_cyan
     label: メタリックシアン
     magic_rgb: [0, 176, 201]
     tolerance: 12
-    order: 20
+    order: 50
 
-  - name: white
-    label: ホワイト
-    magic_rgb: [230, 230, 230]
+  - name: black
+    label: ブラック
+    magic_rgb: [0, 0, 0]
     tolerance: 8
     order: 90
-    auto_backing: true
 ```
+
+**`order` は昇順に実行され、先に刷ったものが下の層になる(§4.3)。** 白の下地が最小値、最後に見せたいものが最大値。
+
+**`passes` の既定値は 1。** 白の 2 は暫定値であり、必要な回数は媒体と隠蔽力の要求で変わる。実測で決める(§10.5)。
 
 **注意:** 白の指定色は純白ではなく明るいグレー(230,230,230)である。純白 255,255,255 は「印刷しない領域」と区別する必要があるため、この設計は妥当。**実装時に 255 と 230 を混同しないこと。**
 
@@ -331,8 +345,9 @@ inks:
 | `label` | UI 表示名。交換指示に使う |
 | `magic_rgb` | このインクに予約する RGB 値 |
 | `tolerance` | 近傍マッチングの許容誤差。§6.3 参照 |
-| `order` | パス実行順。昇順。§4.3 参照 |
-| `auto_backing` | true の場合、他の全インクが乗る画素の和集合をプレーンとする |
+| `order` | パス実行順。昇順。**小さいほど下の層**。§4.3 参照 |
+| `passes` | 同一プレーンを刷る回数。既定 1。隠蔽力を上げる重ね刷りに使う |
+| `auto_undercoat` | true の場合、他の全インクが乗る画素の和集合をプレーンとする。下地として最初に刷られる |
 
 ### 6.3 tolerance が必要な理由
 
@@ -554,6 +569,18 @@ ppmtomd がこれらを同一ドライバでサポートしていることが、
 ### 10.4 既知の不具合
 
 なし(初版)
+
+### 10.5 白の重ね刷り回数
+
+**確定している事実:** 作者が 32bit 環境の公式ドライバで作業していた際、白を先に刷り、**複数回重ねていた**。順序については §4.3 の根拠として採用済み。
+
+**未確定:** 具体的な回数と、媒体・用途ごとの適正値。
+
+| 媒体 | 用途 | 回数 | 確認日 |
+|---|---|---|---|
+| — | — | — | 未取得 |
+
+`passes` の既定値 2 は暫定であり、根拠がない。実測で置き換える。
 
 ---
 
@@ -818,10 +845,10 @@ GitHub での公開により、第三者が管理する改竄不能なタイム�
 | **49–55** | **Simultaneous Metallics & CMYK Inks Printing** | **49 のみ確認済み** |
 | 56–71 | Printing in Foil Color | 未読 |
 | 72–74 | Printing Greeting Cards | 優先度低 |
-| **75–81** | **Printing on Back Print Film** | **未読。§4.3 のパス順序** |
+| 75–81 | Printing on Back Print Film | 未読・優先度低。**裏面印刷は順序が反転する別用途であり、デカールの参考にはならない**(§4.3) |
 | 82–87 | Making Iron-on Transfers | 優先度低 |
 | 88–91 | Printing on Overhead Transparencies | 優先度低 |
-| **92–95** | **Undercoating with a VPhoto Primer Ink Cartridge** | **未読。`auto_backing`** |
+| **92–95** | **Undercoating with a VPhoto Primer Ink Cartridge** | **未読。`auto_undercoat` の設計参考。優先度が上がった** |
 | **96–103** | **Printer Driver / Setup Dialog / Document/Quality Tab** | **確認済み** |
 | **104–105** | **Paper Tab** | **未読。§7.1** |
 | **106** | **Image Settings Tab** | **確認済み** |
@@ -890,10 +917,11 @@ Color Balance / Photo Enhancement / **Darker Black** / Image / **Color Match(Non
 ### 13.4 未読の優先順位
 
 1. **104–105 ページ(Paper Tab)** — §7.1 の PPD で残る最後の未確認領域
-2. **75–81 ページ(Back Print Film)** — §4.3 のパス順序の裏取り
+2. **92–95 ページ(VPhoto Primer)** — 下地印刷の扱い。`auto_undercoat` と `passes` の設計参考
 3. **36–40 ページ(Single Ink Printing)** — 単一特色時の階調表現
 4. **50–55 ページ** — Metallics & CMYK 同時印刷の手順詳細
-5. **92–95 ページ(VPhoto Primer)** — `auto_backing` の設計参考
+
+**Back Print Film(75–81)の優先度は下げた。** 裏面印刷は順序が反転する別用途であり、ウォータースライドデカールの参考にならないため(§4.3)。
 
 ---
 
@@ -930,3 +958,4 @@ Color Balance / Photo Enhancement / **Darker Black** / Image / **Color Match(Non
 | 版 | 日付 | 内容 |
 |---|---|---|
 | 0.2.0-draft | 2026-07-27 | A / B 両系統を統合。§11.1 は両系統が同一結論に到達したため証拠を併記。§4.2 の根拠を両系統の一次情報で書き直し(「階調をまったく持たない」という誤りを訂正)。§5.5 / §6.5 を A から、§6.1 の公式値・§5.4・§13 を B から採用。§11 の表を統合し #6 を解決済みとして欠番化。§8 に `docs/research/` を追加 |
+| 0.2.1-draft | 2026-07-27 | **§4.3 のパス順序を反転。** 「表から見て手前を先に刷る」は誤りで、正しくは「先に刷ったものが下の層になる」。作者の 32bit 環境での実作業(§10.5)と公式用語 White (Undercoat) の両方が一致。§6.1 の `order` を反転、`auto_backing` を `auto_undercoat` に改名、`passes`(重ね刷り回数)を追加。§13 の Back Print Film の位置づけを訂正し優先度を下げた |
