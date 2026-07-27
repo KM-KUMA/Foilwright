@@ -12,6 +12,7 @@ docs/internal/
 notes/
 *.session.md
 .tokensave/
+*.bak
 
 # --- 他者 GPL コード(リポジトリ非同梱。DOMAIN §8.2) ---
 vendor/
