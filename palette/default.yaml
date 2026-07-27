@@ -14,43 +14,54 @@
 # 誤判定する。両方を同時に使う場合は特に注意(DOMAIN §6.1)。
 # 白は純白 255,255,255 ではない。255 は「印刷しない領域」。
 
+# printer_code は golden のバイト列から読み取った実測値(DOMAIN §6.5)。
+# magic_rgb がアプリ側で置く色であるのに対し、printer_code はプリンタへ
+# 送る値。層が違うので混同しないこと。
+
 inks:
   - name: white
     label: ホワイト
     magic_rgb: [230, 230, 230]
+    printer_code: 0x0B
     tolerance: 8
     order: 10
     auto_undercoat: true
     passes: 2          # 暫定値。実測で置き換える(DOMAIN §10.5)
 
-  # メタリック系は同格のため order が同値。同一ジョブで複数を使う場合、
-  # 実行順は order だけでは決まらない(DOMAIN §4.3 の未定義箇所)。
+  # メタリック系は同格のため order が同値。この 4 行の並び順がそのまま
+  # 実行順になる(DOMAIN §4.3 の tie-break = 記述順)。順序を変えたい
+  # ときは行を入れ替える。実装は安定ソートを使うこと(§4.9)。
   - name: metallic_gold
     label: メタリックゴールド
     magic_rgb: [225, 160, 0]
+    printer_code: 0x04
     tolerance: 12
     order: 50
 
   - name: metallic_silver
     label: メタリックシルバー
     magic_rgb: [189, 193, 197]
+    printer_code: 0x07
     tolerance: 12
     order: 50
 
   - name: metallic_magenta
     label: メタリックマゼンタ
     magic_rgb: [163, 36, 115]
+    printer_code: 0x05
     tolerance: 12
     order: 50
 
   - name: metallic_cyan
     label: メタリックシアン
     magic_rgb: [0, 176, 201]
+    printer_code: 0x06
     tolerance: 12
     order: 50
 
   - name: black
     label: ブラック
     magic_rgb: [0, 0, 0]
+    printer_code: 0x00
     tolerance: 8
     order: 90

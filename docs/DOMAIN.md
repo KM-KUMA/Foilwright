@@ -347,6 +347,7 @@ inks:
   - name: white
     label: ホワイト
     magic_rgb: [230, 230, 230]
+    printer_code: 0x0B
     tolerance: 8
     order: 10
     auto_undercoat: true
@@ -355,30 +356,35 @@ inks:
   - name: metallic_gold
     label: メタリックゴールド
     magic_rgb: [225, 160, 0]
+    printer_code: 0x04
     tolerance: 12
     order: 50
 
   - name: metallic_silver
     label: メタリックシルバー
     magic_rgb: [189, 193, 197]
+    printer_code: 0x07
     tolerance: 12
     order: 50
 
   - name: metallic_magenta
     label: メタリックマゼンタ
     magic_rgb: [163, 36, 115]
+    printer_code: 0x05
     tolerance: 12
     order: 50
 
   - name: metallic_cyan
     label: メタリックシアン
     magic_rgb: [0, 176, 201]
+    printer_code: 0x06
     tolerance: 12
     order: 50
 
   - name: black
     label: ブラック
     magic_rgb: [0, 0, 0]
+    printer_code: 0x00
     tolerance: 8
     order: 90
 ```
@@ -400,6 +406,7 @@ inks:
 | `label` | UI 表示名。交換指示に使う |
 | `magic_rgb` | このインクに予約する RGB 値 |
 | `tolerance` | 近傍マッチングの許容誤差。§6.3 参照 |
+| `printer_code` | 色選択コマンド `\033\032{code}...r` に載せるコードバイト。§6.5 参照 |
 | `order` | パス実行順。昇順。**小さいほど下の層**。§4.3 参照 |
 | `passes` | 同一プレーンを刷る回数。既定 1。隠蔽力を上げる重ね刷りに使う |
 | `auto_undercoat` | true の場合、他の全インクが乗る画素の和集合をプレーンとする。下地として最初に刷られる |
@@ -437,7 +444,23 @@ ppmtomd 1.6 の読解(`docs/research/ppmtomd-survey.md`)により、ホスト �
 1. **色選択コマンドのコードバイト**(プレーン送出前の `\033\032{code}...r`)
 2. **カートリッジバーコード値**(ジョブ冒頭で使用カートリッジ一覧として送出)
 
-「インクが何か」はこの 2 値で決まる。したがって §6.1 のスキーマは将来、**プリンタへ送る値を外部定義するフィールド**(仮称 `printer_code` / `barcode`)を持つ必要がある。これが無いとコード内対応表への依存が残り、§4.5(ハードコード禁止)の趣旨が損なわれる。
+「インクが何か」はこの 2 値で決まる。したがって §6.1 のスキーマは、**プリンタへ送る値を外部定義するフィールド**を持つ必要がある。これが無いとコード内対応表への依存が残り、§4.5(ハードコード禁止)の趣旨が損なわれる。
+
+**`printer_code` は確定した(2026-07-28)。** 値は golden のバイト列から直接読み取った実測値であり、推測ではない。
+
+| インク | `printer_code` | 由来 |
+|---|---|---|
+| ブラック | 0x00 | g1 |
+| シアン | 0x01 | g2 |
+| マゼンタ | 0x02 | g2 |
+| イエロー | 0x03 | g2 |
+| メタリックゴールド | 0x04 | g7 |
+| メタリックマゼンタ | 0x05 | g7 |
+| メタリックシアン | 0x06 | g7 |
+| メタリックシルバー | 0x07 | g7 |
+| ホワイト | 0x0B | g3 |
+
+`barcode` は**保留とする。** カートリッジバーコードはカセット系の転送モードでのみ送出され、本プロジェクトが使う転送モード(colourPlane)では使わない。必要になった時点で追加する。
 
 **`magic_rgb` との役割の違いに注意。** `magic_rgb`(§6.1、公式マニュアル由来)は**アプリケーション側で置く色**であり、`printer_code` / `barcode` は**プリンタへ送る値**である。両者は独立した層に属し、混同してはならない。
 
@@ -446,7 +469,7 @@ ppmtomd 1.6 の読解(`docs/research/ppmtomd-survey.md`)により、ホスト �
 - 純正いずれかの識別を流用したカートリッジ → 既存インク定義の別名(`name` / `label` と `magic_rgb` だけ違う行)で対応
 - 独自識別のカートリッジ → `printer_code` / `barcode` を設定行に書くだけで対応(コード変更なし)
 
-フィールドの正式追加は L1 エミッタ実装時にスキーマごと確定する(現時点ではスキーマ凍結しない)。
+サードパーティ製インクは、`printer_code` に純正いずれかの値を書けば「そのインクのふり」で刷れる。独自の識別を持つ場合も、判明した値を設定行に書くだけで対応できる。
 
 ---
 
@@ -1041,3 +1064,4 @@ Color Balance / Photo Enhancement / **Darker Black** / Image / **Color Match(Non
 | 0.2.2-draft | 2026-07-28 | §11 #3 に golden 実測結果を反映(MD-5000/MD-5500 の golden がバイト完全一致)。golden 5 種と台帳を tests/ に追加 |
 | 0.2.3-draft | 2026-07-27 | §5.6(コマンド体系の系譜)を追加。ベースが HP PCL 系であることを ppmtomd のコマンド形式とマクロ名から確定し、Epson ESC/P 説を否定。§0.1 に判定実例 2(Linux 有志ドライバに関する外部情報)を記録 |
 | 0.2.4-draft | 2026-07-27 | `order` 同値時の tie-break を「パレット定義ファイル内の記述順」と定義(§4.3)。§4.9(安定ソートの使用義務、C# の `List<T>.Sort()` 禁止)を追加。§9.3 の golden 採取対象にメタリック複数色を追加。§9.5(実機検証の到達範囲)を追加 |
+| 0.2.5-draft | 2026-07-28 | §6.5 の `printer_code` を確定(golden から読み取った実測値。§6.1 スキーマと §6.2 の表に追加)。`barcode` は転送モードの都合で保留に変更 |
