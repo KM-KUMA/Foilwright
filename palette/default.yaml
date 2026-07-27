@@ -1,0 +1,56 @@
+# Foilwright — パレット定義(既定)
+# Copyright (C) 2026 JunkQuality (github.com/KM-KUMA/Foilwright)
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# スキーマは docs/DOMAIN.md §6.1 が正。
+#
+# magic_rgb は ALPS 公式マニュアル(MD-5000P Online User's Guide p44/51/63)
+# 記載の値であり、推測値ではない。
+#
+# order は昇順に実行され、先に刷ったものが下の層になる(DOMAIN §4.3)。
+# 白の下地が最小値、最後に見せたいものが最大値。
+#
+# 注意: 白(230,230,230)と銀(189,193,197)は近い。tolerance を大きく取ると
+# 誤判定する。両方を同時に使う場合は特に注意(DOMAIN §6.1)。
+# 白は純白 255,255,255 ではない。255 は「印刷しない領域」。
+
+inks:
+  - name: white
+    label: ホワイト
+    magic_rgb: [230, 230, 230]
+    tolerance: 8
+    order: 10
+    auto_undercoat: true
+    passes: 2          # 暫定値。実測で置き換える(DOMAIN §10.5)
+
+  # メタリック系は同格のため order が同値。同一ジョブで複数を使う場合、
+  # 実行順は order だけでは決まらない(DOMAIN §4.3 の未定義箇所)。
+  - name: metallic_gold
+    label: メタリックゴールド
+    magic_rgb: [225, 160, 0]
+    tolerance: 12
+    order: 50
+
+  - name: metallic_silver
+    label: メタリックシルバー
+    magic_rgb: [189, 193, 197]
+    tolerance: 12
+    order: 50
+
+  - name: metallic_magenta
+    label: メタリックマゼンタ
+    magic_rgb: [163, 36, 115]
+    tolerance: 12
+    order: 50
+
+  - name: metallic_cyan
+    label: メタリックシアン
+    magic_rgb: [0, 176, 201]
+    tolerance: 12
+    order: 50
+
+  - name: black
+    label: ブラック
+    magic_rgb: [0, 0, 0]
+    tolerance: 8
+    order: 90

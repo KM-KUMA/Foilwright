@@ -1,0 +1,21 @@
+# Foilwright — 機種プロファイル: ALPS MD-5000
+# Copyright (C) 2026 JunkQuality (github.com/KM-KUMA/Foilwright)
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# スキーマは docs/DOMAIN.md §5.1 が正。
+# null の項目は実測待ち。推測値で埋めないこと(DOMAIN §5.2)。
+
+model: MD-5000
+
+resolutions:
+  - { dpi_x: 600,  dpi_y: 600,  default: true }
+  - { dpi_x: 1200, dpi_y: 600 }
+
+# パス間の紙送り誤差の補正値。機体固有・実測値(DOMAIN §10.2)
+lf_correction: null
+
+# 実測待ち。ppmtomd 由来の参考値(600dpi 基準で A4=4800)は
+# DOMAIN §5.5 に記録してあるが、実機確認を経るまで採用しない
+max_width_dots: null
+
+supports_opaque_white: true

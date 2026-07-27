@@ -1,0 +1,22 @@
+# Foilwright — 機種プロファイル: ALPS MD-5500
+# Copyright (C) 2026 JunkQuality (github.com/KM-KUMA/Foilwright)
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# スキーマは docs/DOMAIN.md §5.1 が正。
+# null の項目は実測待ち。推測値で埋めないこと(DOMAIN §5.2)。
+#
+# MD-5000 とのコマンド差分は現時点で確認されていない。
+# ppmtomd 1.6 は両機種を単一ビット model5k で同一扱いしており、
+# 同一入力の golden(tests/golden/ g1 vs g5)もバイト完全一致した(2026-07-28)。
+# ただし lf_correction は機体固有であり、機種ではなく個体ごとに実測する。
+
+model: MD-5500
+
+resolutions:
+  - { dpi_x: 600,  dpi_y: 600,  default: true }
+  - { dpi_x: 1200, dpi_y: 600 }
+
+lf_correction: null
+max_width_dots: null
+
+supports_opaque_white: true
