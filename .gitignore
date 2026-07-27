@@ -1,23 +1,44 @@
-### AL ###
-#Template for AL projects for Dynamics 365 Business Central
-#launch.json folder
-.vscode/
-#Cache folder
-.alcache/
-#Symbols folder
-.alpackages/
-#Snapshots folder
-.snapshots/
-#Testing Output folder
-.output/
-#Extension App-file
-*.app
-#Rapid Application Development File
-rad.json
-#Translation Base-file
-*.g.xlf
-#License-files
-*.bclicense
-*.flf
-#Test results file
-TestResults.xml
+# Foilwright — .gitignore
+# DOMAIN.md §12.6 / §12.7 に対応
+# 最初のコミットでこのファイルを単独でコミットすること
+
+# --- 開発手法まわり(本プロジェクト固有ではないため非公開) ---
+# CLAUDE.md は 2026-07-27 の判断で公開対象に変更(DECISIONS D-011)
+.claude/
+FABLE_CLASS_FRAMEWORK*
+docs/internal/
+
+# --- 作業ログ・判断の経緯 ---
+notes/
+*.session.md
+.tokensave/
+
+# --- 実機テストの生ダンプ ---
+# golden とは別物。外見が同じバイナリなので置き場所で分離する
+dumps/
+*.raw
+
+# tests/golden/ は基準であり必ずリポジトリに含める(除外しない)
+
+# --- Python (ref/) ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# --- C# (src/) ---
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# --- OS / エディタ ---
+Thumbs.db
+desktop.ini
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

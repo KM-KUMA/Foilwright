@@ -1,0 +1,22 @@
+# CONVENTIONS/ENVIRONMENT 準拠の共通 .editorconfig(プロジェクトルートに配置)
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{js,ts,jsx,tsx,json,html,css,yml,yaml}]
+indent_size = 2
+
+[*.cs]
+indent_size = 4
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{ps1,psm1}]
+charset = utf-8-bom   # PS5互換が要る場合のみ。PS7専用なら utf-8 に変更可
