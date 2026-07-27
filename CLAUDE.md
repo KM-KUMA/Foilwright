@@ -4,8 +4,9 @@
 
 - ref/: Python 3.x — 参照実装(恒久維持)。.venv あり、ruff 導入済み
 - src/: C# — 本番実装
-- 現状: 実装未着手(2026-07-27 時点)。src/・ref/・tests/golden/ は未作成
-- 起動コマンド: 未定(実装着手時に確定)
+- 現状(2026-07-28): ref/ の L1/L2 が golden 6 種とバイト一致。src/ は未着手
+- 検証コマンド: `.venv\Scripts\python.exe -m pytest ref/tests/ -v`
+- golden 再生成: `wsl -e bash tests/cases/make_golden.sh`(WSL Ubuntu 必須)
 
 ## 鉄則
 

@@ -1,6 +1,6 @@
 # PROJECT ARCHITECTURE: Foilwright
 
-現状: 実装未着手。リポジトリは docs のみで src/・ref/・tests/golden/ は未作成(2026-07-27 時点)。
+現状(2026-07-28): `ref/`(Python 参照実装)の L1 emitter + L2 raster が golden 6 種とバイト一致。`tests/golden/` 採取済み、`profiles/` `palette/` 作成済み。`src/`(C# 本番実装)と設定ファイル読み込み層は未着手。実機テストは Phase 0 未実施。
 
 ## 目的とスコープ
 

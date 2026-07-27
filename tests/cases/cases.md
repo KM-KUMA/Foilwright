@@ -9,6 +9,9 @@ golden(tests/golden/)の入力となる PPM と、その決定的な生成手順
 | c1_black_120x120.ppm | 全面ベタ黒 120x120(600dpi 時 5mm≒118 ドットを意識) | `ppmmake black 120 120` |
 | c2_blackcyan_240x120.ppm | 左半分黒・右半分シアン 240x120 | `ppmmake black 120 120 > a.ppm; ppmmake cyan 120 120 > b.ppm; pnmcat -lr a.ppm b.ppm` |
 | c3_black_for_white_120x120.ppm | c1 と同一の黒ベタ。White 差し替え(`-colours K=White`)で刷る想定 | c1 のコピー |
+| c4_square_on_white_120x120.ppm | 白地の中央に 40x40 の黒四角 | `ppmmake white 120 40 > top.ppm; ppmmake white 40 40 > l.ppm; ppmmake black 40 40 > blk.ppm; pnmcat -lr l.ppm blk.ppm l.ppm > mid.ppm; pnmcat -tb top.ppm mid.ppm top.ppm` |
+
+**c4 は空白の経路を通すための必須ケース。** ベタ画像だけでは空行スキップ(`ESC * b {n} Y`)・行内の末尾ゼロトリム・ページ下端の連続空行のいずれも一度も実行されない。実際 g6 には 40 行スキップのコマンド(`1b 2a 62 28 00 59`)が現れる。デカール用途では白地が大半を占めるため、この経路のほうが本番では主役になる。
 
 3 ファイルとも上記コマンドの出力とバイト一致することを確認済み(2026-07-28)。
 
@@ -20,6 +23,6 @@ golden(tests/golden/)の入力となる PPM と、その決定的な生成手順
 
 ## 再生成
 
-```
+```powershell
 wsl -e bash tests/cases/make_golden.sh
 ```

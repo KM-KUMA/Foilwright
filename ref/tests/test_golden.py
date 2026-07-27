@@ -130,3 +130,18 @@ def test_g3_white_md5000_600():
         _WHITE_INKS,
     )
     _assert_golden_match(actual, GOLDEN_DIR / "g3_c3_white_md5000_600.bin")
+
+
+def test_g6_square_on_white_md5000_600():
+    """White background, so this is the only case that exercises blank-row
+    skipping (ESC * b {n} Y), trailing-zero trimming within a row, and a
+    trailing run of blank rows at the bottom of the page. Solid-fill cases
+    never reach those paths."""
+    profile = _profile(600, "MD-5000")
+    actual = _render(
+        CASES_DIR / "c4_square_on_white_120x120.ppm",
+        profile,
+        _DEFAULT_PALETTE,
+        _DEFAULT_INKS,
+    )
+    _assert_golden_match(actual, GOLDEN_DIR / "g6_c4_square_md5000_600.bin")

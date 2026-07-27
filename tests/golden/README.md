@@ -4,7 +4,7 @@ ppmtomd 1.6 が生成した既知正解のバイト列(DOMAIN §9)。ref/ と sr
 
 ## 生成環境
 
-- ppmtomd 1.6(2009-09-09)。ソースは `vendor/ppmtomd-1.6/`(リポジトリ非同梱、配布元: http://www.stevens-bradfield.com/ppmtomd/)
+- ppmtomd 1.6(2009-09-09)。ソースは `vendor/ppmtomd-1.6/`(リポジトリ非同梱、配布元: <http://www.stevens-bradfield.com/ppmtomd/>)
 - ビルド: WSL Ubuntu 26.04 LTS / gcc 15.2.0(Ubuntu 15.2.0-16ubuntu1)/ libnetpbm-dev 2:11.10.02-1build1
 - ビルドコマンド: `make CDEBUGFLAGS='-O2 -I/usr/include/netpbm'`(Makefile 既定の最適化を維持)
 - 再生成: `wsl -e bash tests/cases/make_golden.sh`
@@ -19,6 +19,7 @@ ppmtomd 1.6 が生成した既知正解のバイト列(DOMAIN §9)。ref/ と sr
 | g3_c3_white_md5000_600.bin | c3_black_for_white_120x120.ppm | `-model MD-5000 -resolution 600 -colours K=White` | 同上 |
 | g4_c1_black_md5000_1200.bin | c1_black_120x120.ppm | `-model MD-5000 -resolution 1200` | 同上 |
 | g5_c1_black_md5500_600.bin | c1_black_120x120.ppm | `-model MD-5500 -resolution 600` | 同上 |
+| g6_c4_square_md5000_600.bin | c4_square_on_white_120x120.ppm | `-model MD-5000 -resolution 600` | 同上 |
 
 ## 検証済みの事実(2026-07-28)
 
