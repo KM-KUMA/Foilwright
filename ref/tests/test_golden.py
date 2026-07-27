@@ -39,6 +39,27 @@ _DEFAULT_INKS = [
 _WHITE_PALETTE = {"white": "K"}
 _WHITE_INKS = [{"name": "white", "colour_code": 0x0B}]
 
+# `-colours C=MetallicCyan,M=MetallicMagenta,Y=MetallicGold,K=MetallicSilver`.
+# Colour-selection bytes follow mddata.c's colour enum order
+# (mddata.c:12-15): Gold=0x04, Magenta=0x05, Cyan=0x06, Silver=0x07.
+# Pass order is the CMYK component order, which ppmtomd only permutes for
+# dyesub (ppmtomd.c:1456-1464), so C(=Cyan) prints first and K(=Silver) last.
+# These four inks all share order 50 in palette/default.yaml, so this is the
+# only fixture where DOMAIN §4.9's stable-sort requirement has any effect --
+# a tie-break that reorders them changes the byte stream.
+_METALLIC4_PALETTE = {
+    "metallic_cyan": "C",
+    "metallic_magenta": "M",
+    "metallic_gold": "Y",
+    "metallic_silver": "K",
+}
+_METALLIC4_INKS = [
+    {"name": "metallic_cyan", "colour_code": 0x06},
+    {"name": "metallic_magenta", "colour_code": 0x05},
+    {"name": "metallic_gold", "colour_code": 0x04},
+    {"name": "metallic_silver", "colour_code": 0x07},
+]
+
 # ppmtomd's A4, 5000-series page geometry, baseline at 600dpi
 # (ppmtomd.c:70-81 papersize_info_5000[paperA4]).
 _A4_WIDTH_600 = 4800
@@ -145,3 +166,19 @@ def test_g6_square_on_white_md5000_600():
         _DEFAULT_INKS,
     )
     _assert_golden_match(actual, GOLDEN_DIR / "g6_c4_square_md5000_600.bin")
+
+
+def test_g7_metallic4_md5000_600():
+    """Four metallic inks, all at the same `order` value. Pass order here is
+    fixed by the ink list's own sequence (DOMAIN §4.3 tie-break = palette file
+    order, §4.9 stable sort). Any implementation that reorders same-order inks
+    -- e.g. C# List<T>.Sort(), which is unstable -- produces a different byte
+    stream and fails against this golden."""
+    profile = _profile(600, "MD-5000")
+    actual = _render(
+        CASES_DIR / "c5_metallic4_240x120.ppm",
+        profile,
+        _METALLIC4_PALETTE,
+        _METALLIC4_INKS,
+    )
+    _assert_golden_match(actual, GOLDEN_DIR / "g7_c5_metallic4_md5000_600.bin")

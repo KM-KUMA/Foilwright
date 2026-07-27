@@ -20,12 +20,16 @@ ppmtomd 1.6 が生成した既知正解のバイト列(DOMAIN §9)。ref/ と sr
 | g4_c1_black_md5000_1200.bin | c1_black_120x120.ppm | `-model MD-5000 -resolution 1200` | 同上 |
 | g5_c1_black_md5500_600.bin | c1_black_120x120.ppm | `-model MD-5500 -resolution 600` | 同上 |
 | g6_c4_square_md5000_600.bin | c4_square_on_white_120x120.ppm | `-model MD-5000 -resolution 600` | 同上 |
+| g7_c5_metallic4_md5000_600.bin | c5_metallic4_240x120.ppm | `-model MD-5000 -resolution 600 -colours C=MetallicCyan,M=MetallicMagenta,Y=MetallicGold,K=MetallicSilver` | 同上 |
 
 ## 検証済みの事実(2026-07-28)
 
 - **g1 と g5 はバイト完全一致**(`cmp` 差分ゼロ)。MD-5000 と MD-5500 は ppmtomd レベルでコマンド差分なし(DOMAIN §11 #3 の裏付け)
 - g1 と g4 の差分はバイト 8 の解像度コード(`\033*t{res}R` の 0x03→0x04)とページ幅(4800→9600 ドット)のみ。docs/research/ppmtomd-survey.md の Q1/Q2 と整合
 - 全 golden の先頭は `1b 25 80 41`(ESC % 0x80 A = RGL モード選択)
+- **パスの実行順は CMYK コンポーネント順で固定**(C → M → Y → K)。ppmtomd が順序を入れ替えるのは DyeSub のときだけで(ppmtomd.c:1456-1464)、本プロジェクトの対象外(DOMAIN §1.3)
+- **色選択コマンドのコードバイト**(`1b 1a {code} {flag} 72` の code)は mddata.c の colour enum 順。golden から読み取った実測値: Black=0x00 / Cyan=0x01 / Magenta=0x02 / Yellow=0x03 / MetallicGold=0x04 / MetallicMagenta=0x05 / MetallicCyan=0x06 / MetallicSilver=0x07 / White=0x0B。{flag} は最終プレーンのみ 0x80
+- 全 golden を再生成しても既存ファイルは 1 バイトも変化しない(2026-07-28 実施)
 
 ## 注意
 

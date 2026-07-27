@@ -11,6 +11,10 @@ golden(tests/golden/)の入力となる PPM と、その決定的な生成手順
 | c3_black_for_white_120x120.ppm | c1 と同一の黒ベタ。White 差し替え(`-colours K=White`)で刷る想定 | c1 のコピー |
 | c4_square_on_white_120x120.ppm | 白地の中央に 40x40 の黒四角 | `ppmmake white 120 40 > top.ppm; ppmmake white 40 40 > l.ppm; ppmmake black 40 40 > blk.ppm; pnmcat -lr l.ppm blk.ppm l.ppm > mid.ppm; pnmcat -tb top.ppm mid.ppm top.ppm` |
 
+| c5_metallic4_240x120.ppm | シアン・マゼンタ・イエロー・黒を各 60x120 で横に並べた 240x120 | `ppmmake cyan 60 120 > c.ppm; ppmmake magenta 60 120 > m.ppm; ppmmake yellow 60 120 > y.ppm; ppmmake black 60 120 > k.ppm; pnmcat -lr c.ppm m.ppm y.ppm k.ppm` |
+
+**c5 は `order` 同値のパスが複数生じる唯一のケース。** メタリック 4 色はパレット定義で order が同値のため(DOMAIN §4.3)、並べ替えに安定ソートを使わない実装では順序が変わりバイト列が食い違う(§4.9)。実機のメタリックカートリッジは不要で、バイト列の検証は完全に実施できる(§9.5)。
+
 **c4 は空白の経路を通すための必須ケース。** ベタ画像だけでは空行スキップ(`ESC * b {n} Y`)・行内の末尾ゼロトリム・ページ下端の連続空行のいずれも一度も実行されない。実際 g6 には 40 行スキップのコマンド(`1b 2a 62 28 00 59`)が現れる。デカール用途では白地が大半を占めるため、この経路のほうが本番では主役になる。
 
 3 ファイルとも上記コマンドの出力とバイト一致することを確認済み(2026-07-28)。
