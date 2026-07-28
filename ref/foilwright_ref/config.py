@@ -263,6 +263,60 @@ def load_paper_table(path: str) -> dict:
     return table
 
 
+def load_media_table(path: str) -> dict:
+    """Load the media type table (DOMAIN.md §5.5.2) and return it as a
+    mapping from media name to `{label, byte1, byte2}`.
+
+    Media type is not paper size: it tells the printer about the stock so
+    it can adjust head heating. Selecting thick stock is what stops the
+    ink ribbon tearing under an undercoat pass (§10.8.2), so this is a
+    safety setting rather than a quality one.
+
+    Unlike paper tables there is no per-model variant -- ppmtomd uses one
+    shared array for every machine -- so this is a single flat file.
+    """
+    data = _load_yaml(path)
+    if not isinstance(data, dict) or "media" not in data:
+        raise ConfigError(
+            f"{path}: media table must be a YAML mapping with a 'media' list"
+        )
+
+    raw_media = data["media"]
+    if not isinstance(raw_media, list) or not raw_media:
+        raise ConfigError(f"{path}: 'media' must be a non-empty list")
+
+    table: dict[str, dict] = {}
+    for index, raw in enumerate(raw_media):
+        if not isinstance(raw, dict):
+            raise ConfigError(f"media entry #{index}: entry must be a mapping")
+        missing = [f for f in ("name", "label", "byte1", "byte2") if f not in raw]
+        if missing:
+            raise ConfigError(
+                f"media entry #{index}: missing required field(s) {missing}"
+            )
+        name = raw["name"]
+        if not isinstance(name, str) or not _NAME_RE.match(name):
+            raise ConfigError(
+                f"media entry #{index} ({name!r}): 'name' must contain only "
+                "ASCII lowercase letters and underscores"
+            )
+        for field in ("byte1", "byte2"):
+            value = raw[field]
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ConfigError(f"media '{name}': '{field}' must be an integer")
+            if not 0 <= value <= 255:
+                raise ConfigError(f"media '{name}': '{field}' must be in 0..255")
+        if name in table:
+            raise ConfigError(f"{path}: duplicate media name '{name}'")
+        table[name] = {
+            "label": raw["label"],
+            "byte1": raw["byte1"],
+            "byte2": raw["byte2"],
+        }
+
+    return table
+
+
 def resolve_paper_table(profile: dict, papers_dir: str) -> dict:
     """Resolve a machine profile's `paper_table` reference (DOMAIN.md §5.1
     / §5.5) against `papers_dir` and return the loaded table.

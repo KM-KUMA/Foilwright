@@ -127,7 +127,7 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
             "length": int (dots, at the 600dpi baseline),
             "left_margin": int, "top_margin": int,  # unused here so far
         },
-        "media_byte1": int, "media_byte2": int,
+        "media": {"byte1": int, "byte2": int},  # from config.load_media_table
         "inks": [ {"name": str, "printer_code": int}, ... ]  # print order;
             this is the full set of active inks for the job (an entry
             here with an all-blank plane still gets a (blank) selection
@@ -161,7 +161,8 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
     # trailing NUL (the sprintf string terminator) is sent too. This is
     # a genuine ppmtomd quirk that every golden fixture bakes in.
     out += bytes([ESC, 0x2A, 0x74, res_code, 0x52, 0x00])  # output resolution
-    out += bytes([ESC, 0x26, 0x6C, job["media_byte1"], job["media_byte2"], 0x4D])
+    media = job["media"]
+    out += bytes([ESC, 0x26, 0x6C, media["byte1"], media["byte2"], 0x4D])
     out += bytes([ESC, 0x26, 0x6C, paper["code"], 0, 0x41])
     out += bytes([ESC, 0x26, 0x6C, page_length % 256, page_length // 256, 0x50])
     out += bytes([ESC, 0x26, 0x61, page_width % 256, page_width // 256, 0x4D])

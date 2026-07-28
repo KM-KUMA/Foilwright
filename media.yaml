@@ -1,0 +1,46 @@
+# Foilwright — メディア種別表
+# Copyright (C) 2026 JunkQuality (github.com/KM-KUMA/Foilwright)
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# 用紙サイズ(papers/)とは別の概念。用紙サイズが寸法を決めるのに対し、
+# メディア種別は紙質を伝えてヘッドの加熱条件を変える(DOMAIN §5.5.2)。
+# コマンドは ESC & l {byte1} {byte2} M。
+#
+# 出典: ppmtomd 1.6 の media_byte1[] / media_byte2[](mddata.c:191-)。
+# 主要な値は golden のバイト列から実測して裏付け済み。
+# 機種による分岐はない(ppmtomd も共通の配列を使う)。
+#
+# 注意: 名前に fine が付くものは「すべてを 2 回印刷する」を意味する
+# (ALPS 文書の Enhanced Quality)。パレットの passes による重ね刷りとは
+# 別の機構で、プレーン単位ではなくジョブ全体に掛かる。混同しないこと。
+
+media:
+  - name: plain_paper
+    label: 普通紙
+    byte1: 0x00
+    byte2: 0x00
+
+  # 厚紙。アンダーコート使用時のインクリボン切れを防ぐ(DOMAIN §10.8.2)。
+  # 品質設定ではなく消耗品の破損を防ぐ安全設定として扱う
+  - name: cardboard
+    label: 厚紙
+    byte1: 0x05
+    byte2: 0x00
+
+  - name: fine_plain_paper
+    label: 普通紙(2 回刷り)
+    byte1: 0x00
+    byte2: 0x02
+
+  - name: post_card
+    label: はがき
+    byte1: 0x06
+    byte2: 0x00
+
+  - name: laser_paper
+    label: レーザー用紙
+    byte1: 0x07
+    byte2: 0x00
+
+# 未収録: OHP・アイロン転写・裏面印刷・昇華・光沢・VPhoto 系など全 24 種。
+# 必要になった時点で mddata.c の配列から追加する。実測で裏を取ること。

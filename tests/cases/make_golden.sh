@@ -56,6 +56,9 @@ gen g7_c5_metallic4_md5000_600.bin -model MD-5000 -resolution 600 \
 gen g13_c6_halftone_md5000_600.bin -model MD-5000 -resolution 600     -colourcorrection Plain -dither Halftone tests/cases/c6_fullcolour_240x120.ppm
 gen g14_c6_coarsehalftone_md5000_600.bin -model MD-5000 -resolution 600     -colourcorrection Plain -dither CoarseHalftone tests/cases/c6_fullcolour_240x120.ppm
 
+# メディア種別。厚紙はリボン切れ対策(DOMAIN §5.5.2 / §10.8.2)
+gen g15_c1_cardboard_md5000_600.bin -model MD-5000 -resolution 600 -media Cardboard tests/cases/c1_black_120x120.ppm
+
 if cmp -s tests/golden/g1_c1_black_md5000_600.bin tests/golden/g5_c1_black_md5500_600.bin; then
   echo "MODEL_DIFF_ZERO (MD-5000 == MD-5500)"
 else

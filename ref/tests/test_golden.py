@@ -70,8 +70,8 @@ def _job(resolution: int, model: str, inks: list) -> dict:
     return {
         "resolution": resolution,
         "paper": paper,
-        "media_byte1": 0x00,
-        "media_byte2": 0x00,
+        # golden はすべて ppmtomd の既定(普通紙)で採取されている
+        "media": config.load_media_table(str(REPO_ROOT / "media.yaml"))["plain_paper"],
         "inks": inks,
     }
 
@@ -248,6 +248,17 @@ def test_single_eject_across_all_golden():
     for path in sorted(GOLDEN_DIR.glob("*.bin")):
         ejects = _count_ejects(path.read_bytes())
         assert ejects == 1, f"{path.name}: expected 1 eject, found {ejects}"
+
+
+def test_g15_cardboard_media_md5000_600():
+    """Thick stock (media 0x05 0x00) instead of the default plain paper.
+    Selecting the right media is a safety setting, not a quality one: it
+    is what stops the ink ribbon tearing under an undercoat pass
+    (DOMAIN §5.5.2 / §10.8.2)."""
+    media = config.load_media_table(str(REPO_ROOT / "media.yaml"))["cardboard"]
+    job = dict(_job(600, "md-5000", _DEFAULT_INKS), media=media)
+    actual = _render(CASES_DIR / "c1_black_120x120.ppm", job, _DEFAULT_PALETTE)
+    _assert_golden_match(actual, GOLDEN_DIR / "g15_c1_cardboard_md5000_600.bin")
 
 
 def test_g12_fullcolour_md5000_600():

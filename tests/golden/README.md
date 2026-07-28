@@ -28,6 +28,7 @@ ppmtomd 1.6 が生成した既知正解のバイト列(DOMAIN §9)。ref/ と sr
 | g12_c6_fullcolour_md5000_600.bin | c6_fullcolour_240x120.ppm | `-model MD-5000 -resolution 600`(特色なし) | 同上 |
 | g13_c6_halftone_md5000_600.bin | c6_fullcolour_240x120.ppm | `-model MD-5000 -resolution 600 -colourcorrection Plain -dither Halftone` | 同上 |
 | g14_c6_coarsehalftone_md5000_600.bin | c6_fullcolour_240x120.ppm | `-model MD-5000 -resolution 600 -colourcorrection Plain -dither CoarseHalftone` | 同上 |
+| g15_c1_cardboard_md5000_600.bin | c1_black_120x120.ppm | `-model MD-5000 -resolution 600 -media Cardboard` | 同上 |
 
 ## 検証済みの事実(2026-07-28)
 
