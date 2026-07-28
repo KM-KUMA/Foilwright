@@ -14,12 +14,400 @@ colour-correction path plus its ``ditherNone`` threshold binarisation
     c -= k; m -= k; y -= k
     bit = 1 if value >= (maxval + 1) // 2 else 0
 
+``to_planes`` also supports ppmtomd's ``Halftone`` and ``CoarseHalftone``
+ordered-dither modes (DOMAIN.md §4.2.1). Both replace the flat 128
+threshold above with a per-pixel threshold read from a small dither
+matrix, using a rotated-screen position that advances across each row
+(vendor/ppmtomd-1.6/ppmtomd.c:2851-3093, the active ``ht_init``/``ht_inc``
+macros at ppmtomd.c:549-613 -- the ``#if 0`` block above them at
+ppmtomd.c:517-548 is dead code and is not reproduced here):
+
+    bit = 1 if value > dither_matrix[hrow, hcol] else 0
+
 Only maxval == 255 (8 bits per sample) input is supported; this is what
 every golden fixture uses and is what ppmtomd normalises everything to
 internally (ppmtomd.c:2063 "let's change everything to 255").
 """
 
 from __future__ import annotations
+
+_VALID_HALFTONES = frozenset({"none", "halftone", "coarse_halftone"})
+
+# ppmtomd.c:986 "four" -- the 2x2 quadrant interpolation weights used by
+# build_dith to expand each n x n cell into a 2x2 block of finer values.
+_BUILD_DITH_FOUR = (0, 2, 3, 1)
+
+# ppmtomd.c:666-673 -- fine ("Halftone") dither, input matrix for the C/M
+# "line" screen.
+_DITHMAT6LINE = (
+    56 * 4,
+    48 * 4,
+    52 * 4,
+    58 * 4,
+    50 * 4,
+    54 * 4,
+    32 * 4,
+    24 * 4,
+    28 * 4,
+    34 * 4,
+    26 * 4,
+    30 * 4,
+    8 * 4,
+    0 * 4,
+    4 * 4,
+    10 * 4,
+    2 * 4,
+    6 * 4,
+    20 * 4,
+    12 * 4,
+    16 * 4,
+    22 * 4,
+    14 * 4,
+    18 * 4,
+    44 * 4,
+    36 * 4,
+    40 * 4,
+    46 * 4,
+    38 * 4,
+    42 * 4,
+    63 * 4,
+    59 * 4,
+    61 * 4,
+    63 * 4,
+    60 * 4,
+    62 * 4,
+)
+
+# ppmtomd.c:693-701 -- fine ("Halftone") dither, input matrix for the Y/K
+# "dot" screen. This is the active `#if 1` branch of a dead `#if`/`#else`;
+# the `#else` branch (ppmtomd.c:702-721, which contains a stray 254
+# literal) never compiles and is not reproduced here.
+_DITHMAT6DOT = (
+    100,
+    40,
+    140,
+    176,
+    222,
+    144,
+    20,
+    0,
+    60,
+    234,
+    246,
+    208,
+    160,
+    80,
+    120,
+    128,
+    192,
+    160,
+    184,
+    228,
+    152,
+    110,
+    50,
+    150,
+    240,
+    252,
+    216,
+    30,
+    10,
+    70,
+    136,
+    200,
+    168,
+    170,
+    90,
+    130,
+)
+
+# ppmtomd.c:737-746 -- coarse dither matrix, used directly (unexpanded,
+# by all four components) for CoarseHalftone. This is the active `#else`
+# branch of the `#if 0` at ppmtomd.c:725.
+_DITHMAT10 = (
+    27 * 4,
+    19 * 4,
+    15 * 4,
+    23 * 4,
+    31 * 4,
+    41 * 4,
+    52 * 4,
+    55 * 4,
+    49 * 4,
+    37 * 4,
+    25 * 4,
+    10 * 4,
+    4 * 4,
+    12 * 4,
+    21 * 4,
+    43 * 4,
+    58 * 4,
+    62 * 4,
+    60 * 4,
+    48 * 4,
+    17 * 4,
+    2 * 4,
+    0 * 4,
+    6 * 4,
+    18 * 4,
+    53 * 4,
+    64 * 4,
+    64 * 4,
+    64 * 4,
+    54 * 4,
+    22 * 4,
+    13 * 4,
+    8 * 4,
+    14 * 4,
+    26 * 4,
+    47 * 4,
+    61 * 4,
+    63 * 4,
+    59 * 4,
+    45 * 4,
+    33 * 4,
+    24 * 4,
+    16 * 4,
+    20 * 4,
+    29 * 4,
+    35 * 4,
+    50 * 4,
+    56 * 4,
+    51 * 4,
+    39 * 4,
+    42 * 4,
+    52 * 4,
+    55 * 4,
+    49 * 4,
+    38 * 4,
+    28 * 4,
+    19 * 4,
+    15 * 4,
+    23 * 4,
+    32 * 4,
+    44 * 4,
+    58 * 4,
+    62 * 4,
+    60 * 4,
+    48 * 4,
+    25 * 4,
+    11 * 4,
+    5 * 4,
+    12 * 4,
+    21 * 4,
+    53 * 4,
+    64 * 4,
+    64 * 4,
+    64 * 4,
+    54 * 4,
+    17 * 4,
+    3 * 4,
+    1 * 4,
+    7 * 4,
+    18 * 4,
+    47 * 4,
+    61 * 4,
+    63 * 4,
+    59 * 4,
+    46 * 4,
+    22 * 4,
+    13 * 4,
+    9 * 4,
+    14 * 4,
+    26 * 4,
+    36 * 4,
+    50 * 4,
+    57 * 4,
+    51 * 4,
+    40 * 4,
+    34 * 4,
+    24 * 4,
+    16 * 4,
+    20 * 4,
+    30 * 4,
+)
+
+
+def _round_half_even_div(numerator: int, denom: int) -> int:
+    """Integer equivalent of C's ``rint(numerator / denom)`` (round to
+    nearest, ties to even).
+
+    ppmtomd's build_dith (ppmtomd.c:987) uses floating-point ``rint`` for
+    this, but it is only ever applied to a handful of compile-time
+    constants to build the fixed dither-matrix tables below -- never to
+    per-pixel data. Replicating it here with exact integer arithmetic
+    (instead of floats) produces the identical table while keeping every
+    per-pixel computation in this module free of floating point, per
+    DOMAIN.md §4.9 / D-015.
+    """
+    quot, rem = divmod(numerator, denom)  # denom > 0 here, so this floors
+    twice_rem = 2 * rem
+    if twice_rem < denom:
+        return quot
+    if twice_rem > denom:
+        return quot + 1
+    return quot if quot % 2 == 0 else quot + 1
+
+
+def _build_dith(
+    n: int, indith: tuple[int, ...], m: int, condith: tuple[int, ...]
+) -> tuple[int, ...]:
+    """Port of ppmtomd's build_dith (ppmtomd.c:958-997).
+
+    Expands an n x n dither matrix into an (m*n) x (m*n) matrix: each
+    output cell interpolates between its source cell's value and the
+    next-higher distinct value found anywhere in the source matrix (256
+    if there is none), weighted by the m x m condith quadrant pattern.
+    Results are clamped to 254 so solid colour always prints as such.
+    """
+    sorted_vals = sorted(indith)
+    result = [0] * (m * n * m * n)
+    for i in range(n):
+        for j in range(n):
+            val = indith[i * n + j]
+            k = sorted_vals.index(val)
+            while k < n * n and sorted_vals[k] == val:
+                k += 1
+            nval = 256 if k == n * n else sorted_vals[k]
+            for p in range(m):
+                for q in range(m):
+                    weight = condith[p * m + q]
+                    numerator = (m * m - weight) * val + weight * nval
+                    res = _round_half_even_div(numerator, m * m)
+                    res = min(res, 254)
+                    result[(n * p + i) * m * n + (n * q + j)] = res
+    return tuple(result)
+
+
+# Precomputed once at import time (see _build_dith docstring for why this
+# is safe to do with the round-half-even helper above rather than floats).
+_DITHMAT_LINE12 = _build_dith(6, _DITHMAT6LINE, 2, _BUILD_DITH_FOUR)
+_DITHMAT_DOT12 = _build_dith(6, _DITHMAT6DOT, 2, _BUILD_DITH_FOUR)
+
+# ppmtomd.c:1978-1992 -- default halftone screen angles (x, y, z, yneg)
+# per CMYK component. y is always the abs() of the value passed to htset;
+# a negative value only sets yneg (ppmtomd.c:491-493 htset macro).
+_SCREEN_HALFTONE = {
+    "C": (12, 5, 13, False),
+    "M": (12, 5, 13, True),
+    "Y": (3, 4, 5, False),
+    "K": (1, 0, 1, False),
+}
+_SCREEN_COARSE_HALFTONE = {
+    "C": (12, 5, 13, False),
+    "M": (5, 12, 13, True),  # ppmtomd.c:1991 coarse-mode override
+    "Y": (3, 4, 5, False),
+    "K": (1, 0, 1, False),
+}
+
+# Per halftone mode: for each CMYK channel, (cellsize, dither matrix); plus
+# the screen-angle table to use (ppmtomd.c:2761-2779, the "normal 600dpi
+# mode" branch -- this project never drives the 1200dpi "photo-realistic"
+# or vphoto paths, so those branches are not reproduced).
+_HALFTONE_MODES = {
+    "halftone": {
+        "C": (12, _DITHMAT_LINE12),
+        "M": (12, _DITHMAT_LINE12),
+        "Y": (12, _DITHMAT_DOT12),
+        "K": (12, _DITHMAT_DOT12),
+        "screens": _SCREEN_HALFTONE,
+    },
+    "coarse_halftone": {
+        "C": (10, _DITHMAT10),
+        "M": (10, _DITHMAT10),
+        "Y": (10, _DITHMAT10),
+        "K": (10, _DITHMAT10),
+        "screens": _SCREEN_COARSE_HALFTONE,
+    },
+}
+
+
+def _cdiv(a: int, b: int) -> int:
+    """C-style integer division: truncate toward zero. ``b`` must be > 0
+    (always true here: callers only ever pass ``2 * y`` or ``2 * z`` with
+    y, z > 0)."""
+    return a // b if a >= 0 else -((-a) // b)
+
+
+def _ht_row_positions(
+    x: int, y: int, z: int, yneg: bool, row: int, cellsize: int, width: int
+) -> list[tuple[int, int]]:
+    """Reproduce ppmtomd's ht_init/ht_inc macros for one image row.
+
+    Returns the (hrow, hcol) dither-matrix index to use for each column
+    0..width-1, in order (ppmtomd.c:549-613, the active branch -- the
+    incremental-rotation branch above it at ppmtomd.c:517-548 is guarded
+    by ``#if 0`` and is dead code).
+
+    ppmtomd calls ht_init once per row then ht_inc once per column,
+    reading ht_elt (the matrix lookup) *before* each ht_inc call
+    (ppmtomd.c:2851-2864, 3069-3092); this returns that same
+    before-increment sequence of positions directly.
+
+    Every value here is a plain Python int; C's truncating ``/`` is
+    replicated via ``_cdiv``, while C's ``%=`` followed by a manual
+    "+= cellsize if negative" correction is mathematically identical to
+    Python's ``%`` for any integer and any positive modulus (a remainder's
+    magnitude is always smaller than the modulus, so a single correction
+    always suffices) -- so the final normalisations below just use ``%``.
+    """
+    positions: list[tuple[int, int]] = []
+
+    if y == 0:
+        # ppmtomd.c:556 -- no rotation: hrow is fixed for the row, hcol
+        # just counts up from 0, so position col is simply col % cellsize.
+        hrow = row % cellsize
+        return [(hrow, col % cellsize) for col in range(width)]
+
+    # ht_init (ppmtomd.c:557-576)
+    row_eff = (10000 - row) if yneg else row
+    s1xf = 2 * row_eff * (x - z)
+    s1xi = _cdiv(s1xf - y + 1, 2 * y)
+    s1yi = row_eff
+    s2xi = s1xi
+    s2yf = 2 * y * s1xi + 2 * z * s1yi
+    if s2yf >= 0:
+        s2yi = _cdiv(s2yf + z, 2 * z)
+    else:
+        s2yi = _cdiv(s2yf + 1 - z, 2 * z)
+    s2yf -= 2 * z * s2yi
+    s3xf = 2 * y * s2xi + 2 * (x - z) * s2yi
+    if s3xf >= 0:
+        hcol = _cdiv(s3xf + y, 2 * y)
+    else:
+        hcol = _cdiv(s3xf - y + 1, 2 * y)
+    s3xf -= 2 * y * hcol
+    hrow = s2yi
+
+    for _ in range(width):
+        positions.append((hrow % cellsize, hcol % cellsize))
+
+        # ht_inc (ppmtomd.c:580-612). s1xi/s2xi are incremented in the
+        # source but never read again afterwards, so they are omitted
+        # here (dead state).
+        s2yf += 2 * y
+        if s2yf >= z:
+            s2yi += 1
+            s2yf -= 2 * z
+            hcol += 1
+            s3xf += 2 * (x - z)
+            while s3xf < -y:
+                hcol -= 1
+                s3xf += 2 * y
+            hrow += 1
+        elif s2yf >= -z:
+            hcol += 1
+        else:
+            s2yi -= 1
+            s2yf += 2 * z
+            hcol -= 1
+            s3xf -= 2 * (x - z)
+            while s3xf >= y:
+                hcol += 1
+                s3xf -= 2 * y
+            hrow -= 1
+
+    return positions
 
 
 class PPMError(ValueError):
@@ -86,7 +474,9 @@ def read_ppm(path: str) -> tuple[int, int, bytes]:
 
 
 def to_planes(
-    image: tuple[int, int, bytes], palette: dict[str, str]
+    image: tuple[int, int, bytes],
+    palette: dict[str, str],
+    halftone: str = "none",
 ) -> dict[str, bytes]:
     """Convert an image to per-ink 1bit planes.
 
@@ -95,18 +485,45 @@ def to_planes(
         channel of the ppmtomd-style CMYK separation feeds that ink.
         This dict is supplied by the caller (DOMAIN.md §4.5: ink lists
         are never hardcoded in this module).
+    halftone: one of "none" (flat 128 threshold, ppmtomd's ditherNone --
+        the default, and byte-identical to this function's behaviour
+        before halftoning was added), "halftone" (ppmtomd's -dither
+        Halftone) or "coarse_halftone" (ppmtomd's -dither CoarseHalftone).
+        FloydSteinberg and Square are not implemented (DOMAIN.md §4.2.1).
 
     Returns a dict ink name -> bytes: each row is packed MSB-first and
     padded to a byte boundary (row length = ceil(width/8) bytes), rows
     concatenated in image order.
     """
+    if halftone not in _VALID_HALFTONES:
+        raise ValueError(
+            f"unknown halftone mode {halftone!r}; expected one of "
+            f"{sorted(_VALID_HALFTONES)}"
+        )
+
     width, height, pixels = image
     row_bytes = (width + 7) // 8
     planes = {name: bytearray(row_bytes * height) for name in palette}
 
+    mode = _HALFTONE_MODES.get(halftone)
+    channels_needed = set(palette.values()) if mode is not None else ()
+
     for y in range(height):
         row_base = y * width * 3
         plane_row_base = y * row_bytes
+
+        # channel -> (positions for this row, dither matrix, cellsize)
+        row_halftone: dict[str, tuple[list[tuple[int, int]], tuple[int, ...], int]] = {}
+        if mode is not None:
+            for channel in channels_needed:
+                cellsize, matrix = mode[channel]
+                sx, sy, sz, syneg = mode["screens"][channel]
+                row_halftone[channel] = (
+                    _ht_row_positions(sx, sy, sz, syneg, y, cellsize, width),
+                    matrix,
+                    cellsize,
+                )
+
         for x in range(width):
             idx = row_base + x * 3
             r = pixels[idx]
@@ -123,7 +540,15 @@ def to_planes(
             byte_index = plane_row_base + (x >> 3)
             bit_mask = 0x80 >> (x & 7)
             for name, channel in palette.items():
-                if values[channel] >= 128:
+                value = values[channel]
+                if mode is None:
+                    hit = value >= 128
+                else:
+                    positions, matrix, cellsize = row_halftone[channel]
+                    hrow, hcol = positions[x]
+                    threshold = matrix[cellsize * hrow + hcol]
+                    hit = value > threshold
+                if hit:
                     planes[name][byte_index] |= bit_mask
 
     return {name: bytes(buf) for name, buf in planes.items()}

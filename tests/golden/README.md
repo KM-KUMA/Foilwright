@@ -26,6 +26,8 @@ ppmtomd 1.6 が生成した既知正解のバイト列(DOMAIN §9)。ref/ と sr
 | g10_c5_white_multilayer_md5000_600.bin | c5_metallic4_240x120.ppm | `-model MD-5000 -resolution 600 -colours C=White,M=MetallicGold,Y=MetallicSilver,K=Black` | 同上 |
 | g11_c5_white_finish_colour_md5000_600.bin | c5_metallic4_240x120.ppm | `-model MD-5000 -resolution 600 -colours C=White,M=Finish,Y=MetallicGold,K=Black` | 同上 |
 | g12_c6_fullcolour_md5000_600.bin | c6_fullcolour_240x120.ppm | `-model MD-5000 -resolution 600`(特色なし) | 同上 |
+| g13_c6_halftone_md5000_600.bin | c6_fullcolour_240x120.ppm | `-model MD-5000 -resolution 600 -colourcorrection Plain -dither Halftone` | 同上 |
+| g14_c6_coarsehalftone_md5000_600.bin | c6_fullcolour_240x120.ppm | `-model MD-5000 -resolution 600 -colourcorrection Plain -dither CoarseHalftone` | 同上 |
 
 ## 検証済みの事実(2026-07-28)
 
@@ -34,6 +36,7 @@ ppmtomd 1.6 が生成した既知正解のバイト列(DOMAIN §9)。ref/ と sr
 - 全 golden の先頭は `1b 25 80 41`(ESC % 0x80 A = RGL モード選択)
 - **パスの実行順は CMYK コンポーネント順で固定**(C → M → Y → K)。ppmtomd が順序を入れ替えるのは DyeSub のときだけで(ppmtomd.c:1456-1464)、本プロジェクトの対象外(DOMAIN §1.3)
 - **色選択コマンドのコードバイト**(`1b 1a {code} {flag} 72` の code)は mddata.c の colour enum 順。golden から読み取った実測値: Black=0x00 / Cyan=0x01 / Magenta=0x02 / Yellow=0x03 / MetallicGold=0x04 / MetallicMagenta=0x05 / MetallicCyan=0x06 / MetallicSilver=0x07 / White=0x0B。{flag} は最終プレーンのみ 0x80
+- **ディザを使う golden は `-colourcorrection Plain` を明示すること。** ppmtomd は `-dither` を指定すると色補正を勝手に `Photo` へ切り替える(ppmtomd.c:1437-1441)。明示しないとディザの検証に色補正が混入する(DOMAIN §4.2.1)
 - **位置合わせのシフトは正の値のときだけコマンドになる**(`ESC & a {x} L` / `ESC & l {y} E`、ppmtomd.c:2546-2555)。負のシフトはコマンドを出さず、画像データ側を削る別経路に入る(ppmtomd.c:2659)。`ref/` は負のシフトを未実装とし、渡されたら `NotImplementedError` で止める(黙って誤った位置に刷らないため)
 - **シフト量の単位は 1/600 インチで、解像度設定に依存しない**(ppmtomd.man)。内部では出力解像度に換算され、300dpi は半分、1200dpi は x 方向のみ 2 倍(ppmtomd.c:1920-1921)
 - **排出(単独のフォームフィード `0x0C`)は全 golden で 1 回のみ。** パス間の用紙戻しはバックフィード(`ESC SUB 0 0 FF`)で行われ、これは排出ではない。**白を含む 4 層(g10)でも同じ**であり、白が他インクと同一ジョブに同居できる。DOMAIN §11.5 / §4.10 の根拠

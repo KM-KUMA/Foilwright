@@ -76,10 +76,12 @@ def _job(resolution: int, model: str, inks: list) -> dict:
     }
 
 
-def _render(ppm_path: pathlib.Path, job: dict, palette: dict) -> bytes:
+def _render(
+    ppm_path: pathlib.Path, job: dict, palette: dict, halftone: str = "none"
+) -> bytes:
     image = raster.read_ppm(str(ppm_path))
     width, height, _ = image
-    planes = raster.to_planes(image, palette)
+    planes = raster.to_planes(image, palette, halftone=halftone)
     full_job = dict(job, width=width, height=height)
     return emitter.emit_job(planes, full_job)
 
@@ -290,6 +292,34 @@ def test_negative_shift_is_rejected():
     job = dict(_job(600, "md-5000", _DEFAULT_INKS), x_shift=-10)
     with pytest.raises(NotImplementedError):
         _render(CASES_DIR / "c1_black_120x120.ppm", job, _DEFAULT_PALETTE)
+
+
+def test_g13_halftone_md5000_600():
+    """-dither Halftone: ppmtomd's fine-line ordered dither (DOMAIN §4.2.1).
+    Same fixture as g12, so this exercises the halftone matrices against
+    solid colours, pure white and a mid grey side by side."""
+    job = _job(600, "md-5000", _DEFAULT_INKS)
+    actual = _render(
+        CASES_DIR / "c6_fullcolour_240x120.ppm",
+        job,
+        _DEFAULT_PALETTE,
+        halftone="halftone",
+    )
+    _assert_golden_match(actual, GOLDEN_DIR / "g13_c6_halftone_md5000_600.bin")
+
+
+def test_g14_coarsehalftone_md5000_600():
+    """-dither CoarseHalftone: ppmtomd's coarser-dot ordered dither
+    (DOMAIN §4.2.1), sharing the same 10x10 matrix across all four CMYK
+    components (only the per-component screen angle differs)."""
+    job = _job(600, "md-5000", _DEFAULT_INKS)
+    actual = _render(
+        CASES_DIR / "c6_fullcolour_240x120.ppm",
+        job,
+        _DEFAULT_PALETTE,
+        halftone="coarse_halftone",
+    )
+    _assert_golden_match(actual, GOLDEN_DIR / "g14_c6_coarsehalftone_md5000_600.bin")
 
 
 def test_g7_metallic4_md5000_600():
