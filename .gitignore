@@ -46,3 +46,6 @@ desktop.ini
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Phase 1 以降の実機テスト用の一時生成物
+tools/*.log
