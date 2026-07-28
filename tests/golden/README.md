@@ -24,6 +24,8 @@ ppmtomd 1.6 が生成した既知正解のバイト列(DOMAIN §9)。ref/ と sr
 | g8_c1_shift_md5000_600.bin | c1_black_120x120.ppm | `-model MD-5000 -resolution 600 -xshift 100 -yshift 200` | 同上 |
 | g9_c1_autoshift_md5000_600.bin | c1_black_120x120.ppm | `-model MD-5000 -resolution 600 -autoshift -xshift 200 -yshift 400` | 同上 |
 | g10_c5_white_multilayer_md5000_600.bin | c5_metallic4_240x120.ppm | `-model MD-5000 -resolution 600 -colours C=White,M=MetallicGold,Y=MetallicSilver,K=Black` | 同上 |
+| g11_c5_white_finish_colour_md5000_600.bin | c5_metallic4_240x120.ppm | `-model MD-5000 -resolution 600 -colours C=White,M=Finish,Y=MetallicGold,K=Black` | 同上 |
+| g12_c6_fullcolour_md5000_600.bin | c6_fullcolour_240x120.ppm | `-model MD-5000 -resolution 600`(特色なし) | 同上 |
 
 ## 検証済みの事実(2026-07-28)
 

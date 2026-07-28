@@ -201,6 +201,17 @@ def test_single_eject_across_all_golden():
         assert ejects == 1, f"{path.name}: expected 1 eject, found {ejects}"
 
 
+def test_g12_fullcolour_md5000_600():
+    """Red, green and blue each force a two-ink mix (M+Y, C+Y, C+M), so this
+    is the first fixture where all four CMYK planes carry data at once.
+    Earlier fixtures only ever exercised K alone (g1) or K+C (g2). Also
+    covers pure white (nothing printed) and a mid grey (threshold
+    behaviour, DOMAIN §4.2)."""
+    job = _job(600, "md-5000", _DEFAULT_INKS)
+    actual = _render(CASES_DIR / "c6_fullcolour_240x120.ppm", job, _DEFAULT_PALETTE)
+    _assert_golden_match(actual, GOLDEN_DIR / "g12_c6_fullcolour_md5000_600.bin")
+
+
 def test_g8_positive_shift_md5000_600():
     """Explicit -xshift 100 -yshift 200. Positive shifts are the only ones
     ppmtomd expresses as commands (ESC & a {x} L / ESC & l {y} E)."""

@@ -26,6 +26,14 @@ gen g3_c3_white_md5000_600.bin    -model MD-5000 -resolution 600 -colours K=Whit
 gen g4_c1_black_md5000_1200.bin   -model MD-5000 -resolution 1200 tests/cases/c1_black_120x120.ppm
 gen g5_c1_black_md5500_600.bin    -model MD-5500 -resolution 600  tests/cases/c1_black_120x120.ppm
 gen g6_c4_square_md5000_600.bin   -model MD-5000 -resolution 600  tests/cases/c4_square_on_white_120x120.ppm
+# 特色を使わない純粋なフルカラー。赤緑青が 2 インクの混色になり、
+# 4 プレーン全部にデータが乗る唯一のケース(g1 は K のみ、g2 は K+C)
+gen g12_c6_fullcolour_md5000_600.bin -model MD-5000 -resolution 600 \
+    tests/cases/c6_fullcolour_240x120.ppm
+# 白 → コーティング → 色。作者の実作業手順(DOMAIN §4.11 / §10.7)
+gen g11_c5_white_finish_colour_md5000_600.bin -model MD-5000 -resolution 600 \
+    -colours C=White,M=Finish,Y=MetallicGold,K=Black \
+    tests/cases/c5_metallic4_240x120.ppm
 # 位置合わせ。正のシフトだけがコマンドになる(ESC & a {x} L / ESC & l {y} E)
 gen g8_c1_shift_md5000_600.bin -model MD-5000 -resolution 600 \
     -xshift 100 -yshift 200 tests/cases/c1_black_120x120.ppm
