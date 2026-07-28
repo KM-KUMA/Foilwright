@@ -1,6 +1,6 @@
 # PROJECT ARCHITECTURE: Foilwright
 
-現状(2026-07-28): `ref/`(Python 参照実装)の L1 emitter + L2 raster が golden 6 種とバイト一致。`tests/golden/` 採取済み、`profiles/` `palette/` 作成済み。`src/`(C# 本番実装)と設定ファイル読み込み層は未着手。実機テストは Phase 0 未実施。
+現状(2026-07-28): `ref/`(Python 参照実装)の L1 emitter + L2 raster が golden 7 種とバイト一致。設定ファイル層(`profiles/` `palette/` `papers/` の YAML 読み込み)まで結線済みで、golden テストは実データを読んで走る。未着手は `src/`(C# 本番実装)、マジックカラー方式の L2 入口(§6.3)、L0/L3。実機テストは Phase 0 未実施。
 
 ## 目的とスコープ
 

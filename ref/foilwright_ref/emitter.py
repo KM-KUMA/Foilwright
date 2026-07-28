@@ -113,31 +113,37 @@ def _emit_plane_rows(plane: bytes, width: int, height: int) -> bytes:
     return bytes(out)
 
 
-def emit_job(planes: dict[str, bytes], profile: dict, options: dict) -> bytes:
+def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
     """Build the MD command byte stream for one page.
 
     planes: ink name -> packed 1bit plane bytes (from raster.to_planes).
-    profile: {
+    job describes one print job completely, mixing no machine-profile
+    lookup logic in here (DOMAIN.md §4.4 -- no model-specific branching):
+    {
         "resolution": 300 | 600 | 1200,
-        "paper_size": int (ppmtomd paper size code; 4 = A4),
+        "paper": {
+            "code": int (ppmtomd paper size code; 4 = A4),
+            "width": int (dots, at the 600dpi baseline),
+            "length": int (dots, at the 600dpi baseline),
+            "left_margin": int, "top_margin": int,  # unused here so far
+        },
         "media_byte1": int, "media_byte2": int,
-        "page_width": int (dots, at the 600dpi baseline),
-        "page_length": int (dots, at the 600dpi baseline),
-        "inks": [ {"name": str, "colour_code": int}, ... ]  # print order;
+        "inks": [ {"name": str, "printer_code": int}, ... ]  # print order;
             this is the full set of active inks for the job (an entry
             here with an all-blank plane still gets a (blank) selection
             command emitted, matching ppmtomd's default -colours
             behaviour of always driving C/M/Y/K).
+        "width": int, "height": int,  # image pixel dimensions
     }
-    options: {"width": int, "height": int}  # image pixel dimensions
     """
-    resolution = profile["resolution"]
+    resolution = job["resolution"]
     res_code = _RESOLUTION_CODES[resolution]
-    width = options["width"]
-    height = options["height"]
+    width = job["width"]
+    height = job["height"]
 
-    page_width = profile["page_width"]
-    page_length = profile["page_length"]
+    paper = job["paper"]
+    page_width = paper["width"]
+    page_length = paper["length"]
     if resolution == 300:
         page_width //= 2
         page_length //= 2
@@ -154,10 +160,8 @@ def emit_job(planes: dict[str, bytes], profile: dict, options: dict) -> bytes:
     # trailing NUL (the sprintf string terminator) is sent too. This is
     # a genuine ppmtomd quirk that every golden fixture bakes in.
     out += bytes([ESC, 0x2A, 0x74, res_code, 0x52, 0x00])  # output resolution
-    out += bytes(
-        [ESC, 0x26, 0x6C, profile["media_byte1"], profile["media_byte2"], 0x4D]
-    )
-    out += bytes([ESC, 0x26, 0x6C, profile["paper_size"], 0, 0x41])
+    out += bytes([ESC, 0x26, 0x6C, job["media_byte1"], job["media_byte2"], 0x4D])
+    out += bytes([ESC, 0x26, 0x6C, paper["code"], 0, 0x41])
     out += bytes([ESC, 0x26, 0x6C, page_length % 256, page_length // 256, 0x50])
     out += bytes([ESC, 0x26, 0x61, page_width % 256, page_width // 256, 0x4D])
 
@@ -169,13 +173,13 @@ def emit_job(planes: dict[str, bytes], profile: dict, options: dict) -> bytes:
     out += bytes([ESC, 0x2A, 0x72, 0x04, 0x55])  # transfer mode = colourPlane
     out += bytes([ESC, 0x2A, 0x72, 0, 0x41])  # start raster graphics
 
-    inks = profile["inks"]
+    inks = job["inks"]
     last_index = len(inks) - 1
 
     def _select_and_rows(index: int) -> bytes:
         ink = inks[index]
         flag = 0x80 if index == last_index else 0x00
-        buf = bytearray([ESC, 0x1A, ink["colour_code"], flag, 0x72])
+        buf = bytearray([ESC, 0x1A, ink["printer_code"], flag, 0x72])
         buf += _emit_plane_rows(planes[ink["name"]], width, height)
         return bytes(buf)
 

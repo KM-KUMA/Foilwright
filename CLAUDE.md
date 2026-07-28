@@ -4,7 +4,7 @@
 
 - ref/: Python 3.x — 参照実装(恒久維持)。.venv あり、ruff 導入済み
 - src/: C# — 本番実装
-- 現状(2026-07-28): ref/ の L1/L2 が golden 6 種とバイト一致。src/ は未着手
+- 現状(2026-07-28): ref/ の L1/L2 + 設定ファイル層が完成、golden 7 種とバイト一致。src/ は未着手
 - 検証コマンド: `.venv\Scripts\python.exe -m pytest ref/tests/ -v`
 - golden 再生成: `wsl -e bash tests/cases/make_golden.sh`(WSL Ubuntu 必須)
 

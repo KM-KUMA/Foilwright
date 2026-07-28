@@ -19,6 +19,7 @@ from foilwright_ref import config
 
 PROFILES_DIR = REPO_ROOT / "profiles"
 PALETTE_DIR = REPO_ROOT / "palette"
+PAPERS_DIR = REPO_ROOT / "papers"
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +60,165 @@ def test_load_profile_missing_model(tmp_path):
     bad.write_text("resolutions: []\n", encoding="utf-8")
     with pytest.raises(config.ConfigError):
         config.load_profile(str(bad))
+
+
+def test_load_profile_missing_resolutions(tmp_path):
+    bad = tmp_path / "bad_profile.yaml"
+    bad.write_text("model: MD-9999\npaper_table: 5000-series\n", encoding="utf-8")
+    with pytest.raises(config.ConfigError):
+        config.load_profile(str(bad))
+
+
+def test_load_profile_empty_resolutions(tmp_path):
+    bad = tmp_path / "bad_profile.yaml"
+    bad.write_text(
+        "model: MD-9999\npaper_table: 5000-series\nresolutions: []\n", encoding="utf-8"
+    )
+    with pytest.raises(config.ConfigError):
+        config.load_profile(str(bad))
+
+
+def test_load_profile_resolution_missing_dpi(tmp_path):
+    bad = tmp_path / "bad_profile.yaml"
+    bad.write_text(
+        "model: MD-9999\npaper_table: 5000-series\nresolutions:\n  - { dpi_x: 600 }\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(config.ConfigError):
+        config.load_profile(str(bad))
+
+
+def test_load_profile_missing_paper_table(tmp_path):
+    bad = tmp_path / "bad_profile.yaml"
+    bad.write_text(
+        "model: MD-9999\nresolutions:\n  - { dpi_x: 600, dpi_y: 600 }\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(config.ConfigError):
+        config.load_profile(str(bad))
+
+
+def test_load_profile_md5000_has_resolutions_and_paper_table():
+    profile = config.load_profile(str(PROFILES_DIR / "md-5000.yaml"))
+    assert profile["paper_table"] == "5000-series"
+    assert len(profile["resolutions"]) == 2
+    assert profile["resolutions"][0]["dpi_x"] == 600
+
+
+# ---------------------------------------------------------------------------
+# load_paper_table / resolve_paper_table
+# ---------------------------------------------------------------------------
+
+
+def test_load_paper_table_5000_series():
+    table = config.load_paper_table(str(PAPERS_DIR / "5000-series.yaml"))
+    assert set(table) == {
+        "custom",
+        "executive",
+        "letter",
+        "legal",
+        "a4",
+        "b5",
+        "postcard",
+        "dyesublabel",
+    }
+    a4 = table["a4"]
+    assert a4["code"] == 0x04
+    assert a4["width"] == 4800
+    assert a4["length"] == 6372
+    assert a4["left_margin"] == 80
+    assert a4["top_margin"] == 284
+
+    postcard = table["postcard"]
+    assert postcard["top_margin"] == 71
+
+
+def test_resolve_paper_table_md5000():
+    profile = config.load_profile(str(PROFILES_DIR / "md-5000.yaml"))
+    table = config.resolve_paper_table(profile, str(PAPERS_DIR))
+    assert table["a4"]["width"] == 4800
+
+
+def test_resolve_paper_table_missing_paper_table_field():
+    with pytest.raises(config.ConfigError):
+        config.resolve_paper_table({"model": "MD-9999"}, str(PAPERS_DIR))
+
+
+def test_resolve_paper_table_file_not_found():
+    with pytest.raises(config.ConfigError):
+        config.resolve_paper_table(
+            {"model": "MD-9999", "paper_table": "nonexistent-series"}, str(PAPERS_DIR)
+        )
+
+
+def _write_paper_table(tmp_path, papers_yaml: str) -> pathlib.Path:
+    path = tmp_path / "papers.yaml"
+    path.write_text(f"papers:\n{papers_yaml}", encoding="utf-8")
+    return path
+
+
+def test_load_paper_table_missing_required_field(tmp_path):
+    papers_yaml = """  - name: a4
+    code: 4
+    width: 4800
+    length: 6372
+    left_margin: 80
+    # top_margin omitted
+"""
+    path = _write_paper_table(tmp_path, papers_yaml)
+    with pytest.raises(config.ConfigError):
+        config.load_paper_table(str(path))
+
+
+def test_load_paper_table_negative_width(tmp_path):
+    papers_yaml = """  - name: a4
+    code: 4
+    width: -1
+    length: 6372
+    left_margin: 80
+    top_margin: 284
+"""
+    path = _write_paper_table(tmp_path, papers_yaml)
+    with pytest.raises(config.ConfigError):
+        config.load_paper_table(str(path))
+
+
+def test_load_paper_table_code_out_of_range(tmp_path):
+    papers_yaml = """  - name: a4
+    code: 256
+    width: 4800
+    length: 6372
+    left_margin: 80
+    top_margin: 284
+"""
+    path = _write_paper_table(tmp_path, papers_yaml)
+    with pytest.raises(config.ConfigError):
+        config.load_paper_table(str(path))
+
+
+def test_load_paper_table_duplicate_name(tmp_path):
+    papers_yaml = """  - name: a4
+    code: 4
+    width: 4800
+    length: 6372
+    left_margin: 80
+    top_margin: 284
+  - name: a4
+    code: 5
+    width: 100
+    length: 100
+    left_margin: 0
+    top_margin: 0
+"""
+    path = _write_paper_table(tmp_path, papers_yaml)
+    with pytest.raises(config.ConfigError):
+        config.load_paper_table(str(path))
+
+
+def test_load_paper_table_empty_list(tmp_path):
+    path = _write_paper_table(tmp_path, "")
+    with pytest.raises(config.ConfigError):
+        config.load_paper_table(str(path))
 
 
 # ---------------------------------------------------------------------------

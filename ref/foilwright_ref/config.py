@@ -1,10 +1,11 @@
-"""Config loading: machine profiles (profiles/*.yaml) and ink palettes
-(palette/*.yaml).
+"""Config loading: machine profiles (profiles/*.yaml), ink palettes
+(palette/*.yaml), and paper tables (papers/*.yaml).
 
-Schemas are defined in docs/DOMAIN.md §5.1 (machine profile) and §6.1/§6.2
-(palette). This module knows only the *shape* of those schemas; it never
-hardcodes which models or inks exist (DOMAIN.md §4.4 / §4.5) -- that
-information always comes from the YAML files passed in by the caller.
+Schemas are defined in docs/DOMAIN.md §5.1 (machine profile), §5.5 (paper
+table), and §6.1/§6.2 (palette). This module knows only the *shape* of
+those schemas; it never hardcodes which models, inks, or papers exist
+(DOMAIN.md §4.4 / §4.5) -- that information always comes from the YAML
+files passed in by the caller.
 
 Pass ordering (DOMAIN.md §4.3 / §4.9): `load_palette` returns inks sorted
 by ascending `order`, using a stable sort so that inks sharing the same
@@ -14,6 +15,7 @@ never used as a tie-break (explicitly forbidden by DOMAIN.md §4.3).
 
 from __future__ import annotations
 
+import os
 import re
 
 import yaml
@@ -21,6 +23,15 @@ import yaml
 _NAME_RE = re.compile(r"^[a-z_]+$")
 
 _PALETTE_REQUIRED_FIELDS = ("name", "label", "magic_rgb", "printer_code", "order")
+
+_PAPER_REQUIRED_FIELDS = (
+    "name",
+    "code",
+    "width",
+    "length",
+    "left_margin",
+    "top_margin",
+)
 
 
 class ConfigError(ValueError):
@@ -41,12 +52,30 @@ def load_profile(path: str) -> dict:
     structural validation of the profile file happens. `lf_correction`
     and `max_width_dots` are preserved as `None` when null in the YAML
     (DOMAIN.md §5.2): they are never filled with guessed values here.
+
+    Required fields: `model`, `resolutions` (a non-empty list of
+    `{dpi_x, dpi_y, ...}` entries), and `paper_table` (the name resolved
+    against a `papers/` directory by `resolve_paper_table`).
     """
     data = _load_yaml(path)
     if not isinstance(data, dict):
         raise ConfigError(f"{path}: profile must be a YAML mapping")
     if not data.get("model"):
         raise ConfigError(f"{path}: profile is missing required field 'model'")
+
+    resolutions = data.get("resolutions")
+    if not isinstance(resolutions, list) or not resolutions:
+        raise ConfigError(f"{path}: 'resolutions' must be a non-empty list")
+    for index, entry in enumerate(resolutions):
+        if not isinstance(entry, dict) or "dpi_x" not in entry or "dpi_y" not in entry:
+            raise ConfigError(
+                f"{path}: resolutions[{index}] must be a mapping with "
+                "'dpi_x' and 'dpi_y'"
+            )
+
+    if not data.get("paper_table"):
+        raise ConfigError(f"{path}: profile is missing required field 'paper_table'")
+
     return data
 
 
@@ -155,3 +184,89 @@ def load_palette(path: str) -> list[dict]:
         seen_names[name] = index
 
     return sorted(inks, key=lambda ink: ink["order"])
+
+
+def _validate_paper(raw: dict, index: int) -> dict:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"paper table entry #{index}: entry must be a mapping")
+
+    missing = [field for field in _PAPER_REQUIRED_FIELDS if field not in raw]
+    if missing:
+        raise ConfigError(
+            f"paper table entry #{index}: missing required field(s) {missing}"
+        )
+
+    name = raw["name"]
+    if not isinstance(name, str) or not name:
+        raise ConfigError(
+            f"paper table entry #{index}: 'name' must be a non-empty string"
+        )
+
+    def _require_int(field: str, value, low: int, high: int | None = None) -> None:
+        if isinstance(value, bool) or not isinstance(value, int) or value < low:
+            raise ConfigError(
+                f"paper '{name}': '{field}' must be an integer >= {low}, got {value!r}"
+            )
+        if high is not None and value > high:
+            raise ConfigError(
+                f"paper '{name}': '{field}' must be an integer in "
+                f"{low}..{high}, got {value!r}"
+            )
+
+    _require_int("code", raw["code"], 0, 255)
+    _require_int("width", raw["width"], 0)
+    _require_int("length", raw["length"], 0)
+    _require_int("left_margin", raw["left_margin"], 0)
+    _require_int("top_margin", raw["top_margin"], 0)
+
+    return {
+        "code": raw["code"],
+        "width": raw["width"],
+        "length": raw["length"],
+        "left_margin": raw["left_margin"],
+        "top_margin": raw["top_margin"],
+    }
+
+
+def load_paper_table(path: str) -> dict:
+    """Load a paper table (DOMAIN.md §5.5) and return it as a mapping from
+    paper name to its geometry: `{name: {code, width, length, left_margin,
+    top_margin}}`.
+    """
+    data = _load_yaml(path)
+    if not isinstance(data, dict) or "papers" not in data:
+        raise ConfigError(
+            f"{path}: paper table must be a YAML mapping with a 'papers' list"
+        )
+
+    raw_papers = data["papers"]
+    if not isinstance(raw_papers, list) or not raw_papers:
+        raise ConfigError(f"{path}: 'papers' must be a non-empty list")
+
+    table: dict[str, dict] = {}
+    for index, raw in enumerate(raw_papers):
+        paper = _validate_paper(raw, index)
+        name = raw["name"]
+        if name in table:
+            raise ConfigError(f"{path}: duplicate paper name '{name}'")
+        table[name] = paper
+
+    return table
+
+
+def resolve_paper_table(profile: dict, papers_dir: str) -> dict:
+    """Resolve a machine profile's `paper_table` reference (DOMAIN.md §5.1
+    / §5.5) against `papers_dir` and return the loaded table.
+
+    Raises ConfigError if the profile has no `paper_table` value, or if
+    `{papers_dir}/{value}.yaml` does not exist.
+    """
+    name = profile.get("paper_table")
+    if not name:
+        raise ConfigError("profile is missing required field 'paper_table'")
+
+    path = os.path.join(papers_dir, f"{name}.yaml")
+    if not os.path.isfile(path):
+        raise ConfigError(f"paper table '{name}' not found: {path} does not exist")
+
+    return load_paper_table(path)
