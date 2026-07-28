@@ -34,6 +34,11 @@ gen g8_c1_shift_md5000_600.bin -model MD-5000 -resolution 600 \
 # 余白より大きいシフトを与えて正の値に収め、減算ロジックだけを検証する
 gen g9_c1_autoshift_md5000_600.bin -model MD-5000 -resolution 600 \
     -autoshift -xshift 200 -yshift 400 tests/cases/c1_black_120x120.ppm
+# 白を含む多層。DOMAIN §11.5 の判定用 — 排出(単独 0x0C)が 1 回だけであることを
+# 数えるのが目的。白が他インクと同一ジョブに同居できることの実証も兼ねる
+gen g10_c5_white_multilayer_md5000_600.bin -model MD-5000 -resolution 600 \
+    -colours C=White,M=MetallicGold,Y=MetallicSilver,K=Black \
+    tests/cases/c5_metallic4_240x120.ppm
 # メタリック 4 色。order 同値のパスが 4 本生じる唯一のケース(DOMAIN §4.9 / §9.3)
 gen g7_c5_metallic4_md5000_600.bin -model MD-5000 -resolution 600 \
     -colours C=MetallicCyan,M=MetallicMagenta,Y=MetallicGold,K=MetallicSilver \

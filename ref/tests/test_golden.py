@@ -9,6 +9,7 @@ is wrong.
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 
 import pytest
@@ -155,6 +156,49 @@ def test_g6_square_on_white_md5000_600():
         _DEFAULT_PALETTE,
     )
     _assert_golden_match(actual, GOLDEN_DIR / "g6_c4_square_md5000_600.bin")
+
+
+_WHITE_MULTILAYER_PALETTE = {
+    "white": "C",
+    "metallic_gold": "M",
+    "metallic_silver": "Y",
+    "black": "K",
+}
+_WHITE_MULTILAYER_INKS = [
+    {"name": "white", "printer_code": 0x0B},
+    {"name": "metallic_gold", "printer_code": 0x04},
+    {"name": "metallic_silver", "printer_code": 0x07},
+    {"name": "black", "printer_code": 0x00},
+]
+
+
+def test_g10_white_multilayer_md5000_600():
+    """White alongside other inks in a single job (DOMAIN §11.5). The point
+    of this fixture is the eject count: one form feed at the very end, with
+    backfeeds between passes. See test_single_eject_across_all_golden."""
+    job = _job(600, "md-5000", _WHITE_MULTILAYER_INKS)
+    actual = _render(
+        CASES_DIR / "c5_metallic4_240x120.ppm",
+        job,
+        _WHITE_MULTILAYER_PALETTE,
+    )
+    _assert_golden_match(actual, GOLDEN_DIR / "g10_c5_white_multilayer_md5000_600.bin")
+
+
+def test_single_eject_across_all_golden():
+    """DOMAIN §4.10: the paper must be ejected once, after the final pass.
+    Ejecting between passes loses registration irrecoverably (§10.6), so this
+    guards every golden at once -- including g10, where white shares a job
+    with three other inks.
+
+    A bare 0x0C is a form feed (eject). The 0x0C inside `ESC SUB 0 0 FF` is a
+    backfeed, which rewinds the paper without releasing it.
+    """
+    backfeed = re.compile(rb"\x1b\x1a\x00\x00\x0c")
+    for path in sorted(GOLDEN_DIR.glob("*.bin")):
+        data = path.read_bytes()
+        ejects = data.count(0x0C) - len(backfeed.findall(data))
+        assert ejects == 1, f"{path.name}: expected 1 eject, found {ejects}"
 
 
 def test_g8_positive_shift_md5000_600():
