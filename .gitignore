@@ -49,3 +49,7 @@ desktop.ini
 
 # Phase 1 以降の実機テスト用の一時生成物
 tools/*.log
+
+# --- 他者の著作物(ローカル保持のみ。DOMAIN §12.6 / §13.1) ---
+*.pdf
+docs/Md5000.pdf
