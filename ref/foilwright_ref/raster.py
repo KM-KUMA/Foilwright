@@ -832,3 +832,74 @@ def to_planes_auto(
     result = {name: bytes(buf) for name, buf in spot_planes.items()}
     result.update({name: bytes(buf) for name, buf in cmyk_planes.items()})
     return result
+
+
+def to_planes_per_page(
+    images: list[tuple[int, int, bytes]],
+    page_inks: list[str],
+) -> dict[str, bytes]:
+    """Convert a multi-page document to per-ink 1bit planes using the
+    ``per_page`` ink specification method (DOMAIN.md §6.4.1 / §6.6).
+
+    One page carries one ink, so no colour matching happens here -- the
+    assignment is given, not guessed. That is exactly why this method is
+    preferred when the artwork is already separated into layers: there is
+    nothing to mis-detect.
+
+    images: one (width, height, pixels) tuple per page, as returned by
+        read_ppm. All pages must share the same dimensions; they are
+        printed onto the same sheet and must register with each other.
+    page_inks: ink name for each page, positionally. Length must match
+        ``images``.
+
+    Each page is binarised on its black (K) component, using the same
+    formula as to_planes: the dark parts of the page get printed in that
+    page's ink. This matches how the artwork is prepared in practice --
+    a figure meant to print in white is drawn as solid black (§10.9.3).
+
+    Returns a dict ink name -> bytes in the same packed format as the
+    other entry points. Pass order is decided later from the palette's
+    ``order`` (§4.3), not from page order.
+    """
+    if not images:
+        raise ValueError("per_page needs at least one page")
+    if len(images) != len(page_inks):
+        raise ValueError(
+            f"page/ink count mismatch: {len(images)} pages, {len(page_inks)} inks"
+        )
+
+    duplicates = {n for n in page_inks if page_inks.count(n) > 1}
+    if duplicates:
+        raise ValueError(
+            f"an ink may only be assigned to one page; repeated: {sorted(duplicates)}"
+        )
+
+    width, height, _ = images[0]
+    for index, (w, h, _) in enumerate(images):
+        if (w, h) != (width, height):
+            raise ValueError(
+                f"page {index} is {w}x{h}, expected {width}x{height}; "
+                "pages print onto one sheet and must register with each other"
+            )
+
+    row_bytes = (width + 7) // 8
+    planes: dict[str, bytes] = {}
+
+    for (w, h, pixels), name in zip(images, page_inks):
+        buf = bytearray(row_bytes * h)
+        for y in range(h):
+            row_base = y * w * 3
+            plane_row_base = y * row_bytes
+            for x in range(w):
+                idx = row_base + x * 3
+                # K component of the ppmtomd separation: the amount of ink
+                # common to all three channels. Same formula as to_planes.
+                c = 255 - pixels[idx]
+                m = 255 - pixels[idx + 1]
+                yv = 255 - pixels[idx + 2]
+                k = min(c, m, yv)
+                if k >= 128:
+                    buf[plane_row_base + (x >> 3)] |= 0x80 >> (x & 7)
+        planes[name] = bytes(buf)
+
+    return planes
