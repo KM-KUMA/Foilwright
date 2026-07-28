@@ -283,6 +283,7 @@ def test_load_palette_all_same_order_preserves_file_order(tmp_path):
     label: "Ink {name}"
     magic_rgb: [{i}, {i}, {i}]
     printer_code: {i}
+    tolerance: 8
     order: 50
 """
         for i, name in enumerate(names)
@@ -302,6 +303,7 @@ def test_load_palette_missing_required_field(tmp_path):
     label: White
     magic_rgb: [230, 230, 230]
     printer_code: 11
+    tolerance: 8
     # order omitted
 """
     path = _write_palette(tmp_path, inks_yaml)
@@ -314,6 +316,7 @@ def test_load_palette_bad_magic_rgb_length(tmp_path):
     label: White
     magic_rgb: [230, 230]
     printer_code: 11
+    tolerance: 8
     order: 10
 """
     path = _write_palette(tmp_path, inks_yaml)
@@ -326,6 +329,35 @@ def test_load_palette_bad_magic_rgb_range(tmp_path):
     label: White
     magic_rgb: [230, 230, 300]
     printer_code: 11
+    tolerance: 8
+    order: 10
+"""
+    path = _write_palette(tmp_path, inks_yaml)
+    with pytest.raises(config.ConfigError):
+        config.load_palette(str(path))
+
+
+def test_load_palette_missing_tolerance_is_rejected(tmp_path):
+    """tolerance is required (DOMAIN §6.2). Without this check a palette
+    missing it loads fine and then raises KeyError inside magic-colour
+    matching, far from the actual cause."""
+    inks_yaml = """  - name: black
+    label: Black
+    magic_rgb: [0, 0, 0]
+    printer_code: 0
+    order: 10
+"""
+    path = _write_palette(tmp_path, inks_yaml)
+    with pytest.raises(config.ConfigError):
+        config.load_palette(str(path))
+
+
+def test_load_palette_tolerance_out_of_range(tmp_path):
+    inks_yaml = """  - name: black
+    label: Black
+    magic_rgb: [0, 0, 0]
+    printer_code: 0
+    tolerance: 256
     order: 10
 """
     path = _write_palette(tmp_path, inks_yaml)
@@ -340,6 +372,7 @@ def test_load_palette_quoted_order_is_rejected(tmp_path):
     label: White
     magic_rgb: [230, 230, 230]
     printer_code: 11
+    tolerance: 8
     order: "10"
 """
     path = _write_palette(tmp_path, inks_yaml)
@@ -352,6 +385,7 @@ def test_load_palette_printer_code_out_of_range(tmp_path):
     label: White
     magic_rgb: [230, 230, 230]
     printer_code: 256
+    tolerance: 8
     order: 10
 """
     path = _write_palette(tmp_path, inks_yaml)
@@ -365,6 +399,7 @@ def test_load_palette_zero_passes_is_rejected(tmp_path):
     label: White
     magic_rgb: [230, 230, 230]
     printer_code: 11
+    tolerance: 8
     order: 10
     passes: 0
 """
@@ -378,6 +413,7 @@ def test_load_palette_bad_name_uppercase(tmp_path):
     label: White
     magic_rgb: [230, 230, 230]
     printer_code: 11
+    tolerance: 8
     order: 10
 """
     path = _write_palette(tmp_path, inks_yaml)
@@ -390,6 +426,7 @@ def test_load_palette_bad_name_non_ascii(tmp_path):
     label: White
     magic_rgb: [230, 230, 230]
     printer_code: 11
+    tolerance: 8
     order: 10
 """
     path = _write_palette(tmp_path, inks_yaml)
@@ -402,11 +439,13 @@ def test_load_palette_duplicate_name(tmp_path):
     label: White
     magic_rgb: [230, 230, 230]
     printer_code: 11
+    tolerance: 8
     order: 10
   - name: white
     label: White Again
     magic_rgb: [231, 231, 231]
     printer_code: 12
+    tolerance: 8
     order: 20
 """
     path = _write_palette(tmp_path, inks_yaml)

@@ -127,3 +127,97 @@ def to_planes(
                     planes[name][byte_index] |= bit_mask
 
     return {name: bytes(buf) for name, buf in planes.items()}
+
+
+def to_planes_magic(
+    image: tuple[int, int, bytes], inks: list[dict]
+) -> dict[str, bytes]:
+    """Convert an image to per-ink 1bit planes using magic-colour matching
+    (DOMAIN.md §6, D-015).
+
+    image: (width, height, pixels) as returned by read_ppm.
+    inks: a list of ink mappings as returned by config.load_palette,
+        already sorted into pass execution order. Each ink must have
+        `magic_rgb` (3 ints 0..255), `tolerance` (int >= 0), `order`
+        (int), and `auto_undercoat` (bool).
+
+    Matching rule (DOMAIN.md §6.3.2 / D-015):
+      - A pixel matches an ink iff |r-mr| <= tolerance and |g-mg| <= tolerance
+        and |b-mb| <= tolerance, using integer arithmetic only.
+      - If a pixel matches more than one ink, the one with the smallest
+        distance (max of the three per-channel deviations) wins; ties are
+        broken by ascending `order`, then by position in `inks`.
+      - A pixel matching no ink is not set in any plane.
+      - Each pixel belongs to at most one (non-undercoat) ink.
+
+    `auto_undercoat` inks (DOMAIN.md §6.2) instead receive the union of
+    every pixel assigned to any other ink, plus any pixel that matched
+    their own `magic_rgb` directly. At most one ink may set
+    `auto_undercoat`; a second one raises ValueError.
+
+    Returns a dict ink name -> bytes, in the same packed format as
+    to_planes: each row MSB-first, padded to a byte boundary (row length
+    = ceil(width/8) bytes), rows concatenated in image order.
+    """
+    width, height, pixels = image
+    row_bytes = (width + 7) // 8
+
+    undercoat_names = [ink["name"] for ink in inks if ink.get("auto_undercoat")]
+    if len(undercoat_names) > 1:
+        raise ValueError(
+            "auto_undercoat is set on more than one ink: "
+            f"{undercoat_names}; this is undefined (DOMAIN.md §6.2)"
+        )
+    undercoat_name = undercoat_names[0] if undercoat_names else None
+
+    planes = {ink["name"]: bytearray(row_bytes * height) for ink in inks}
+
+    for y in range(height):
+        row_base = y * width * 3
+        plane_row_base = y * row_bytes
+        for x in range(width):
+            idx = row_base + x * 3
+            r = pixels[idx]
+            g = pixels[idx + 1]
+            b = pixels[idx + 2]
+
+            best_ink = None
+            best_distance = None
+            for ink in inks:
+                mr, mg, mb = ink["magic_rgb"]
+                tolerance = ink["tolerance"]
+                dr = r - mr if r > mr else mr - r
+                dg = g - mg if g > mg else mg - g
+                db = b - mb if b > mb else mb - b
+                if dr > tolerance or dg > tolerance or db > tolerance:
+                    continue
+                distance = dr
+                distance = max(distance, dg)
+                distance = max(distance, db)
+                if best_distance is None or distance < best_distance:
+                    best_distance = distance
+                    best_ink = ink
+                elif distance == best_distance and best_ink is not None:
+                    if ink["order"] < best_ink["order"]:
+                        best_ink = ink
+                    # equal order: earlier position in `inks` already won,
+                    # since we only replace on strictly smaller order.
+
+            if best_ink is not None:
+                byte_index = plane_row_base + (x >> 3)
+                bit_mask = 0x80 >> (x & 7)
+                planes[best_ink["name"]][byte_index] |= bit_mask
+
+    if undercoat_name is not None:
+        union = bytearray(row_bytes * height)
+        for name, buf in planes.items():
+            if name == undercoat_name:
+                continue
+            for i, byte in enumerate(buf):
+                union[i] |= byte
+        undercoat_buf = planes[undercoat_name]
+        for i, byte in enumerate(undercoat_buf):
+            union[i] |= byte
+        planes[undercoat_name] = union
+
+    return {name: bytes(buf) for name, buf in planes.items()}

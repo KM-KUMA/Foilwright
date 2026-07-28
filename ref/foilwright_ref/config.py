@@ -22,7 +22,14 @@ import yaml
 
 _NAME_RE = re.compile(r"^[a-z_]+$")
 
-_PALETTE_REQUIRED_FIELDS = ("name", "label", "magic_rgb", "printer_code", "order")
+_PALETTE_REQUIRED_FIELDS = (
+    "name",
+    "label",
+    "magic_rgb",
+    "printer_code",
+    "tolerance",
+    "order",
+)
 
 _PAPER_REQUIRED_FIELDS = (
     "name",
@@ -139,6 +146,8 @@ def _validate_ink(raw: dict, index: int) -> dict:
 
     _require_int("order", raw["order"], 0)
     _require_int("printer_code", raw["printer_code"], 0, 255)
+    # 255 を超える tolerance は全画素にマッチしうるので上限を切る
+    _require_int("tolerance", raw["tolerance"], 0, 255)
 
     ink = dict(raw)
     ink["magic_rgb"] = list(magic_rgb)
