@@ -26,6 +26,14 @@ gen g3_c3_white_md5000_600.bin    -model MD-5000 -resolution 600 -colours K=Whit
 gen g4_c1_black_md5000_1200.bin   -model MD-5000 -resolution 1200 tests/cases/c1_black_120x120.ppm
 gen g5_c1_black_md5500_600.bin    -model MD-5500 -resolution 600  tests/cases/c1_black_120x120.ppm
 gen g6_c4_square_md5000_600.bin   -model MD-5000 -resolution 600  tests/cases/c4_square_on_white_120x120.ppm
+# 位置合わせ。正のシフトだけがコマンドになる(ESC & a {x} L / ESC & l {y} E)
+gen g8_c1_shift_md5000_600.bin -model MD-5000 -resolution 600 \
+    -xshift 100 -yshift 200 tests/cases/c1_black_120x120.ppm
+# -autoshift は用紙余白(A4: left=80 top=284)を引く。引いた結果が負になると
+# ppmtomd は画像側を削る経路に入り、120 行の画像では足りず EOF エラーになる。
+# 余白より大きいシフトを与えて正の値に収め、減算ロジックだけを検証する
+gen g9_c1_autoshift_md5000_600.bin -model MD-5000 -resolution 600 \
+    -autoshift -xshift 200 -yshift 400 tests/cases/c1_black_120x120.ppm
 # メタリック 4 色。order 同値のパスが 4 本生じる唯一のケース(DOMAIN §4.9 / §9.3)
 gen g7_c5_metallic4_md5000_600.bin -model MD-5000 -resolution 600 \
     -colours C=MetallicCyan,M=MetallicMagenta,Y=MetallicGold,K=MetallicSilver \

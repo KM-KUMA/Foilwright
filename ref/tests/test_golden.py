@@ -157,6 +157,39 @@ def test_g6_square_on_white_md5000_600():
     _assert_golden_match(actual, GOLDEN_DIR / "g6_c4_square_md5000_600.bin")
 
 
+def test_g8_positive_shift_md5000_600():
+    """Explicit -xshift 100 -yshift 200. Positive shifts are the only ones
+    ppmtomd expresses as commands (ESC & a {x} L / ESC & l {y} E)."""
+    job = dict(_job(600, "md-5000", _DEFAULT_INKS), x_shift=100, y_shift=200)
+    actual = _render(CASES_DIR / "c1_black_120x120.ppm", job, _DEFAULT_PALETTE)
+    _assert_golden_match(actual, GOLDEN_DIR / "g8_c1_shift_md5000_600.bin")
+
+
+def test_g9_autoshift_md5000_600():
+    """ppmtomd's -autoshift subtracts the paper's unprintable margins from
+    the requested shift. Here -xshift 200 -yshift 400 against A4's left=80
+    top=284 leaves 120 and 116. The subtraction happens in the caller (the
+    paper table owns the margins), so this also checks that papers/*.yaml
+    carries the values the golden was generated with."""
+    paper = _job(600, "md-5000", _DEFAULT_INKS)["paper"]
+    job = dict(
+        _job(600, "md-5000", _DEFAULT_INKS),
+        x_shift=200 - paper["left_margin"],
+        y_shift=400 - paper["top_margin"],
+    )
+    actual = _render(CASES_DIR / "c1_black_120x120.ppm", job, _DEFAULT_PALETTE)
+    _assert_golden_match(actual, GOLDEN_DIR / "g9_c1_autoshift_md5000_600.bin")
+
+
+def test_negative_shift_is_rejected():
+    """A negative shift trims the raster in ppmtomd rather than emitting a
+    command. That path is not implemented, so it must fail loudly instead of
+    printing in the wrong place."""
+    job = dict(_job(600, "md-5000", _DEFAULT_INKS), x_shift=-10)
+    with pytest.raises(NotImplementedError):
+        _render(CASES_DIR / "c1_black_120x120.ppm", job, _DEFAULT_PALETTE)
+
+
 def test_g7_metallic4_md5000_600():
     """Four metallic inks, all at the same `order` value. Pass order here is
     fixed by the ink list's own sequence (DOMAIN §4.3 tie-break = palette file

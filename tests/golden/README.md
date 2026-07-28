@@ -21,6 +21,8 @@ ppmtomd 1.6 が生成した既知正解のバイト列(DOMAIN §9)。ref/ と sr
 | g5_c1_black_md5500_600.bin | c1_black_120x120.ppm | `-model MD-5500 -resolution 600` | 同上 |
 | g6_c4_square_md5000_600.bin | c4_square_on_white_120x120.ppm | `-model MD-5000 -resolution 600` | 同上 |
 | g7_c5_metallic4_md5000_600.bin | c5_metallic4_240x120.ppm | `-model MD-5000 -resolution 600 -colours C=MetallicCyan,M=MetallicMagenta,Y=MetallicGold,K=MetallicSilver` | 同上 |
+| g8_c1_shift_md5000_600.bin | c1_black_120x120.ppm | `-model MD-5000 -resolution 600 -xshift 100 -yshift 200` | 同上 |
+| g9_c1_autoshift_md5000_600.bin | c1_black_120x120.ppm | `-model MD-5000 -resolution 600 -autoshift -xshift 200 -yshift 400` | 同上 |
 
 ## 検証済みの事実(2026-07-28)
 
@@ -29,6 +31,8 @@ ppmtomd 1.6 が生成した既知正解のバイト列(DOMAIN §9)。ref/ と sr
 - 全 golden の先頭は `1b 25 80 41`(ESC % 0x80 A = RGL モード選択)
 - **パスの実行順は CMYK コンポーネント順で固定**(C → M → Y → K)。ppmtomd が順序を入れ替えるのは DyeSub のときだけで(ppmtomd.c:1456-1464)、本プロジェクトの対象外(DOMAIN §1.3)
 - **色選択コマンドのコードバイト**(`1b 1a {code} {flag} 72` の code)は mddata.c の colour enum 順。golden から読み取った実測値: Black=0x00 / Cyan=0x01 / Magenta=0x02 / Yellow=0x03 / MetallicGold=0x04 / MetallicMagenta=0x05 / MetallicCyan=0x06 / MetallicSilver=0x07 / White=0x0B。{flag} は最終プレーンのみ 0x80
+- **位置合わせのシフトは正の値のときだけコマンドになる**(`ESC & a {x} L` / `ESC & l {y} E`、ppmtomd.c:2546-2555)。負のシフトはコマンドを出さず、画像データ側を削る別経路に入る(ppmtomd.c:2659)。`ref/` は負のシフトを未実装とし、渡されたら `NotImplementedError` で止める(黙って誤った位置に刷らないため)
+- **シフト量の単位は 1/600 インチで、解像度設定に依存しない**(ppmtomd.man)。内部では出力解像度に換算され、300dpi は半分、1200dpi は x 方向のみ 2 倍(ppmtomd.c:1920-1921)
 - 全 golden を再生成しても既存ファイルは 1 バイトも変化しない(2026-07-28 実施)
 
 ## 注意

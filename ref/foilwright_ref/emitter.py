@@ -134,6 +134,7 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
             command emitted, matching ppmtomd's default -colours
             behaviour of always driving C/M/Y/K).
         "width": int, "height": int,  # image pixel dimensions
+        "x_shift": int, "y_shift": int,  # optional, default 0; dots
     }
     """
     resolution = job["resolution"]
@@ -164,6 +165,28 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
     out += bytes([ESC, 0x26, 0x6C, paper["code"], 0, 0x41])
     out += bytes([ESC, 0x26, 0x6C, page_length % 256, page_length // 256, 0x50])
     out += bytes([ESC, 0x26, 0x61, page_width % 256, page_width // 256, 0x4D])
+
+    # x/y offsets, in dots at the output resolution. ppmtomd emits a
+    # command only when the shift is positive (ppmtomd.c:2546-2555).
+    # A negative shift means "start the raster partway in", which ppmtomd
+    # implements by trimming the image data rather than by any command
+    # (ppmtomd.c:2659) -- not implemented here, so reject it loudly rather
+    # than silently printing in the wrong place.
+    #
+    # Subtracting the paper's unprintable margins (ppmtomd's -autoshift) is
+    # the caller's job: this layer receives the final shift, so that the
+    # margin values stay with the paper table where they belong.
+    x_shift = job.get("x_shift", 0)
+    y_shift = job.get("y_shift", 0)
+    if x_shift < 0 or y_shift < 0:
+        raise NotImplementedError(
+            f"negative shift (x={x_shift}, y={y_shift}) trims the raster "
+            "instead of emitting a command; not implemented"
+        )
+    if x_shift > 0:
+        out += bytes([ESC, 0x26, 0x61, x_shift % 256, x_shift // 256, 0x4C])
+    if y_shift > 0:
+        out += bytes([ESC, 0x26, 0x6C, y_shift % 256, y_shift // 256, 0x45])
 
     # changemode block (ppmtomd.c:2189-2245), fixed for our supported
     # scope: curl correction off, transfer mode colourPlane (0x04),
