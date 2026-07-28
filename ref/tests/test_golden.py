@@ -9,7 +9,6 @@ is wrong.
 from __future__ import annotations
 
 import pathlib
-import re
 import sys
 
 import pytest
@@ -185,19 +184,67 @@ def test_g10_white_multilayer_md5000_600():
     _assert_golden_match(actual, GOLDEN_DIR / "g10_c5_white_multilayer_md5000_600.bin")
 
 
+def _count_ejects(data: bytes) -> int:
+    """Parse the command stream and count bare form feeds (ejects).
+
+    Counting raw 0x0C bytes does not work: raster data can contain 0x0C as
+    an ordinary pixel byte. Dithered fixtures make this obvious -- a naive
+    count reports 129 ejects for g13 where there is exactly one. The only
+    reliable way is to walk the stream command by command and skip over the
+    data payloads.
+
+    Raises ValueError on any byte that is not part of a known command, so
+    this doubles as a check that our understanding of the command set is
+    complete.
+    """
+    i = 0
+    ejects = 0
+    while i < len(data):
+        byte = data[i]
+        if byte == 0x0C:  # bare form feed = eject
+            ejects += 1
+            i += 1
+            continue
+        if byte != 0x1B:  # ESC. Written out rather than imported from the
+            # emitter, so the check stays independent of the implementation
+            # it is guarding.
+            raise ValueError(f"unexpected byte {byte:#04x} at offset {i}")
+        kind = data[i + 1]
+        if kind == 0x25:  # ESC % {n} A|X -- enter/leave RGL mode
+            i += 4
+        elif kind == 0x65:  # ESC e -- printer reset
+            i += 2
+        elif kind == 0x1A:  # ESC SUB {a} {b} {cmd} -- colour select, backfeed…
+            i += 5
+        elif kind == 0x26:  # ESC & {x} {lo} {hi} {cmd} -- page geometry
+            i += 6
+        elif kind == 0x2A:
+            sub = data[i + 2]
+            if sub == 0x74:  # ESC * t {res} R + stray NUL (ppmtomd quirk)
+                i += 6
+            elif sub == 0x72:  # ESC * r … -- raster start/end/transfer mode
+                i += 4 if data[i + 3] == 0x43 else 5
+            elif sub == 0x62:  # ESC * b {lo} {hi} {cmd} [+ payload]
+                length = data[i + 3] + data[i + 4] * 256
+                cmd = data[i + 5]
+                # V and W carry a payload; M (compression) and Y (row skip)
+                # use the length field as a value, not a byte count.
+                i += 6 + (length if cmd in (0x56, 0x57) else 0)
+            else:
+                raise ValueError(f"unknown ESC * {sub:#04x} at offset {i}")
+        else:
+            raise ValueError(f"unknown ESC {kind:#04x} at offset {i}")
+    return ejects
+
+
 def test_single_eject_across_all_golden():
     """DOMAIN §4.10: the paper must be ejected once, after the final pass.
     Ejecting between passes loses registration irrecoverably (§10.6), so this
-    guards every golden at once -- including g10, where white shares a job
-    with three other inks.
-
-    A bare 0x0C is a form feed (eject). The 0x0C inside `ESC SUB 0 0 FF` is a
-    backfeed, which rewinds the paper without releasing it.
-    """
-    backfeed = re.compile(rb"\x1b\x1a\x00\x00\x0c")
+    guards every golden at once -- including g10/g11, where white shares a
+    job with other inks, and the dithered fixtures whose raster data happens
+    to contain 0x0C bytes."""
     for path in sorted(GOLDEN_DIR.glob("*.bin")):
-        data = path.read_bytes()
-        ejects = data.count(0x0C) - len(backfeed.findall(data))
+        ejects = _count_ejects(path.read_bytes())
         assert ejects == 1, f"{path.name}: expected 1 eject, found {ejects}"
 
 
