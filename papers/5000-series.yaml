@@ -1,0 +1,77 @@
+# Foilwright — 用紙寸法表: 5000 系(MD-5000 / MD-5500 / DP-5000 共通)
+# Copyright (C) 2026 JunkQuality (github.com/KM-KUMA/Foilwright)
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# 出典: ppmtomd 1.6 の papersize_info_5000[](ppmtomd.c:70-81)。実機未確認の
+# 参考値である(DOMAIN §5.5)。
+#
+# すべて 600dpi 基準のドット。解像度が変わると換算する:
+#   300dpi  → 半分   1200dpi → width のみ 2 倍(ppmtomd.c:1903, 1911-1912)
+#
+# code は色選択と同じく ppmtomd の enum 順で、配列インデックスがそのまま
+# プリンタへ送る用紙サイズコードになる。A4 = 0x04 は golden g1 のバイト列
+# (1b 26 6c 04 00 41)で確認済み。
+#
+# left_margin / top_margin は印刷できない領域。現在の emitter はまだ使って
+# いないが、実際の印刷位置合わせで必要になる。
+
+paper_table: 5000-series
+
+papers:
+  - name: custom
+    code: 0x00
+    width: 0          # 可変。呼び出し側が指定する
+    length: 0
+    left_margin: 80
+    top_margin: 284
+
+  - name: executive
+    code: 0x01
+    width: 4190
+    length: 5660
+    left_margin: 80
+    top_margin: 284
+
+  # letter / legal の幅は pre5000 系(4800)と異なる。系列を分けている理由
+  - name: letter
+    code: 0x02
+    width: 4940
+    length: 5960
+    left_margin: 80
+    top_margin: 284
+
+  - name: legal
+    code: 0x03
+    width: 4940
+    length: 7760
+    left_margin: 80
+    top_margin: 284
+
+  - name: a4
+    code: 0x04
+    width: 4800
+    length: 6372
+    left_margin: 80
+    top_margin: 284
+
+  - name: b5
+    code: 0x05
+    width: 4138
+    length: 5430
+    left_margin: 80
+    top_margin: 284
+
+  # postcard / dyesublabel は top_margin も pre5000 系(284)と異なる
+  - name: postcard
+    code: 0x06
+    width: 2202
+    length: 3082
+    left_margin: 80
+    top_margin: 71
+
+  - name: dyesublabel
+    code: 0x07
+    width: 2202
+    length: 3353
+    left_margin: 80
+    top_margin: 71

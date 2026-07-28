@@ -273,6 +273,7 @@ L0 のインターフェースは、将来 **read が生えうる前提**で設�
 
 ```yaml
 model: MD-5500
+paper_table: 5000-series   # papers/{値}.yaml を読む。§5.5 参照
 resolutions:
   - { dpi_x: 600,  dpi_y: 600,  default: true }
   - { dpi_x: 1200, dpi_y: 600 }
@@ -311,6 +312,12 @@ ppmtomd 1.6 のソースに定義された 5000 系(MD-5000 / MD-5500 / DP-5000 
 |---|---|
 | A4 | 4800 |
 | Letter / Legal | 4940 |
+
+**全 8 種類の用紙(custom / executive / letter / legal / a4 / b5 / postcard / dyesublabel)の寸法・余白・用紙サイズコードは `papers/5000-series.yaml` に記録した。** 本節はその要点のみを示す。
+
+**用紙表を機種プロファイルから分離する理由。** ppmtomd は用紙寸法テーブルを**機種系列ごとに 2 つ**持つ(5000 系と pre5000 系)。MD-5000 と MD-5500 は同一の表を共有するため、機種プロファイルに直接書くと同じ内容が 2 ファイルに重複し、片方だけ更新する事故が起きうる。`profiles/*.yaml` の `paper_table` が `papers/{値}.yaml` を参照する形にしている(D-014)。
+
+**系列間の差の実例:** letter / legal の幅は 5000 系が 4940、pre5000 系が 4800。postcard / dyesublabel は上余白も異なる(71 対 284)。
 
 実装上の上限マクロは `PCL_MAXWIDTH=6000` だが、コメントに「実際の最大は 4800。超過分はプリンタが捨てる」とある(ppmtomd.c:1083-1086)。
 
@@ -516,6 +523,7 @@ foilwright/
     cases/            入力画像とパレット定義の組
   palette/            パレット定義のサンプル
   profiles/           機種プロファイル
+  papers/             用紙寸法表(機種系列ごと。§5.5)
   ppd/                自作 PPD
   docs/
     research/         調査ノート(ppmtomd 解読、マニュアル読解)
@@ -1065,3 +1073,4 @@ Color Balance / Photo Enhancement / **Darker Black** / Image / **Color Match(Non
 | 0.2.3-draft | 2026-07-27 | §5.6(コマンド体系の系譜)を追加。ベースが HP PCL 系であることを ppmtomd のコマンド形式とマクロ名から確定し、Epson ESC/P 説を否定。§0.1 に判定実例 2(Linux 有志ドライバに関する外部情報)を記録 |
 | 0.2.4-draft | 2026-07-27 | `order` 同値時の tie-break を「パレット定義ファイル内の記述順」と定義(§4.3)。§4.9(安定ソートの使用義務、C# の `List<T>.Sort()` 禁止)を追加。§9.3 の golden 採取対象にメタリック複数色を追加。§9.5(実機検証の到達範囲)を追加 |
 | 0.2.5-draft | 2026-07-28 | §6.5 の `printer_code` を確定(golden から読み取った実測値。§6.1 スキーマと §6.2 の表に追加)。`barcode` は転送モードの都合で保留に変更 |
+| 0.2.6-draft | 2026-07-28 | 用紙寸法表を `papers/{系列}.yaml` に分離し、機種プロファイルから `paper_table` で参照する形に(D-014)。§5.1 スキーマ・§5.5・§8 を更新 |

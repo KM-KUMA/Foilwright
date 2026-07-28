@@ -7,6 +7,10 @@
 
 model: MD-5000
 
+# 用紙寸法表への参照。papers/{paper_table}.yaml を読む(DOMAIN §5.1)。
+# MD-5500 / DP-5000 と共通の表であり、二重管理を避けるため分離してある
+paper_table: 5000-series
+
 resolutions:
   - { dpi_x: 600,  dpi_y: 600,  default: true }
   - { dpi_x: 1200, dpi_y: 600 }
