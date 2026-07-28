@@ -646,3 +646,189 @@ def to_planes_magic(
         planes[undercoat_name] = union
 
     return {name: bytes(buf) for name, buf in planes.items()}
+
+
+def to_planes_auto(
+    image: tuple[int, int, bytes],
+    inks: list[dict],
+    cmyk_map: dict[str, str],
+    halftone: str = "none",
+) -> dict[str, bytes]:
+    """Convert an image to per-ink 1bit planes using the ``auto`` ink
+    specification method (DOMAIN.md §6.6): spot colours and CMYK
+    separation coexist on the same page, decided per pixel.
+
+    image: (width, height, pixels) as returned by read_ppm.
+    inks: a list of ink mappings as returned by config.load_palette,
+        already sorted into pass execution order (same shape as
+        to_planes_magic's ``inks`` argument).
+    cmyk_map: maps a CMYK channel ("C"/"M"/"Y"/"K") to the ink name that
+        receives that channel's plane. Note this is the inverse
+        direction of to_planes's ``palette`` argument (channel -> name,
+        not name -> channel), matching how callers already have a fixed
+        set of process-colour ink names to fill in.
+    halftone: forwarded to the CMYK-separation half of the algorithm;
+        see to_planes for the meaning of "none"/"halftone"/
+        "coarse_halftone".
+
+    Per-pixel rule (DOMAIN.md §6.6):
+      1. Try to match the pixel against a spot ink using the same rule
+         as to_planes_magic (DOMAIN.md §6.3.2 / D-015): integer-only,
+         per-channel tolerance, closest match wins ties broken by
+         ascending `order` then by position in `inks`.
+      2. If it matches a spot ink, it belongs to that ink's plane only
+         (DOMAIN.md §4.3: one pass = one cartridge -- it is never also
+         fed into CMYK separation).
+      3. Otherwise it is fed into the CMYK separation formula (identical
+         to to_planes's colcorPlain + ditherNone/Halftone/CoarseHalftone
+         logic) and set in the plane named by `cmyk_map` for its
+         dominant channel(s).
+      4. `auto_undercoat` (at most one ink, same restriction as
+         to_planes_magic) is computed last, as the union of every other
+         plane -- both spot and CMYK -- plus any pixel that matched the
+         undercoat ink's own `magic_rgb` directly.
+
+    Returns a dict ink name -> bytes (spot ink names from `inks` plus
+    process ink names from `cmyk_map`), in the same packed format as
+    to_planes / to_planes_magic: each row MSB-first, padded to a byte
+    boundary (row length = ceil(width/8) bytes), rows concatenated in
+    image order.
+    """
+    if halftone not in _VALID_HALFTONES:
+        raise ValueError(
+            f"unknown halftone mode {halftone!r}; expected one of "
+            f"{sorted(_VALID_HALFTONES)}"
+        )
+
+    width, height, pixels = image
+    row_bytes = (width + 7) // 8
+
+    undercoat_names = [ink["name"] for ink in inks if ink.get("auto_undercoat")]
+    if len(undercoat_names) > 1:
+        raise ValueError(
+            "auto_undercoat is set on more than one ink: "
+            f"{undercoat_names}; this is undefined (DOMAIN.md §6.2)"
+        )
+    undercoat_name = undercoat_names[0] if undercoat_names else None
+
+    spot_planes = {ink["name"]: bytearray(row_bytes * height) for ink in inks}
+    cmyk_planes = {name: bytearray(row_bytes * height) for name in cmyk_map.values()}
+
+    mode = _HALFTONE_MODES.get(halftone)
+    # cmyk_map keys are already the CMYK channels ("C"/"M"/"Y"/"K"), unlike
+    # to_planes's `palette` where the channels are the *values* -- so here
+    # channels_needed is simply the key set.
+    channels_needed = set(cmyk_map.keys()) if mode is not None else ()
+
+    for y in range(height):
+        row_base = y * width * 3
+        plane_row_base = y * row_bytes
+
+        # channel -> (positions for this row, dither matrix, cellsize)
+        # -- identical precomputation to to_planes's per-row halftone
+        # setup, duplicated here rather than shared so this function has
+        # no dependency on to_planes's internal state beyond the shared
+        # module-level tables/helpers above.
+        row_halftone: dict[str, tuple[list[tuple[int, int]], tuple[int, ...], int]] = {}
+        if mode is not None:
+            for channel in channels_needed:
+                cellsize, matrix = mode[channel]
+                sx, sy, sz, syneg = mode["screens"][channel]
+                row_halftone[channel] = (
+                    _ht_row_positions(sx, sy, sz, syneg, y, cellsize, width),
+                    matrix,
+                    cellsize,
+                )
+
+        for x in range(width):
+            idx = row_base + x * 3
+            r = pixels[idx]
+            g = pixels[idx + 1]
+            b = pixels[idx + 2]
+
+            # Step 1: try to match a spot ink. This is the same matching
+            # rule as to_planes_magic's inner loop (DOMAIN.md §6.3.2 /
+            # D-015): duplicated here (rather than shared) to keep
+            # to_planes_magic's implementation untouched; any change to
+            # one must be mirrored in the other to avoid divergence.
+            best_ink = None
+            best_distance = None
+            for ink in inks:
+                mr, mg, mb = ink["magic_rgb"]
+                tolerance = ink["tolerance"]
+                dr = r - mr if r > mr else mr - r
+                dg = g - mg if g > mg else mg - g
+                db = b - mb if b > mb else mb - b
+                if dr > tolerance or dg > tolerance or db > tolerance:
+                    continue
+                distance = dr
+                distance = max(distance, dg)
+                distance = max(distance, db)
+                if best_distance is None or distance < best_distance:
+                    best_distance = distance
+                    best_ink = ink
+                elif distance == best_distance and best_ink is not None:
+                    if ink["order"] < best_ink["order"]:
+                        best_ink = ink
+                    # equal order: earlier position in `inks` already
+                    # won, since we only replace on strictly smaller
+                    # order.
+
+            byte_index = plane_row_base + (x >> 3)
+            bit_mask = 0x80 >> (x & 7)
+
+            if best_ink is not None:
+                # Step 2: spot match -- this pixel belongs to that ink's
+                # plane only, never CMYK (DOMAIN.md §4.3).
+                spot_planes[best_ink["name"]][byte_index] |= bit_mask
+                continue
+
+            # Step 3: no spot match -- fall through to CMYK separation.
+            # This formula is identical to to_planes's colcorPlain +
+            # threshold/halftone logic (duplicated here rather than
+            # shared so to_planes's implementation stays untouched; any
+            # change to one must be mirrored in the other to avoid
+            # divergence -- see to_planes's module docstring for the
+            # ppmtomd.c line references this reproduces).
+            c = 255 - r
+            m = 255 - g
+            yv = 255 - b
+            k = min(c, m, yv)
+            c -= k
+            m -= k
+            yv -= k
+            values = {"C": c, "M": m, "Y": yv, "K": k}
+            for channel, name in cmyk_map.items():
+                value = values[channel]
+                if mode is None:
+                    hit = value >= 128
+                else:
+                    positions, matrix, cellsize = row_halftone[channel]
+                    hrow, hcol = positions[x]
+                    threshold = matrix[cellsize * hrow + hcol]
+                    hit = value > threshold
+                if hit:
+                    cmyk_planes[name][byte_index] |= bit_mask
+
+    # Step 4: auto_undercoat is the union of every other plane (spot and
+    # CMYK alike), computed only after both are fully determined, plus
+    # any pixel that matched the undercoat ink's own magic_rgb directly
+    # (already present in spot_planes[undercoat_name] from step 1/2).
+    if undercoat_name is not None:
+        union = bytearray(row_bytes * height)
+        for name, buf in spot_planes.items():
+            if name == undercoat_name:
+                continue
+            for i, byte in enumerate(buf):
+                union[i] |= byte
+        for buf in cmyk_planes.values():
+            for i, byte in enumerate(buf):
+                union[i] |= byte
+        undercoat_buf = spot_planes[undercoat_name]
+        for i, byte in enumerate(undercoat_buf):
+            union[i] |= byte
+        spot_planes[undercoat_name] = union
+
+    result = {name: bytes(buf) for name, buf in spot_planes.items()}
+    result.update({name: bytes(buf) for name, buf in cmyk_planes.items()})
+    return result
