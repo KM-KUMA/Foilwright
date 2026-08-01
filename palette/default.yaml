@@ -4,8 +4,15 @@
 #
 # スキーマは docs/DOMAIN.md §6.1 が正。
 #
-# magic_rgb は ALPS 公式マニュアル(MD-5000P Online User's Guide p44/51/63)
-# 記載の値であり、推測値ではない。
+# magic_rgb は ALPS 公式マニュアル記載の値であり、推測値ではない。
+# 英語版(MD-5000P Online User's Guide p44/51/63)と日本語版(MD-5000
+# オンラインマニュアル p36/41/52)の双方で同一の値を確認済み。
+#
+# 重要: 日本国内版と海外版でインクの名称が異なる。値と printer_code は同一。
+#   海外 MetallicMagenta = 国内 メタリックレッド (MDC-METR)
+#   海外 MetallicCyan    = 国内 メタリックブルー (MDC-METB)
+# name は ppmtomd の識別子を採用しているため海外名だが、label は利用者が
+# 実物のパッケージと照合する値なので国内名を使う(DOMAIN §13.5)。
 #
 # order は昇順に実行され、先に刷ったものが下の層になる(DOMAIN §4.3)。
 # 白の下地が最小値、最後に見せたいものが最大値。
@@ -20,7 +27,7 @@
 
 inks:
   - name: white
-    label: ホワイト
+    label: 紙用特色ホワイト (MDC-SCWH)
     magic_rgb: [230, 230, 230]
     printer_code: 0x0B
     tolerance: 8
@@ -32,35 +39,35 @@ inks:
   # 実行順になる(DOMAIN §4.3 の tie-break = 記述順)。順序を変えたい
   # ときは行を入れ替える。実装は安定ソートを使うこと(§4.9)。
   - name: metallic_gold
-    label: メタリックゴールド
+    label: メタリックゴールド (MDC-METG)
     magic_rgb: [225, 160, 0]
     printer_code: 0x04
     tolerance: 12
     order: 50
 
   - name: metallic_silver
-    label: メタリックシルバー
+    label: メタリックシルバー (MDC-METS)
     magic_rgb: [189, 193, 197]
     printer_code: 0x07
     tolerance: 12
     order: 50
 
   - name: metallic_magenta
-    label: メタリックマゼンタ
+    label: メタリックレッド (MDC-METR)
     magic_rgb: [163, 36, 115]
     printer_code: 0x05
     tolerance: 12
     order: 50
 
   - name: metallic_cyan
-    label: メタリックシアン
+    label: メタリックブルー (MDC-METB)
     magic_rgb: [0, 176, 201]
     printer_code: 0x06
     tolerance: 12
     order: 50
 
   - name: black
-    label: ブラック
+    label: 紙用ブラック (MDC-FLCK)
     magic_rgb: [0, 0, 0]
     printer_code: 0x00
     tolerance: 8
