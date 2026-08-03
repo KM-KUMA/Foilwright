@@ -59,6 +59,12 @@ gen g14_c6_coarsehalftone_md5000_600.bin -model MD-5000 -resolution 600     -col
 # メディア種別。厚紙はリボン切れ対策(DOMAIN §5.5.2 / §10.8.2)
 gen g15_c1_cardboard_md5000_600.bin -model MD-5000 -resolution 600 -media Cardboard tests/cases/c1_black_120x120.ppm
 
+# 転送モードとカール補正。DOMAIN §11.1.1 の切り分け用
+# blackRaster は色選択コマンドを持たない最小構造(単色専用)
+gen g16_c1_blackraster_md5000_600.bin -model MD-5000 -resolution 600 -black tests/cases/c1_black_120x120.ppm
+# デカール用途ではカール矯正を止める(§10.10.4)。curl バイトが 00 -> 01 に変わる
+gen g17_c1_nocurl_md5000_600.bin -model MD-5000 -resolution 600 -nocurlcorrection tests/cases/c1_black_120x120.ppm
+
 if cmp -s tests/golden/g1_c1_black_md5000_600.bin tests/golden/g5_c1_black_md5500_600.bin; then
   echo "MODEL_DIFF_ZERO (MD-5000 == MD-5500)"
 else

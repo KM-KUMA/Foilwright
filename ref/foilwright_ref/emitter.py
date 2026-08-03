@@ -24,6 +24,18 @@ from __future__ import annotations
 ESC = 0x1B
 _RESOLUTION_CODES = {300: 0x02, 600: 0x03, 1200: 0x04}
 
+# Transfer modes (mddata.h `transferMode`). These decide the shape of the
+# whole data section, not just a flag: the single-plane modes carry no
+# colour-selection commands at all.
+#
+# Only the two below are implemented. The cassette modes send a cartridge
+# barcode we do not model (DOMAIN §6.5), and the raster modes use a
+# different data layout.
+_TRANSFER_MODES = {
+    "black_raster": 0x00,  # single plane, no colour selection (-black)
+    "colour_plane": 0x04,  # one selection + rows per ink (ppmtomd default)
+}
+
 
 def _packbits(row: bytes) -> tuple[int, bytes]:
     """Port of ppmtomd's packbits() (ppmtomd.c:2362-2452).
@@ -189,34 +201,51 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
     if y_shift > 0:
         out += bytes([ESC, 0x26, 0x6C, y_shift % 256, y_shift // 256, 0x45])
 
-    # changemode block (ppmtomd.c:2189-2245), fixed for our supported
-    # scope: curl correction off, transfer mode colourPlane (0x04),
-    # print mode unchanged from its default (byMediaMode), so this
-    # fires exactly once, before the first ink.
-    out += bytes([ESC, 0x1A, 0, 0, 0x43])  # curl correction (off)
-    out += bytes([ESC, 0x2A, 0x72, 0x04, 0x55])  # transfer mode = colourPlane
+    # changemode block (ppmtomd.c:2189-2245). Print mode stays at its
+    # default (byMediaMode), so this fires exactly once, before the
+    # first ink.
+    #
+    # Curl correction: 0 applies it, 1 suppresses it (ppmtomd's
+    # -nocurlcorrection). Decal stock needs it suppressed -- the sheet
+    # must stay flat (DOMAIN §10.10.4).
+    curl = 1 if job.get("no_curl_correction") else 0
+    out += bytes([ESC, 0x1A, curl, 0, 0x43])
+
+    mode = _TRANSFER_MODES[job.get("transfer_mode", "colour_plane")]
+    out += bytes([ESC, 0x2A, 0x72, mode, 0x55])
     out += bytes([ESC, 0x2A, 0x72, 0, 0x41])  # start raster graphics
 
     inks = job["inks"]
-    last_index = len(inks) - 1
 
-    def _select_and_rows(index: int) -> bytes:
-        ink = inks[index]
-        flag = 0x80 if index == last_index else 0x00
-        buf = bytearray([ESC, 0x1A, ink["printer_code"], flag, 0x72])
-        buf += _emit_plane_rows(planes[ink["name"]], width, height)
-        return bytes(buf)
+    if mode == _TRANSFER_MODES["black_raster"]:
+        # Single-plane modes carry no colour-selection command at all:
+        # the mode itself says which ribbon to use, so there is nothing
+        # to select and nothing to backfeed between. Verified against
+        # ppmtomd -black, where the byte stream is identical to the
+        # colourPlane one minus 4 selections and 3 backfeeds (35 bytes).
+        if len(inks) != 1:
+            raise ValueError(f"black_raster carries exactly one plane, got {len(inks)}")
+        out += _emit_plane_rows(planes[inks[0]["name"]], width, height)
+    else:
+        last_index = len(inks) - 1
 
-    # The first (direct) ink's bytes land immediately on the stream;
-    # every subsequent ink is buffered separately by ppmtomd and
-    # spliced back in afterwards behind a backfeed command
-    # (ppmtomd.c:2272-2296), which only happens when there is more
-    # than one active ink.
-    out += _select_and_rows(0)
-    if len(inks) > 1:
-        for index in range(1, len(inks)):
-            out += bytes([ESC, 0x1A, 0, 0, 0x0C])  # backfeed
-            out += _select_and_rows(index)
+        def _select_and_rows(index: int) -> bytes:
+            ink = inks[index]
+            flag = 0x80 if index == last_index else 0x00
+            buf = bytearray([ESC, 0x1A, ink["printer_code"], flag, 0x72])
+            buf += _emit_plane_rows(planes[ink["name"]], width, height)
+            return bytes(buf)
+
+        # The first (direct) ink's bytes land immediately on the stream;
+        # every subsequent ink is buffered separately by ppmtomd and
+        # spliced back in afterwards behind a backfeed command
+        # (ppmtomd.c:2272-2296), which only happens when there is more
+        # than one active ink.
+        out += _select_and_rows(0)
+        if len(inks) > 1:
+            for index in range(1, len(inks)):
+                out += bytes([ESC, 0x1A, 0, 0, 0x0C])  # backfeed
+                out += _select_and_rows(index)
 
     # job end (ppmtomd.c:2332-2345)
     out += bytes([ESC, 0x2A, 0x72, 0x43])  # end raster graphics
