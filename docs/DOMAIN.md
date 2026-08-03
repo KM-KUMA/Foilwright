@@ -873,7 +873,7 @@ ppmtomd がこれらを同一ドライバでサポートしていることが、
 | ドライバ | `usbprint`(Windows 標準。Microsoft 提供) |
 | デバイス状態 | OK |
 | 生成されたポート | `USB003` |
-| 子デバイス | `USBPRINT\ALPS___MD-5500_T-03___&2E8D5CBC&1&USB003` |
+| 子デバイス | `USBPRINT\ALPS___MD-5500_T-03___\6&2E8D5CBC&1&USB003` |
 | 子デバイスのハードウェア ID | `USBPRINT\ALPS___MD-5500_T-03_F01C` |
 | 互換 ID | `CID_MS_GENERICPRINT` |
 
