@@ -1968,12 +1968,15 @@ GPL-3.0。
 
 以下は同梱せず、インストール手順で案内するのみとする。**他者の GPL / AGPL コードを配布する責務を負わない。**
 
-- mfilemon(GPL-3.0)
-- Ghostscript(AGPL-3.0)
+- **Ghostscript(AGPL-3.0)** — 唯一の必須な実行時依存。利用者が別途導入する(D-021)
 - Microsoft PostScript Printer Driver V3(Windows 同梱品。OS 内のファイルを参照する)
-- ppmtomd(GPL)
+- ppmtomd(GPL) — golden の生成元であり、実行時には不要
+- ~~mfilemon(GPL-3.0)~~ — **D-023 で使用をやめたため、そもそも依存ではなくなった**
 
 **特に Ghostscript のバンドルは行わない。** AGPL の解釈上、同梱・統合は商用ライセンスの要求対象となりうる。
+
+**実行時に利用者が導入する必要があるのは Ghostscript だけである。** ポートモニタ(D-023)も
+プリンタドライバ(D-022)も Windows 同梱のものを使うため、追加導入は生じない。
 
 ### 12.3 解析対策
 
