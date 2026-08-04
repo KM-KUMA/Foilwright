@@ -62,6 +62,27 @@ _METALLIC4_INKS = [
     {"name": "metallic_silver", "printer_code": 0x07},
 ]
 
+# `-colours C=White,M=Finish,Y=MetallicGold,K=Black`.
+# 作者の実作業手順そのもの — 白の下地を敷き、コーティングを挟み、その上に
+# 色を乗せる(DOMAIN §4.11 / §10.7)。
+#
+# Finish の色選択バイトは golden から読み取った実測値 0x0E で、mddata.h の
+# colGlossyFinish に対応する。バーコード側には Finish が 2 種類あるが
+# (17 と 19。DOMAIN §6.5)、ホスト側が送るのはこの 1 バイトだけである。
+# palette/default.yaml に finish のエントリは無いため、ここで定義する。
+_WHITE_FINISH_PALETTE = {
+    "white": "C",
+    "finish": "M",
+    "metallic_gold": "Y",
+    "black": "K",
+}
+_WHITE_FINISH_INKS = [
+    {"name": "white", "printer_code": 0x0B},
+    {"name": "finish", "printer_code": 0x0E},
+    {"name": "metallic_gold", "printer_code": 0x04},
+    {"name": "black", "printer_code": 0x00},
+]
+
 
 def _job(resolution: int, model: str, inks: list) -> dict:
     profile = config.load_profile(str(PROFILES_DIR / f"{model}.yaml"))
@@ -184,6 +205,20 @@ def test_g10_white_multilayer_md5000_600():
         _WHITE_MULTILAYER_PALETTE,
     )
     _assert_golden_match(actual, GOLDEN_DIR / "g10_c5_white_multilayer_md5000_600.bin")
+
+
+def test_g11_white_finish_colour_md5000_600():
+    """White -> coating -> colour, the author's actual working order
+    (DOMAIN §4.11 / §10.7). This fixture had a golden file but no test:
+    the byte stream nobody was checking was the one the real workflow
+    produces. Finish carries colour-selection byte 0x0E."""
+    job = _job(600, "md-5000", _WHITE_FINISH_INKS)
+    actual = _render(
+        CASES_DIR / "c5_metallic4_240x120.ppm",
+        job,
+        _WHITE_FINISH_PALETTE,
+    )
+    _assert_golden_match(actual, GOLDEN_DIR / "g11_c5_white_finish_colour_md5000_600.bin")
 
 
 def _count_ejects(data: bytes) -> int:

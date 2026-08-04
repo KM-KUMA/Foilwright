@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Foilwright.Core.Tests/Foilwright.Core.Tests.csproj" />
+  <Project Path="Foilwright.Core/Foilwright.Core.csproj" />
+</Solution>
