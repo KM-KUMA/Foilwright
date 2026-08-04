@@ -239,6 +239,16 @@ public class GoldenTests
     }
 
     [Fact]
+    public void G11WhiteFinishColourMd5000_600()
+    {
+        // g10 と同じ c5_metallic4 入力だが、白の直後に "finish"(コーティング)
+        // インクを挟む — 白 → コーティング → 色という作者の実作業手順そのもの
+        // (DOMAIN §4.11 / §10.7)。
+        var actual = Render("c5_metallic4_240x120.ppm", 600, "md-5000", WhiteFinishInks, WhiteFinishPalette);
+        AssertGoldenMatch(actual, "g11_c5_white_finish_colour_md5000_600.bin");
+    }
+
+    [Fact]
     public void G15CardboardMediaMd5000_600()
     {
         // 厚紙(メディア 0x05 0x00)。アンダーコート使用時のインクリボン
