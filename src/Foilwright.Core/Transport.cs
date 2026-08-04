@@ -16,15 +16,27 @@
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using Microsoft.Win32;
+using Microsoft.Win32.SafeHandles;
+
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Foilwright.Core.Tests")]
 
 namespace Foilwright.Core;
 
 /// <summary>Transport 層の失敗(デバイスが見つからない、開けない、
 /// I/O が失敗した、プリンタが想定外の応答を返した)で送出する。</summary>
-public sealed class TransportException : Exception
+public class TransportException : Exception
 {
     public TransportException(string message) : base(message) { }
     public TransportException(string message, Exception innerException) : base(message, innerException) { }
+}
+
+/// <summary>I/O がタイムアウト時間内に完了しなかった場合に送出する
+/// (DOMAIN §15.2.2)。プリンタがジョブを受理せず沈黙する状態は実地で
+/// 確認済みで、解消にはプリンタ本体の電源再投入が必要だった。
+/// メッセージに復旧手順を含める(黙って固まらないための要求)。</summary>
+public sealed class TransportTimeoutException : TransportException
+{
+    public TransportTimeoutException(string message) : base(message) { }
 }
 
 /// <summary>ALPS 独自パケット層のバイト列組み立て(DOMAIN §15.2)。
@@ -123,12 +135,24 @@ public sealed class AlpsTransport : IDisposable
     // usbprint.sys が公開するデバイスインターフェース GUID(DOMAIN §15.6)。
     private const string DeviceInterfaceGuid = "{28d78fad-5a12-11D1-ae5b-0000f803a8c2}";
 
+    /// <summary>データパケット書き込みの既定タイムアウト(ミリ秒)。
+    /// 送出データ自体の書き込みは長め(DOMAIN §15.2.2)。</summary>
+    public const int DefaultWriteTimeoutMs = 30_000;
+
+    /// <summary>ハンドシェイク応答読み取りの既定タイムアウト(ミリ秒)。
+    /// `06` 応答・状態応答の待ちは短め(DOMAIN §15.2.2)。</summary>
+    public const int DefaultReadTimeoutMs = 10_000;
+
     private readonly SafeFileHandleWrapper _handle;
+    private readonly int _writeTimeoutMs;
+    private readonly int _readTimeoutMs;
     private bool _disposed;
 
-    private AlpsTransport(SafeFileHandleWrapper handle)
+    private AlpsTransport(SafeFileHandleWrapper handle, int writeTimeoutMs, int readTimeoutMs)
     {
         _handle = handle;
+        _writeTimeoutMs = writeTimeoutMs;
+        _readTimeoutMs = readTimeoutMs;
     }
 
     /// <summary>レジストリの DeviceClasses からデバイスインターフェースパスを探す。
@@ -152,8 +176,13 @@ public sealed class AlpsTransport : IDisposable
         throw new TransportException($"no device found matching '{vidMatch}' under HKLM\\{root}");
     }
 
-    /// <summary>デバイスパスを読み書き両用で開く。</summary>
-    public static AlpsTransport Open(string devicePath)
+    /// <summary>デバイスパスを読み書き両用で開く。
+    /// writeTimeoutMs / readTimeoutMs は DOMAIN §15.2.2 に基づく既定値
+    /// (書き込み 30 秒・応答読み取り 10 秒)を、呼び出し側で変更できる。</summary>
+    public static AlpsTransport Open(
+        string devicePath,
+        int writeTimeoutMs = DefaultWriteTimeoutMs,
+        int readTimeoutMs = DefaultReadTimeoutMs)
     {
         var handle = NativeMethods.CreateFile(
             devicePath,
@@ -168,41 +197,27 @@ public sealed class AlpsTransport : IDisposable
             int err = Marshal.GetLastWin32Error();
             throw new TransportException($"CreateFile failed for '{devicePath}' (win32={err})");
         }
-        return new AlpsTransport(new SafeFileHandleWrapper(handle));
+        return new AlpsTransport(new SafeFileHandleWrapper(handle), writeTimeoutMs, readTimeoutMs);
     }
 
     /// <summary>デバイスを探して開く(FindDevicePath + Open の組み合わせ)。</summary>
-    public static AlpsTransport OpenDevice(string vidMatch = "VID_044E")
+    public static AlpsTransport OpenDevice(
+        string vidMatch = "VID_044E",
+        int writeTimeoutMs = DefaultWriteTimeoutMs,
+        int readTimeoutMs = DefaultReadTimeoutMs)
     {
-        return Open(FindDevicePath(vidMatch));
+        return Open(FindDevicePath(vidMatch), writeTimeoutMs, readTimeoutMs);
     }
 
     private void WriteExact(ReadOnlySpan<byte> data, string what)
     {
-        if (!NativeMethods.WriteFile(_handle.Handle, data.ToArray(), data.Length, out int written, IntPtr.Zero))
-        {
-            int err = Marshal.GetLastWin32Error();
-            throw new TransportException($"{what}: WriteFile failed (win32={err})");
-        }
-        if (written != data.Length)
-        {
-            throw new TransportException($"{what}: WriteFile wrote {written} of {data.Length} bytes");
-        }
+        byte[] buffer = data.ToArray();
+        TimedIo.WriteWithTimeout(_handle.Handle, buffer, buffer.Length, _writeTimeoutMs, what);
     }
 
     private byte[] ReadExact(int count, string what)
     {
-        byte[] buffer = new byte[count];
-        if (!NativeMethods.ReadFile(_handle.Handle, buffer, count, out int read, IntPtr.Zero))
-        {
-            int err = Marshal.GetLastWin32Error();
-            throw new TransportException($"{what}: ReadFile failed (win32={err})");
-        }
-        if (read != count)
-        {
-            throw new TransportException($"{what}: ReadFile returned {read} of {count} bytes");
-        }
-        return buffer;
+        return TimedIo.ReadWithTimeout(_handle.Handle, count, _readTimeoutMs, what);
     }
 
     /// <summary>カセット状態を問い合わせる(`05 01` → 38 バイト。DOMAIN §15.2 / §11.4)。</summary>
@@ -272,6 +287,98 @@ internal sealed class SafeFileHandleWrapper : IDisposable
     }
 }
 
+/// <summary>タイムアウト付き同期 WriteFile/ReadFile(DOMAIN §15.2.2)。
+///
+/// ハンドルは FILE_FLAG_OVERLAPPED なしで開いているため WriteFile/ReadFile
+/// はブロッキング呼び出しになる。そこで実 I/O をバックグラウンドスレッドで
+/// 実行し、タイムアウトに達したら `CancelIoEx(handle, IntPtr.Zero)` で
+/// そのハンドルに対する保留中の I/O をすべて打ち切る。CancelIoEx は
+/// lpOverlapped に NULL を渡すと「発行元スレッドを問わず」そのハンドルの
+/// 保留 I/O を取り消す(呼び出しスレッドからの発行に限らない)ため、
+/// 監視側スレッド(この関数を呼んでいるスレッド)から安全に打ち切れる。
+///
+/// overlapped I/O へ作り直す代替案もあったが、既存の CreateFile/WriteFile/
+/// ReadFile 呼び出し規約(同期・バッファ直渡し)を変えずに済み、変更範囲を
+/// Transport.cs 内に閉じられるため、CancelIoEx 方式を採った。</summary>
+internal static class TimedIo
+{
+    /// <summary>キャンセル後、バックグラウンドスレッドの後始末を待つ上限。
+    /// 通常の usbprint.sys はここまで待たずに ERROR_OPERATION_ABORTED で
+    /// 戻るはずだが、ドライバがキャンセルに応じない万一の場合に永久停止
+    /// させないための安全弁。</summary>
+    private const int CancelGraceMs = 5_000;
+
+    public static void WriteWithTimeout(SafeFileHandle handle, byte[] buffer, int length, int timeoutMs, string what)
+    {
+        bool ok = false;
+        int written = 0;
+        int win32Error = 0;
+
+        var ioTask = Task.Run(() =>
+        {
+            ok = NativeMethods.WriteFile(handle, buffer, length, out written, IntPtr.Zero);
+            if (!ok)
+            {
+                win32Error = Marshal.GetLastWin32Error();
+            }
+        });
+
+        if (!ioTask.Wait(timeoutMs))
+        {
+            NativeMethods.CancelIoEx(handle, IntPtr.Zero);
+            ioTask.Wait(CancelGraceMs);
+            throw new TransportTimeoutException(
+                $"{what}: プリンタが {timeoutMs} ミリ秒以内に応答しませんでした。" +
+                "プリンタが応答しない状態です。プリンタ本体の電源を入れ直してから再試行してください。");
+        }
+
+        if (!ok)
+        {
+            throw new TransportException($"{what}: WriteFile failed (win32={win32Error})");
+        }
+        if (written != length)
+        {
+            throw new TransportException($"{what}: WriteFile wrote {written} of {length} bytes");
+        }
+    }
+
+    public static byte[] ReadWithTimeout(SafeFileHandle handle, int count, int timeoutMs, string what)
+    {
+        byte[] buffer = new byte[count];
+        bool ok = false;
+        int read = 0;
+        int win32Error = 0;
+
+        var ioTask = Task.Run(() =>
+        {
+            ok = NativeMethods.ReadFile(handle, buffer, count, out read, IntPtr.Zero);
+            if (!ok)
+            {
+                win32Error = Marshal.GetLastWin32Error();
+            }
+        });
+
+        if (!ioTask.Wait(timeoutMs))
+        {
+            NativeMethods.CancelIoEx(handle, IntPtr.Zero);
+            ioTask.Wait(CancelGraceMs);
+            throw new TransportTimeoutException(
+                $"{what}: プリンタが {timeoutMs} ミリ秒以内に応答しませんでした。" +
+                "プリンタが応答しない状態です。プリンタ本体の電源を入れ直してから再試行してください。");
+        }
+
+        if (!ok)
+        {
+            throw new TransportException($"{what}: ReadFile failed (win32={win32Error})");
+        }
+        if (read != count)
+        {
+            throw new TransportException($"{what}: ReadFile returned {read} of {count} bytes");
+        }
+        return buffer;
+    }
+}
+
 internal static class NativeMethods
 {
     public const uint GenericRead = 0x80000000;
@@ -294,4 +401,7 @@ internal static class NativeMethods
     public static extern bool ReadFile(
         Microsoft.Win32.SafeHandles.SafeFileHandle hFile, byte[] lpBuffer, int nNumberOfBytesToRead,
         out int lpNumberOfBytesRead, IntPtr lpOverlapped);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool CancelIoEx(SafeFileHandle hFile, IntPtr lpOverlapped);
 }
