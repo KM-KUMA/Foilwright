@@ -1386,9 +1386,17 @@ WRITE_FAILED  win32=31  written=0  elapsed=5006ms
 
 1. **Windows 11 xHCI ドライバの退行。** Full Speed バルク転送のスケジューリングが変わり、最初のパケットで転送異常 → デバイス側が混乱、というシナリオ。Win10 時代に同 PC で動いていた証言と整合。usbipd 経由でも物理層は同じドライバを通るため棄却できない
 2. **プリンタ側が受信拒否状態。** ただし 2 台(MD-5000 / MD-5500)が同じ状態である必要があり、不自然さが残る
-3. **Alternate Interface の未選択(2026-08-04 追加・最有力)。** 純正 USB ポートドライバの INF(`mdp_usb.inf`)に **`DefaultAltInterface = 02`** の設定がある(§13.7.1)。ALPS 専用ドライバ `mdp_usb.sys` は通信前に interface の alternate setting 2 を選択しており、usbprint.sys / libusb の既定(alt 0)のままでは**バルク OUT を受け付けない仕様である可能性**が高い。「制御転送は通るがバルク OUT だけ即 STALL」という観測と正確に一致する。Win10 時代に動いていた事実とは一見矛盾するが、当時動いていたのが仮想 PC 内の純正ドライバ経由(alt 2 を選択する)だったなら矛盾しない
+3. ~~**Alternate Interface の未選択。**~~ **検証の上で棄却(2026-08-04)。** 純正 USB ポートドライバの INF(`mdp_usb.inf`)に `DefaultAltInterface = 02` があり有力視したが、**実機の記述子には interface 0 / alternate setting 0 しか存在しない**(1 config・1 interface。pyusb で確認)。INF の値は alternate setting ではなく bInterfaceProtocol(02 = 双方向)の選択を指すとみられ、現 alt 0 が既に proto=02 で既定を満たす。明示的に `SET_INTERFACE(0,0)` を投げてもバルク OUT は 64 バイトすら即 STALL のままだった
 
-**決定打(次回):** ① usbipd + pyusb で `set_interface_alt_setting(alt=2)` を投げてからバルク送出(この PC だけで完結・費用ゼロ)。② 物理層ごと変える — **USB 2.0 ハブを挟む**(注文済み)/ 別マシン(Windows 10 機・Raspberry Pi 等の素の Linux)から送出。
+#### 追加の切り分け(2026-08-04 第 2 回 usbipd 試行)
+
+- **バルク IN も STALL する**(OUT だけではない)。両バルクエンドポイントが halt を張り続ける = **プリンタ FW がジョブ受け入れ不能状態を明示している**とみられる
+- プリンタクラスの **SOFT_RESET(bRequest=2)もタイムアウト無応答**(前回の GET_PORT_STATUS ハングと同族。標準 control 要求のみ生きている)。SOFT_RESET → clear_halt(両 EP)→ OUT でも即 STALL
+- `set_configuration` は Resource busy(カーネルが interface を claim 済み)
+- IN の STALL を踏んだ直後は OUT の失敗モードが **EPIPE ではなく 5 秒タイムアウト(errno=110)に変わる** — Windows で観測した win32=31 / 5006ms と同じ顔。2 つの失敗モードは同一現象の遷移形
+- 前回と異なり、今回はバルク失敗後も clear_halt が通り続けた(インターフェース崩壊は毎回ではない)
+
+**決定打(残り):** ① **USB 2.0 ハブを挟む**(注文済み・到着待ち)。② **仮想 PC(VMware + 32bit 純正ドライバ)から MD-5500 直結で印刷を試み、ホスト側で USBPcap によりバス上のやり取りを採取する** — 成功すれば純正ドライバの初期化シーケンス(バルクが通るようになる手順)が丸ごと録れ、ベースドホワイトを含む全コマンドの実測にもなる。③ 別マシン(Windows 10 機・Raspberry Pi 等の素の Linux)から送出。
 
 **検証手段(効果が見込める順):**
 
@@ -2224,5 +2232,6 @@ ppmtomd が実装するコマンドと同型のテンプレート(`%c`=1 バイ�
 | 0.2.32-draft | 2026-08-04 | **障害箇所を特定。** スプーラを迂回した直接 WriteFile が `win32=31 / written=0 / 5006ms` で失敗 — OS 最下層のバルク OUT 転送がデバイスレベルで失敗している。ホスト側ソフトウェアは全層シロと確定。最有力仮説は xHCI ルートポート直結 ↔ USB 1.1 機器の相性で、検証には USB 2.0 ハブが必要。`tools/write-direct.ps1` を追加 |
 | 0.2.33-draft | 2026-08-04 | **仮説を修正: Windows 11 の USB スタック退行。** 同じ PC の Windows 10 時代には印刷できていたという証言により、ハードウェア相性説を棄却。変わったのは OS のみで、ホスト側ソフト全層シロ・バルク OUT のみ失敗という観測とも整合。検証手段の筆頭は usbipd-win + WSL2 による Linux 側からの送出(この PC で完結し Windows 11 スタックを迂回できる) |
 | 0.2.34-draft | 2026-08-04 | **Linux(usbipd + libusb)からの送出を実施。** 接続直後の制御転送は成功するがバルク OUT は即 STALL(0.0 秒の能動的拒否)。clear_halt で解除しても書いた瞬間に再 STALL、以後は制御転送も死に物理再接続でのみ回復という再現性あるパターンを特定。EnhancedPowerManagementEnabled=0 も効果なし。残る仮説は Windows 11 xHCI 退行 vs プリンタ側拒否の 2 つで、決定打は USB 2.0 ハブまたは別マシンからの送出 |
+| 0.2.37-draft | 2026-08-04 | **§11.1.1 に第 2 回 usbipd 試行を追記。** alt interface 仮説は棄却(実機は alt 0 のみ、明示 SET_INTERFACE でも STALL)。新事実: バルク IN も STALL(両 EP halt = FW がジョブ受け入れ不能を明示)、SOFT_RESET も無応答、IN STALL 後は OUT の失敗が EPIPE から 5 秒タイムアウトへ遷移(Windows の win32=31/5006ms と同一現象)。決定打に「仮想 PC からの印刷 + USBPcap 採取」を追加 |
 | 0.2.36-draft | 2026-08-04 | **§13.7 を追加(純正ドライバディスクの解析)。** ① mdp_usb.inf に `DefaultAltInterface=02` — 純正 USB ドライバは alternate setting 2 を選択してから通信しており、alt 0 のままの usbprint.sys / libusb がバルク OUT STALL になる原因の最有力候補として §11.1.1 に仮説 3 を追加。② ベースドホワイトの select コード候補を 0x1c / 0x1e に特定(§11 #11 更新。旧推測の予約番地は不使用)。③ カセットバーコード完全対応表を取得 — barReserved7=ベースドホワイト、フラッシュ=Foil の国内名、MF インク=VPhotoPrimer、ラベカ赤青が ppmtomd と逆。④ ステータス問い合わせ(`1b 1a %c %z I`、リボン残量・ホルダ位置)ほか未知コマンド群を記録 |
 | 0.2.35-draft | 2026-08-04 | **§13.6 を追加(MD-5500 世代の公式資料 2 冊)。** ベースドホワイトの正体が公式記述で確定し §11 #11 を更新 — MD-5500 で追加された「フルカラーの上へ後から刷る」転写系用途の不透明白で、特色ホワイトと役割が正反対。品番 MDC-OPWH も公式記載。ほかに公式ドライバの色マッチング許容幅の実測値(R -1〜+2 / G ±0〜+3 / B ±0〜+1、NT 系は常に近似色)、透明/不透明インクの 2 分類と重ね順の原則、フラッシュカラーの自動下地処理(CMYK 全色ベタ)、アンチエイリアスが auto 方式の誤爆を生む罠、カセット同時装着 7 本、ページ合成 3 回以上可(版ずれ増)を記録 |
