@@ -1,14 +1,17 @@
-# HANDOFF — last updated: 2026-08-04
+# HANDOFF — last updated: 2026-08-04 (2)
 
 ## 今どこ(現在の作業対象)
 
-**Phase 1 未達。障害箇所は「USB バルク OUT 転送の能動的 STALL」まで特定済み**(DOMAIN §11.1.1)。
+**Phase 1 未達。障害箇所は「両バルクエンドポイントの halt(プリンタ FW がジョブ受け入れ不能を明示)」まで特定済み**(DOMAIN §11.1.1)。
 
-**ホスト側ソフトは全層シロと確定。** 転送モード(blackRaster)・送出経路(自作 RAW / テストページ / 直接 WriteFile)・カートリッジ構成(1 本 / 4 本)・電源再投入・別 USB ポート・EnhancedPowerManagementEnabled=0 のすべてで同一結果。
+**ホスト側ソフトは全層シロと確定。** 転送モード・送出経路・カートリッジ構成・電源再投入・別ポート・電源管理無効化のすべてで同一結果。第 2 回 usbipd 試行(2026-08-04)で **バルク IN も STALL / SOFT_RESET も無応答 / alt interface 仮説は棄却(実機は alt 0 のみ)** を確認。IN STALL 後は OUT が EPIPE→5 秒タイムアウトに遷移(Windows の win32=31 と同一現象)。
 
-**Linux(usbipd + libusb)からの試行で再現性あるパターンを特定(2026-08-04):** 接続直後の制御転送は成功、**バルク OUT は 0.0 秒で能動的 STALL**、clear_halt で解除しても書いた瞬間に再 STALL、以後は制御転送も死に**物理再接続でのみ回復**。Windows の win32=31(5 秒タイムアウト)は同一現象の別の見え方。
+**純正ドライバディスク(E:\MD-5500\DRIVERS)の解析完了(§13.7)。** ①`mdp_usb.inf` の DefaultAltInterface=02 は双方向プロトコル選択の意味。②**ベースドホワイトの select コード候補 = 0x1c / 0x1e**(色プレーンの後に 0x1e→0x1c)。③カセットバーコード完全対応表(barReserved7=ベースドホワイト)。④ステータス問い合わせ `1b 1a %c %z I`(リボン残量等)。
 
-**残る仮説は 2 つ(未決着):** (1) **Windows 11 xHCI ドライバの退行** — 同じ PC の Win10 時代には印刷できていた証言あり。usbipd 経由でも物理層は同じドライバを通るため棄却できない。(2) プリンタ側の受信拒否状態 — ただし 2 台同時は不自然。
+**次の決定打(2 本立て):**
+
+1. **仮想 PC(VMware + 32bit 純正ドライバ)から印刷 + ホストで USBPcap 採取。** 成功すれば純正ドライバの「開門手順」と全コマンド(ベースドホワイト含む)が丸ごと録れる。**USBPcap 1.5.4 導入済み・PC 再起動待ち**(フィルタドライバは再起動後に有効化)。再起動後: `USBPcapCMD.exe --extcap-interfaces` でルートハブ列挙 → MD-5500 のいるハブを `-d \\.\USBPcap1 -o dumps\capture.pcap` で録りながら仮想 PC から印刷
+2. **USB 2.0 ハブ(注文済み・到着待ち)** を挟んで `tools/write-direct.ps1 -Path dumps/phase1_blackraster.bin -VidMatch VID_044E`
 
 **MD-5500 はセルフテスト中に異音が出た履歴あり**(§10.9.5 の外部事例と符合の可能性)。ただし黒リボン交換後のセルフテストは完走しており、ランプも正常。
 
