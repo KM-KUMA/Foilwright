@@ -1,0 +1,88 @@
+*PPD-Adobe: "4.3"
+*% Foilwright -- PPD for ALPS MD-5500 driven through the Microsoft
+*% PostScript Printer Driver V3 (DOMAIN.md 3.2 / 7.1, D-001).
+*%
+*% Copyright (C) 2026 JunkQuality (github.com/KM-KUMA/Foilwright)
+*% SPDX-License-Identifier: GPL-3.0-or-later
+*%
+*% This file is ASCII only on purpose: it is parsed by the Windows print
+*% stack, and non-ASCII bytes in a PPD are a portability risk. Rationale
+*% and Japanese notes live in docs/DOMAIN.md, not here.
+*%
+*% Minimal first cut: A4 and 600dpi only. Ink specification method,
+*% media type, halftone and the rest of 7.1 are added once this
+*% loads and a job reaches the converter (Phase 2).
+
+*FormatVersion: "4.3"
+*FileVersion: "0.1"
+*LanguageEncoding: ISOLatin1
+*LanguageVersion: English
+*PCFileName: "FOILWRT.PPD"
+*Manufacturer: "JunkQuality"
+*Product: "(Foilwright)"
+*PSVersion: "(3010.000) 0"
+*ModelName: "Foilwright MD-5500"
+*ShortNickName: "Foilwright MD-5500"
+*NickName: "Foilwright MD-5500"
+
+*LanguageLevel: "3"
+*ColorDevice: True
+*DefaultColorSpace: RGB
+*FileSystem: False
+*Throughput: "1"
+*TTRasterizer: Type42
+
+*% Page geometry.
+*%
+*% The paper table (papers/5000-series.yaml) is in dots at 600dpi and
+*% describes the *printable* area; PPD wants PostScript points (1/72in)
+*% and the *physical* sheet. Conversion is dots * 72 / 600 = dots * 0.12.
+*%
+*%   sheet     4958 x 7017 dots = 595 x 842 pt
+*%   printable 4800 x 6372 dots = 576 x 764.64 pt
+*%   left margin  80 dots = 9.6 pt
+*%   top margin  284 dots = 34.08 pt  -> bottom margin 361 dots = 43.32 pt
+*%
+*% ImageableArea is measured from the bottom-left corner, so the lower
+*% edge carries the bottom margin, not the top one. Keeping this
+*% conversion here is deliberate: mm and points must not travel past the
+*% L3 boundary (DOMAIN.md 4.1).
+
+*OpenUI *PageSize: PickOne
+*OrderDependency: 10 AnySetup *PageSize
+*DefaultPageSize: A4
+*PageSize A4/A4: "<</PageSize[595 842]/ImagingBBox null>>setpagedevice"
+*CloseUI: *PageSize
+
+*OpenUI *PageRegion: PickOne
+*OrderDependency: 20 AnySetup *PageRegion
+*DefaultPageRegion: A4
+*PageRegion A4/A4: "<</PageSize[595 842]/ImagingBBox null>>setpagedevice"
+*CloseUI: *PageRegion
+
+*DefaultImageableArea: A4
+*ImageableArea A4/A4: "9.6 43.32 585.6 807.96"
+
+*DefaultPaperDimension: A4
+*PaperDimension A4/A4: "595 842"
+
+*% Resolution. 1200x600 exists on the hardware (profiles/md-5500.yaml)
+*% and is declared once the 600dpi path is proven end to end.
+
+*OpenUI *Resolution/Resolution: PickOne
+*OrderDependency: 30 AnySetup *Resolution
+*DefaultResolution: 600dpi
+*Resolution 600dpi/600 dpi: "<</HWResolution[600 600]>>setpagedevice"
+*CloseUI: *Resolution
+
+*% Magic colours are matched on exact RGB values, so any colour
+*% management between the application and the converter breaks them
+*% (DOMAIN.md 6.3, D-021). Declaring the device as plain RGB is the
+*% first half of the defence; whether the Windows driver still applies
+*% ICM has to be measured in Phase 2.
+
+*DefaultOutputOrder: Normal
+*OpenUI *OutputOrder/Output Order: PickOne
+*OrderDependency: 40 AnySetup *OutputOrder
+*OutputOrder Normal/Normal: ""
+*CloseUI: *OutputOrder

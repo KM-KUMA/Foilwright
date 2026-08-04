@@ -1,0 +1,50 @@
+; Foilwright -- printer INF that pairs our PPD with the in-box Microsoft
+; PostScript core driver (PScript5) instead of shipping a driver of our own
+; (DOMAIN.md 3.3, D-001).
+;
+; Copyright (C) 2026 JunkQuality (github.com/KM-KUMA/Foilwright)
+; SPDX-License-Identifier: GPL-3.0-or-later
+;
+; The structure mirrors the in-box C:\Windows\INF\prnge001.inf, which
+; installs the generic PostScript printers on this same Windows version.
+; The core driver is referenced through CoreDriverSections with the
+; PostScript core GUID; the older "Include=ntprint.inf / Needs=PSCRIPT.OEM"
+; form is not accepted by Add-PrinterDriver on Windows 11 (see D-022).
+;
+; Build and install:
+;   powershell -ExecutionPolicy Bypass -File tools\sign-package.ps1
+;   tools\install-printer.cmd        (as administrator)
+
+[Version]
+Signature="$Windows NT$"
+Provider=%Provider%
+ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}
+Class=Printer
+CatalogFile=foilwright.cat
+DriverVer=08/04/2026,0.1.0.0
+
+[Manufacturer]
+%Manufacturer%=Foilwright,NTamd64
+
+[Foilwright.NTamd64]
+%PrinterName% = FOILWRIGHT.PPD
+
+[FOILWRIGHT.PPD]
+CopyFiles=@foilwright.ppd
+DataFile=foilwright.ppd
+CoreDriverSections="{D20EA372-DD35-4950-9ED8-A6335AFE79F1},PSCRIPT.OEM,PSCRIPT_DATA"
+
+[DestinationDirs]
+DefaultDestDir=66000
+
+[SourceDisksNames.amd64]
+1=%DiskName%,,,""
+
+[SourceDisksFiles]
+foilwright.ppd=1
+
+[Strings]
+Provider="JunkQuality"
+Manufacturer="JunkQuality"
+PrinterName="Foilwright MD-5500"
+DiskName="Foilwright PPD"
