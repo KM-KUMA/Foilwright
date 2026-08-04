@@ -128,6 +128,66 @@ public sealed class CassetteStatus
     }
 }
 
+/// <summary>IEEE 1284 デバイス ID の取得結果(GET_DEVICE_ID の前置き。DOMAIN §11.4/§15.2/§15.3)。
+/// 取得に失敗しても呼び出し側は送出を続ける — 前置きが不要な個体・状況もあるため。
+/// Diagnostic には試した候補と win32 エラーを残し、失敗が追えるようにする。</summary>
+public readonly record struct DeviceIdProbeResult(bool Success, string? DeviceId, string Diagnostic);
+
+/// <summary>`IOCTL_USBPRINT_GET_1284_ID`(0x220050)経由で IEEE 1284 デバイス ID を取得する
+/// (DOMAIN §11.4「先に GET_DEVICE_ID を打たないと次の IN がタイムアウトする」への対応)。
+///
+/// DOMAIN §11.4 の実測では同じ呼び出し作法(入力バッファ NULL・出力バッファ確保のみ)で
+/// win32=87(引数不正)になっており、原因は文書だけでは特定できていない
+/// (Microsoft Learn の IOCTL_USBPRINT_GET_1284_ID 仕様上は「入力バッファ不使用・
+/// 出力バッファは 2 バイトの長さプレフィックス+ID+終端 NUL、65535 バイトだと失敗する
+/// 個体があるため 4094 バイト以下を推奨」とあるだけで、この呼び出し方自体に誤りは
+/// 見当たらない)。実機での原因切り分けができないため、出力バッファ長を複数候補で
+/// 順に試す(不明点を推測で単一の答えに決め打ちしない)。</summary>
+internal static class DeviceIdProbe
+{
+    // CTL_CODE(FILE_DEVICE_UNKNOWN=0x22, function=20, METHOD_BUFFERED=0, FILE_ANY_ACCESS=0)
+    // = (0x22 << 16) | (20 << 2) = 0x220050。DOMAIN §11.4 の実測値と一致
+    // (同じ計算式で導出した IOCTL_USBPRINT_GET_LPT_STATUS=0x22004C は実機で成功済み)。
+    private const uint IoctlUsbprintGet1284Id = 0x220050;
+
+    /// <summary>出力バッファ長の候補(バイト)。Microsoft Learn の推奨上限(4094)以下で、
+    /// 大きい順に試す。§11.4 で失敗した際の 1024 も候補に含める。</summary>
+    private static readonly int[] CandidateOutputBufferSizes = { 1024, 256, 64 };
+
+    public static DeviceIdProbeResult TryGet(SafeFileHandle handle)
+    {
+        var attempts = new List<string>();
+        foreach (int size in CandidateOutputBufferSizes)
+        {
+            byte[] buffer = new byte[size];
+            // 入力バッファは MS Learn 仕様通り未使用(NULL/0)。
+            bool ok = NativeMethods.DeviceIoControl(
+                handle, IoctlUsbprintGet1284Id, IntPtr.Zero, 0, buffer, size, out int returned, IntPtr.Zero);
+            if (ok && returned > 2)
+            {
+                // 先頭 2 バイトはビッグエンディアンの長さ(DOMAIN §11.4)。
+                // 申告長が信頼できない場合に備え、実際の読み取りバイト数を上限にする。
+                int declaredLen = (buffer[0] << 8) | buffer[1];
+                int available = returned - 2;
+                int len = declaredLen > 0 && declaredLen <= available ? declaredLen : available;
+                string id = System.Text.Encoding.ASCII.GetString(buffer, 2, len).TrimEnd('\0');
+                attempts.Add($"bufsize={size}: OK ({returned} bytes)");
+                return new DeviceIdProbeResult(true, id, string.Join("; ", attempts));
+            }
+            if (ok)
+            {
+                attempts.Add($"bufsize={size}: returned={returned} (too short)");
+            }
+            else
+            {
+                int err = Marshal.GetLastWin32Error();
+                attempts.Add($"bufsize={size}: win32={err}");
+            }
+        }
+        return new DeviceIdProbeResult(false, null, string.Join("; ", attempts));
+    }
+}
+
 /// <summary>usbprint.sys のデバイスインターフェースを直接開き、DOMAIN §15.2 の
 /// パケット層で ALPS プリンタと通信する(D-020)。</summary>
 public sealed class AlpsTransport : IDisposable
@@ -147,6 +207,11 @@ public sealed class AlpsTransport : IDisposable
     private readonly int _writeTimeoutMs;
     private readonly int _readTimeoutMs;
     private bool _disposed;
+
+    /// <summary>直近の GET_DEVICE_ID 前置き(IOCTL_USBPRINT_GET_1284_ID)の結果。
+    /// SendJob / ReadStatus のたびに更新される。失敗しても送出は継続するため、
+    /// 呼び出し側が原因を追いたい場合にここを参照する(DOMAIN §11.4/§15.3)。</summary>
+    public DeviceIdProbeResult? LastDeviceIdProbe { get; private set; }
 
     private AlpsTransport(SafeFileHandleWrapper handle, int writeTimeoutMs, int readTimeoutMs)
     {
@@ -220,9 +285,20 @@ public sealed class AlpsTransport : IDisposable
         return TimedIo.ReadWithTimeout(_handle.Handle, count, _readTimeoutMs, what);
     }
 
+    /// <summary>バルクのやり取りの前置きとして GET_DEVICE_ID を打つ
+    /// (DOMAIN §11.4「先に打たないと次の IN がタイムアウトする」/ §15.2「制御転送は
+    /// 列挙と GET_DEVICE_ID にしか使わない」)。失敗しても致命的にしない
+    /// — 前置きが不要な個体・状況もあるため、送出/状態問い合わせは必ず試みる。
+    /// 結果は LastDeviceIdProbe に残る。</summary>
+    private void ProbeDeviceId()
+    {
+        LastDeviceIdProbe = DeviceIdProbe.TryGet(_handle.Handle);
+    }
+
     /// <summary>カセット状態を問い合わせる(`05 01` → 38 バイト。DOMAIN §15.2 / §11.4)。</summary>
     public CassetteStatus ReadStatus()
     {
+        ProbeDeviceId();
         WriteExact(AlpsProtocol.StatusRequest, "status request");
         byte[] raw = ReadExact(AlpsProtocol.StatusResponseLength, "status response");
         return CassetteStatus.Parse(raw);
@@ -234,6 +310,7 @@ public sealed class AlpsTransport : IDisposable
     /// (DOMAIN §15.2)。</summary>
     public void SendJob(byte[] rgl, Action<int, int>? progress = null)
     {
+        ProbeDeviceId();
         int done = 0;
         foreach (var chunk in AlpsProtocol.SplitPayload(rgl))
         {
@@ -404,4 +481,11 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool CancelIoEx(SafeFileHandle hFile, IntPtr lpOverlapped);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool DeviceIoControl(
+        SafeFileHandle hDevice, uint dwIoControlCode,
+        IntPtr lpInBuffer, int nInBufferSize,
+        byte[] lpOutBuffer, int nOutBufferSize,
+        out int lpBytesReturned, IntPtr lpOverlapped);
 }

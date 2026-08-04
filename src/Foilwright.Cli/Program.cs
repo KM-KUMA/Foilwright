@@ -116,6 +116,7 @@ internal static class Program
     {
         using var transport = AlpsTransport.OpenDevice();
         var status = transport.ReadStatus();
+        PrintDeviceIdProbe(transport);
 
         Console.WriteLine($"ヘッダ: {Convert.ToHexString(status.Header)}");
         Console.WriteLine($"状態バイト(5 バイト目): 0x{status.StatusByte:x2}" +
@@ -145,11 +146,31 @@ internal static class Program
 
         using var transport = AlpsTransport.OpenDevice();
         var before = transport.ReadStatus();
+        PrintDeviceIdProbe(transport);
         Console.WriteLine($"送出前状態バイト: 0x{before.StatusByte:x2}");
 
         transport.SendJob(rgl, (done, total) => Console.WriteLine($"  {done}/{total} バイト"));
         Console.WriteLine("送出完了");
         return 0;
+    }
+
+    /// <summary>バルクの前置き GET_DEVICE_ID(DOMAIN §11.4/§15.3)の結果を表示する。
+    /// 失敗しても送出自体は続くが、原因追跡のため必ず可視化する。</summary>
+    private static void PrintDeviceIdProbe(AlpsTransport transport)
+    {
+        var probe = transport.LastDeviceIdProbe;
+        if (probe is null)
+        {
+            return;
+        }
+        if (probe.Value.Success)
+        {
+            Console.WriteLine($"GET_DEVICE_ID: {probe.Value.DeviceId}");
+        }
+        else
+        {
+            Console.WriteLine($"GET_DEVICE_ID 失敗(送出は続行します): {probe.Value.Diagnostic}");
+        }
     }
 
     // --- listen ----------------------------------------------------------------
@@ -226,6 +247,7 @@ internal static class Program
 
             using var transport = AlpsTransport.OpenDevice();
             transport.SendJob(rgl, (done, total) => Console.WriteLine($"  {done}/{total} バイト"));
+            PrintDeviceIdProbe(transport);
             Console.WriteLine("送出完了");
         }
         finally

@@ -4,12 +4,37 @@
 // AlpsProtocol の純粋関数(パケット組み立て・分割)のみを検証する
 // (DOMAIN §15.2)。
 
+using System.IO.Pipes;
+using Microsoft.Win32.SafeHandles;
 using Foilwright.Core;
 
 namespace Foilwright.Core.Tests;
 
 public class TransportTests
 {
+    // TimedIo 検証(TransportTimeoutTests.cs)と同じ手法: 匿名パイプの生ハンドルを
+    // 所有権なしの SafeFileHandle でラップして DeviceIoControl に渡す。
+    private static SafeFileHandle WrapAsFileHandle(SafePipeHandle pipeHandle)
+    {
+        return new SafeFileHandle(pipeHandle.DangerousGetHandle(), ownsHandle: false);
+    }
+
+    [Fact]
+    public void DeviceIdProbe_TryGet_OnNonUsbprintHandle_FailsGracefullyWithoutThrowing()
+    {
+        // usbprint.sys 以外のハンドル(匿名パイプ)には IOCTL_USBPRINT_GET_1284_ID が
+        // 存在しないため、DeviceIoControl は失敗するはず。ここで検証したいのは値の
+        // 正しさではなく、「実機が無くても・IOCTL が失敗しても、例外を投げず、
+        // 試した候補と win32 エラーが Diagnostic に残ること」(DOMAIN §11.4)。
+        using var server = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.None);
+
+        var result = DeviceIdProbe.TryGet(WrapAsFileHandle(server.SafePipeHandle));
+
+        Assert.False(result.Success);
+        Assert.Null(result.DeviceId);
+        Assert.Contains("win32=", result.Diagnostic);
+    }
+
     [Fact]
     public void BuildDataPacket_HeaderEncodesLengthMinusOneLittleEndian()
     {
