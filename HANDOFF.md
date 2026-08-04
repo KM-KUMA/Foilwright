@@ -24,18 +24,9 @@
 
 ## 実機作業の作法(重要)
 
-- **usbipd で bind したら、使い終わったら必ず  する。** 2026-08-04 は朝の解析で bind したまま一日放置し、Windows ネイティブ経路が不調になった際の切り分けを濁らせた。Connected:
-BUSID  VID:PID    DEVICE                                                        STATE
-1-1    056e:011a  USB 入力デバイス                                                    Not shared
-1-2    044e:2002  ALPS    MD-5500_T-03                                          Not shared
-1-4    8087:0032  インテル(R) ワイヤレス Bluetooth(R)                                    Not shared
-1-12   0c45:6a06  Integrated Webcam                                             Not shared
-
-Persisted:
-GUID                                  DEVICE
-a605941d-cd8e-4540-b5f8-703ec66b8076  VMware USB Device が  のままなら解除する()
+- **usbipd で bind したら、使い終わったら必ず unbind する。** 2026-08-04 は朝の解析で bind したまま一日放置し、Windows ネイティブ経路が不調になった際の切り分けを濁らせた。`usbipd list` が `Shared` のままなら `tools/usbip-unbind.cmd` で解除する
+- **USBPcap は USB フィルタドライバであり、usbipd から「非互換」と警告される。** 採取が終わったら、実機の不調を追う前にこれを疑う(2026-08-04 に警告を確認)
 - **仮想 PC でプリンタを使った後はホスト側の状態を確認する。** VMware がデバイスを掴んで離すと再列挙され、ポート番号(USB002 → USB003 等)が変わる
-
 - **バルク IN を読んでよいのは応答を返すコマンドの直後だけ。** 空読みするとインターフェースがウェッジする
 - ウェッジからの回復は `usbipd detach` → `attach`(物理再接続は不要。約 10 秒)
 - USBPcap 採取は `tools/capture-usb.cmd` を管理者で実行。**古い 0 バイトの pcap が残っていると失敗する**ので先に消す。バッチは ASCII のみ(日本語コメントは cp932 で化ける)
