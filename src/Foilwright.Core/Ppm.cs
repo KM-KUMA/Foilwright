@@ -105,4 +105,45 @@ public sealed class PpmImage
         Array.Copy(data, pos, pixels, 0, pixelBytes);
         return new PpmImage(width, height, pixels);
     }
+
+    /// <summary>
+    /// (x, y) を左上とする width x height の矩形を切り出す。純粋な幾何操作
+    /// であり、用紙や余白の意味は一切知らない(DOMAIN §4.1 — mm・用紙寸法は
+    /// L3 の入口より奥へ持ち込まない。矩形の算出は呼び出し側 = L3 の責務)。
+    ///
+    /// 元画像が要求矩形より小さい場合は、利用可能な範囲へ切り詰める
+    /// (例外にしない — 小さい用紙で刷る場合がある)。x/y が画像の外側なら
+    /// 幅・高さ 0 の画像を返す。
+    ///
+    /// 行単位でコピーする(A4/600dpi の PPM は約 99.5MB あり、全体を複製
+    /// すると倍のメモリを食うため。DOMAIN §3.6)。
+    /// </summary>
+    public PpmImage Crop(int x, int y, int width, int height)
+    {
+        if (x < 0 || y < 0)
+        {
+            throw new ArgumentException($"crop origin must be non-negative, got ({x}, {y})");
+        }
+        if (width < 0 || height < 0)
+        {
+            throw new ArgumentException($"crop size must be non-negative, got ({width}, {height})");
+        }
+
+        int availableWidth = Math.Max(0, Width - x);
+        int availableHeight = Math.Max(0, Height - y);
+        int outWidth = Math.Min(width, availableWidth);
+        int outHeight = Math.Min(height, availableHeight);
+
+        byte[] outPixels = new byte[outWidth * outHeight * 3];
+        int srcRowBytes = Width * 3;
+        int dstRowBytes = outWidth * 3;
+        for (int row = 0; row < outHeight; row++)
+        {
+            int srcOffset = (y + row) * srcRowBytes + x * 3;
+            int dstOffset = row * dstRowBytes;
+            Array.Copy(Pixels, srcOffset, outPixels, dstOffset, dstRowBytes);
+        }
+
+        return new PpmImage(outWidth, outHeight, outPixels);
+    }
 }

@@ -196,8 +196,14 @@ internal static class Program
             Console.WriteLine("Ghostscript で PPM へ変換中...");
             Ghostscript.ConvertToPpm(psPath, ppmPath, DefaultResolution);
 
-            var image = PpmImage.Read(ppmPath);
-            Console.WriteLine($"PPM: {image.Width}x{image.Height}");
+            var fullImage = PpmImage.Read(ppmPath);
+            Console.WriteLine($"PPM(用紙全面): {fullImage.Width}x{fullImage.Height}");
+
+            // Ghostscript は用紙全面を描くが、プリンタが刷れるのは印字可能領域
+            // だけ(papers/5000-series.yaml の left_margin/top_margin/width/length)。
+            // ラスタの原点は印字可能領域の原点に対応する(-autoshift と整合)。
+            var image = fullImage.Crop(config.Paper.LeftMargin, config.Paper.TopMargin, config.Paper.Width, config.Paper.Length);
+            Console.WriteLine($"PPM(印字可能領域に切り出し後): {image.Width}x{image.Height}");
 
             var planes = Raster.ToPlanesMagic(image, config.Palette);
             var inks = config.Palette
