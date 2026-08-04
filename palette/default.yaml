@@ -66,9 +66,31 @@ inks:
     tolerance: 12
     order: 50
 
+  # プロセスインク(CMYK 分解の受け皿。DOMAIN §6.1 / D-019)。magic_rgb を
+  # 持たないため特色マッチングの対象にはならない。printer_code は
+  # ppmtomd 1.6 の mddata.h 実測値(推測値ではない)。
+  - name: cyan
+    label: 紙用シアン (MDC-FLCC)
+    printer_code: 0x01
+    channel: C
+    order: 60
+
+  - name: magenta
+    label: 紙用マゼンタ (MDC-FLCM)
+    printer_code: 0x02
+    channel: M
+    order: 70
+
+  - name: yellow
+    label: 紙用イエロー (MDC-FLCY)
+    printer_code: 0x03
+    channel: Y
+    order: 80
+
   - name: black
     label: 紙用ブラック (MDC-FLCK)
     magic_rgb: [0, 0, 0]
     printer_code: 0x00
     tolerance: 8
+    channel: K
     order: 90

@@ -86,9 +86,10 @@ def test_realistic_mixed_spot_and_cmyk_image():
     assert _bit(planes["cyan"], row_bytes, 1, 0) == 0
     assert _bit(planes["black_process"], row_bytes, 1, 0) == 0
     # not on any spot plane (other than white's auto_undercoat union,
-    # checked separately below).
+    # checked separately below). D-019 でパレットにプロセスインクが
+    # 入ったため、特色(magic_rgb を持つもの)だけを見る。
     for ink in inks:
-        if ink["name"] == "white":
+        if ink["name"] == "white" or ink["magic_rgb"] is None:
             continue
         assert _bit(planes[ink["name"]], row_bytes, 1, 0) == 0
 
@@ -98,7 +99,7 @@ def test_realistic_mixed_spot_and_cmyk_image():
     assert _bit(planes["yellow"], row_bytes, 2, 0) == 0
     assert _bit(planes["black_process"], row_bytes, 2, 0) == 0
     for ink in inks:
-        if ink["name"] == "white":
+        if ink["name"] == "white" or ink["magic_rgb"] is None:
             continue
         assert _bit(planes[ink["name"]], row_bytes, 2, 0) == 0
 

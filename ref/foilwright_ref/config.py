@@ -25,11 +25,11 @@ _NAME_RE = re.compile(r"^[a-z_]+$")
 _PALETTE_REQUIRED_FIELDS = (
     "name",
     "label",
-    "magic_rgb",
     "printer_code",
-    "tolerance",
     "order",
 )
+
+_PALETTE_CHANNELS = ("C", "M", "Y", "K")
 
 _PAPER_REQUIRED_FIELDS = (
     "name",
@@ -118,14 +118,39 @@ def _validate_ink(raw: dict, index: int) -> dict:
             "ASCII lowercase letters and underscores"
         )
 
-    magic_rgb = raw["magic_rgb"]
-    if (
+    # DOMAIN §6.1 / D-019: 種別は専用フラグではなく magic_rgb / channel の
+    # 有無で決まる。どちらも持たないインクは選択される経路が無いので不可、
+    # 両方持つ(黒)のは許容する。
+    has_magic_rgb = "magic_rgb" in raw
+    has_channel = "channel" in raw
+    if not has_magic_rgb and not has_channel:
+        raise ConfigError(
+            f"palette ink '{name}': must have 'magic_rgb' (spot ink), "
+            "'channel' (process ink), or both"
+        )
+
+    if has_magic_rgb != ("tolerance" in raw):
+        raise ConfigError(
+            f"palette ink '{name}': 'magic_rgb' and 'tolerance' must be "
+            "given together (both present, for a spot ink) or both absent "
+            "(process-only ink)"
+        )
+
+    magic_rgb = raw.get("magic_rgb")
+    if has_magic_rgb and (
         not isinstance(magic_rgb, (list, tuple))
         or len(magic_rgb) != 3
         or not all(isinstance(v, int) and 0 <= v <= 255 for v in magic_rgb)
     ):
         raise ConfigError(
             f"palette ink '{name}': 'magic_rgb' must be 3 integers in 0..255"
+        )
+
+    channel = raw.get("channel")
+    if has_channel and channel not in _PALETTE_CHANNELS:
+        raise ConfigError(
+            f"palette ink '{name}': 'channel' must be one of {_PALETTE_CHANNELS}, "
+            f"got {channel!r}"
         )
 
     # These are hand-written YAML files, so a quoted number (order: "50")
@@ -146,13 +171,17 @@ def _validate_ink(raw: dict, index: int) -> dict:
 
     _require_int("order", raw["order"], 0)
     _require_int("printer_code", raw["printer_code"], 0, 255)
-    # 255 を超える tolerance は全画素にマッチしうるので上限を切る
-    _require_int("tolerance", raw["tolerance"], 0, 255)
+    if has_magic_rgb:
+        # 255 を超える tolerance は全画素にマッチしうるので上限を切る
+        _require_int("tolerance", raw["tolerance"], 0, 255)
 
     ink = dict(raw)
-    ink["magic_rgb"] = list(magic_rgb)
+    if has_magic_rgb:
+        ink["magic_rgb"] = list(magic_rgb)
     ink.setdefault("passes", 1)
     ink.setdefault("auto_undercoat", False)
+    ink.setdefault("magic_rgb", None)
+    ink.setdefault("channel", None)
     _require_int("passes", ink["passes"], 1)
 
     if not isinstance(ink["auto_undercoat"], bool):
@@ -183,6 +212,7 @@ def load_palette(path: str) -> list[dict]:
     inks = [_validate_ink(raw, index) for index, raw in enumerate(raw_inks)]
 
     seen_names: dict[str, int] = {}
+    seen_channels: dict[str, int] = {}
     for index, ink in enumerate(inks):
         name = ink["name"]
         if name in seen_names:
@@ -191,6 +221,15 @@ def load_palette(path: str) -> list[dict]:
                 f"(entries #{seen_names[name]} and #{index})"
             )
         seen_names[name] = index
+
+        channel = ink["channel"]
+        if channel is not None:
+            if channel in seen_channels:
+                raise ConfigError(
+                    f"palette has duplicate channel '{channel}' "
+                    f"(entries #{seen_channels[channel]} and #{index})"
+                )
+            seen_channels[channel] = index
 
     return sorted(inks, key=lambda ink: ink["order"])
 

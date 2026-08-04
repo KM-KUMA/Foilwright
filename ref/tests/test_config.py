@@ -434,6 +434,121 @@ def test_load_palette_bad_name_non_ascii(tmp_path):
         config.load_palette(str(path))
 
 
+# ---------------------------------------------------------------------------
+# load_palette: process inks (channel field, D-019)
+# ---------------------------------------------------------------------------
+
+
+def test_load_palette_process_ink_without_magic_rgb(tmp_path):
+    inks_yaml = """  - name: cyan
+    label: Cyan
+    printer_code: 1
+    channel: C
+    order: 60
+"""
+    path = _write_palette(tmp_path, inks_yaml)
+    inks = config.load_palette(str(path))
+    assert len(inks) == 1
+    cyan = inks[0]
+    assert cyan["channel"] == "C"
+    assert cyan["magic_rgb"] is None
+    assert "tolerance" not in cyan
+
+
+def test_load_palette_duplicate_channel_is_rejected(tmp_path):
+    inks_yaml = """  - name: cyan
+    label: Cyan
+    printer_code: 1
+    channel: C
+    order: 60
+  - name: cyan2
+    label: Cyan 2
+    printer_code: 2
+    channel: C
+    order: 61
+"""
+    path = _write_palette(tmp_path, inks_yaml)
+    with pytest.raises(config.ConfigError):
+        config.load_palette(str(path))
+
+
+def test_load_palette_ink_without_magic_rgb_or_channel_is_rejected(tmp_path):
+    inks_yaml = """  - name: mystery
+    label: Mystery
+    printer_code: 1
+    order: 60
+"""
+    path = _write_palette(tmp_path, inks_yaml)
+    with pytest.raises(config.ConfigError):
+        config.load_palette(str(path))
+
+
+def test_load_palette_magic_rgb_without_tolerance_is_rejected(tmp_path):
+    inks_yaml = """  - name: white
+    label: White
+    magic_rgb: [230, 230, 230]
+    printer_code: 11
+    order: 10
+"""
+    path = _write_palette(tmp_path, inks_yaml)
+    with pytest.raises(config.ConfigError):
+        config.load_palette(str(path))
+
+
+def test_load_palette_ink_with_both_magic_rgb_and_channel(tmp_path):
+    """The black ink is allowed to be both a spot ink and a process ink
+    (D-019)."""
+    inks_yaml = """  - name: black
+    label: Black
+    magic_rgb: [0, 0, 0]
+    tolerance: 8
+    printer_code: 0
+    channel: K
+    order: 90
+"""
+    path = _write_palette(tmp_path, inks_yaml)
+    inks = config.load_palette(str(path))
+    black = inks[0]
+    assert black["magic_rgb"] == [0, 0, 0]
+    assert black["channel"] == "K"
+
+
+def test_load_palette_invalid_channel_value_is_rejected(tmp_path):
+    inks_yaml = """  - name: mystery
+    label: Mystery
+    printer_code: 1
+    channel: X
+    order: 60
+"""
+    path = _write_palette(tmp_path, inks_yaml)
+    with pytest.raises(config.ConfigError):
+        config.load_palette(str(path))
+
+
+def test_load_palette_default_process_inks():
+    """palette/default.yaml has cyan/magenta/yellow process inks alongside
+    the existing spot inks (D-019)."""
+    inks = config.load_palette(str(PALETTE_DIR / "default.yaml"))
+    by_name = {ink["name"]: ink for ink in inks}
+
+    cyan = by_name["cyan"]
+    assert cyan["channel"] == "C"
+    assert cyan["printer_code"] == 0x01
+    assert cyan["magic_rgb"] is None
+
+    magenta = by_name["magenta"]
+    assert magenta["channel"] == "M"
+    assert magenta["printer_code"] == 0x02
+
+    yellow = by_name["yellow"]
+    assert yellow["channel"] == "Y"
+    assert yellow["printer_code"] == 0x03
+
+    black = by_name["black"]
+    assert black["channel"] == "K"
+    assert black["magic_rgb"] == [0, 0, 0]
+
+
 def test_load_palette_duplicate_name(tmp_path):
     inks_yaml = """  - name: white
     label: White

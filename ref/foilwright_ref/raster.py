@@ -587,6 +587,10 @@ def to_planes_magic(
     width, height, pixels = image
     row_bytes = (width + 7) // 8
 
+    # プロセスインク(CMYK 分解の受け皿)はマジックカラーの対象ではない。
+    # パレット全体を渡されても特色だけを見る(D-019)。
+    inks = [ink for ink in inks if ink.get("magic_rgb") is not None]
+
     undercoat_names = [ink["name"] for ink in inks if ink.get("auto_undercoat")]
     if len(undercoat_names) > 1:
         raise ValueError(
@@ -702,6 +706,10 @@ def to_planes_auto(
 
     width, height, pixels = image
     row_bytes = (width + 7) // 8
+
+    # プロセスインク(CMYK 分解の受け皿)はマジックカラーの対象ではない。
+    # パレット全体を渡されても特色だけを見る(D-019)。
+    inks = [ink for ink in inks if ink.get("magic_rgb") is not None]
 
     undercoat_names = [ink["name"] for ink in inks if ink.get("auto_undercoat")]
     if len(undercoat_names) > 1:
