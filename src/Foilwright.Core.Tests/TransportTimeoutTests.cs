@@ -93,4 +93,80 @@ public class TransportTimeoutTests
 
         Assert.Contains("電源を入れ直して", ex.Message);
     }
+
+    [Fact]
+    public void TryReadWithTimeout_NoDataArrives_ReturnsTimedOutWithoutThrowing()
+    {
+        // ドレインの中核となる読み取りプリミティブの検証。ReadWithTimeout と
+        // 違い、タイムアウトは正常な終了条件であって例外にしてはならない
+        // (受信パイプに読み残しが無いことを示す)。
+        using var server = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.None);
+
+        var (bytesRead, timedOut) = TimedIo.TryReadWithTimeout(
+            WrapAsFileHandle(server.SafePipeHandle), new byte[64], 300, "drain read");
+
+        Assert.True(timedOut);
+        Assert.Equal(0, bytesRead);
+    }
+
+    [Fact]
+    public void TryReadWithTimeout_PartialDataAvailable_ReturnsActualByteCountWithoutRequiringExactFill()
+    {
+        // ReadWithTimeout はちょうど count バイトを要求するが、ドレインでは
+        // バッファを埋め切らない部分読み取りも正常な結果として受理する。
+        using var server = new AnonymousPipeServerStream(PipeDirection.Out, HandleInheritability.None);
+        using var client = new AnonymousPipeClientStream(PipeDirection.In, server.ClientSafePipeHandle);
+
+        byte[] leftover = { 0x00, 0x00, 0x00, 0x00, 0x00 }; // 実測で観測された読み残し(102 バイトのうちの一部を模擬)
+        server.Write(leftover, 0, leftover.Length);
+        server.Flush();
+
+        var (bytesRead, timedOut) = TimedIo.TryReadWithTimeout(
+            WrapAsFileHandle(client.SafePipeHandle), new byte[64], 2_000, "drain read");
+
+        Assert.False(timedOut);
+        Assert.Equal(leftover.Length, bytesRead);
+    }
+
+    [Fact]
+    public void Drain_LeftoverBytesQueued_DiscardsThemAndStopsOnTimeout()
+    {
+        // Open() 相当のシナリオ: 受信パイプに前回の読み残しが滞留した状態から
+        // Drain() を呼ぶと、それを読み捨てて DrainedByteCount に反映し、
+        // それ以上データが来なくなった時点(タイムアウト)で止まること。
+        using var server = new AnonymousPipeServerStream(PipeDirection.Out, HandleInheritability.None);
+        using var client = new AnonymousPipeClientStream(PipeDirection.In, server.ClientSafePipeHandle);
+
+        byte[] leftover = new byte[102]; // 実測(状態応答の読み残し)と同じ長さ
+        server.Write(leftover, 0, leftover.Length);
+        server.Flush();
+
+        using var transport = new AlpsTransport(
+            new SafeFileHandleWrapper(WrapAsFileHandle(client.SafePipeHandle)), 30_000, 10_000);
+
+        int discarded = transport.Drain(readTimeoutMs: 300);
+
+        Assert.Equal(leftover.Length, discarded);
+        Assert.Equal(leftover.Length, transport.DrainedByteCount);
+    }
+
+    [Fact]
+    public void Drain_NothingQueued_ReturnsZeroWithinBoundedTime()
+    {
+        // 読み残しが無い正常時は、1 回のタイムアウト待ちだけで即座に戻ること
+        // (無期限に待ち続けない)。
+        using var server = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.None);
+
+        using var transport = new AlpsTransport(
+            new SafeFileHandleWrapper(WrapAsFileHandle(server.SafePipeHandle)), 30_000, 10_000);
+
+        var stopwatch = Stopwatch.StartNew();
+        int discarded = transport.Drain(readTimeoutMs: 300);
+        stopwatch.Stop();
+
+        Assert.Equal(0, discarded);
+        Assert.Equal(0, transport.DrainedByteCount);
+        Assert.True(stopwatch.ElapsedMilliseconds < 300 + 5_000,
+            $"took {stopwatch.ElapsedMilliseconds} ms");
+    }
 }

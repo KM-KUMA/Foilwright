@@ -115,6 +115,7 @@ internal static class Program
     private static int RunStatus()
     {
         using var transport = AlpsTransport.OpenDevice();
+        PrintDrainResult(transport);
         var status = transport.ReadStatus();
         PrintDeviceIdProbe(transport);
 
@@ -145,6 +146,7 @@ internal static class Program
         Console.WriteLine($"ジョブ: {jobPath} ({rgl.Length} バイト)");
 
         using var transport = AlpsTransport.OpenDevice();
+        PrintDrainResult(transport);
         var before = transport.ReadStatus();
         PrintDeviceIdProbe(transport);
         Console.WriteLine($"送出前状態バイト: 0x{before.StatusByte:x2}");
@@ -152,6 +154,18 @@ internal static class Program
         transport.SendJob(rgl, (done, total) => Console.WriteLine($"  {done}/{total} バイト"));
         Console.WriteLine("送出完了");
         return 0;
+    }
+
+    /// <summary>デバイスを開いた直後のドレイン結果を表示する。0 バイトなら
+    /// 何も表示しない(正常時は無言でよい)。0 でなければ、前回の会話の
+    /// 読み残しが受信パイプに滞留していたことを意味する(実測で確認済みの
+    /// 不具合の症状)。</summary>
+    private static void PrintDrainResult(AlpsTransport transport)
+    {
+        if (transport.DrainedByteCount > 0)
+        {
+            Console.WriteLine($"受信パイプに {transport.DrainedByteCount} バイトの読み残しがあったため破棄しました");
+        }
     }
 
     /// <summary>バルクの前置き GET_DEVICE_ID(DOMAIN §11.4/§15.3)の結果を表示する。
@@ -246,6 +260,7 @@ internal static class Program
             Console.WriteLine($"RGL 組み立て完了: {rgl.Length} バイト。送出中...");
 
             using var transport = AlpsTransport.OpenDevice();
+            PrintDrainResult(transport);
             transport.SendJob(rgl, (done, total) => Console.WriteLine($"  {done}/{total} バイト"));
             PrintDeviceIdProbe(transport);
             Console.WriteLine("送出完了");

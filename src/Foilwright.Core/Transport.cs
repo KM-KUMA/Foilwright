@@ -213,7 +213,41 @@ public sealed class AlpsTransport : IDisposable
     /// 呼び出し側が原因を追いたい場合にここを参照する(DOMAIN §11.4/§15.3)。</summary>
     public DeviceIdProbeResult? LastDeviceIdProbe { get; private set; }
 
-    private AlpsTransport(SafeFileHandleWrapper handle, int writeTimeoutMs, int readTimeoutMs)
+    /// <summary>Open() 直後のドレインで破棄したバイト数。0 でなければ、
+    /// 開いた時点で受信パイプに前回の読み残しが滞留していたことを意味する
+    /// (実測で確認済みの不具合の症状)。呼び出し側(CLI 等)はこれが 0 でない
+    /// 場合に利用者へ知らせる。</summary>
+    public int DrainedByteCount { get; private set; }
+
+    /// <summary>ドレインの 1 回の読み取りに使う受信バッファ長。実測で観測された
+    /// 最大の残留応答(256 バイト応答)より十分大きく取る。</summary>
+    private const int DrainBufferSize = 4096;
+
+    /// <summary>ドレインの 1 回の読み取りに与えるタイムアウト(ミリ秒)。
+    /// USB Full Speed バルクの往復は通常 1 ms 未満〜数 ms のオーダーで、
+    /// 「データが既に届いている/届いていない」はこの程度の待ちで判別できる。
+    /// 一方で応答読み取り本来のタイムアウト(10 秒)ほど長く取ると、読み残しが
+    /// 無い正常時にも起動のたびにその待ち時間が乗ってしまう。300ms は
+    /// 「正常時の起動遅延をほぼ気にならない程度に抑えつつ、実際に残っている
+    /// データを取りこぼさない」ための実務上の妥協値である
+    /// (実測でこの値の是非を検証したわけではない。【推測】)。</summary>
+    public const int DefaultDrainReadTimeoutMs = 300;
+
+    /// <summary>ドレインを打ち切るまでの最大反復回数。1 回あたり最大
+    /// DrainBufferSize バイトなので、これは総破棄バイト数の上限にもなる
+    /// (無限にデータが来続ける異常系でも読み続けないための安全弁の 1 つ)。</summary>
+    private const int DrainMaxIterations = 64;
+
+    /// <summary>ドレイン全体の経過時間の上限(ミリ秒)。反復回数の上限とは
+    /// 独立に、壁時計時間でも打ち切る(呼び出し側が読み取りタイムアウトを
+    /// 大きく変更した場合でも、起動時のドレインが際限なく長引かないようにする
+    /// ための二重の安全弁)。</summary>
+    private const int DrainMaxTotalMs = 5_000;
+
+    // internal(private ではない): テストが匿名パイプのハンドルで Drain() を
+    // 直接検証できるようにするため(実機を使わずに検証する既存の作法。
+    // TransportTimeoutTests.cs / TransportTests.cs 参照)。
+    internal AlpsTransport(SafeFileHandleWrapper handle, int writeTimeoutMs, int readTimeoutMs)
     {
         _handle = handle;
         _writeTimeoutMs = writeTimeoutMs;
@@ -243,7 +277,12 @@ public sealed class AlpsTransport : IDisposable
 
     /// <summary>デバイスパスを読み書き両用で開く。
     /// writeTimeoutMs / readTimeoutMs は DOMAIN §15.2.2 に基づく既定値
-    /// (書き込み 30 秒・応答読み取り 10 秒)を、呼び出し側で変更できる。</summary>
+    /// (書き込み 30 秒・応答読み取り 10 秒)を、呼び出し側で変更できる。
+    ///
+    /// 開いた直後、最初のコマンドを送る前に受信パイプをドレインする
+    /// (実測で判明: 前回の会話の読み残しが滞留していると、以後の応答が
+    /// すべてずれる。原因は採取ツールが `05 02`〜`05 04` の 512 バイト超
+    /// 応答を固定長 512 バイトで打ち切って読んでいたこと)。</summary>
     public static AlpsTransport Open(
         string devicePath,
         int writeTimeoutMs = DefaultWriteTimeoutMs,
@@ -262,7 +301,9 @@ public sealed class AlpsTransport : IDisposable
             int err = Marshal.GetLastWin32Error();
             throw new TransportException($"CreateFile failed for '{devicePath}' (win32={err})");
         }
-        return new AlpsTransport(new SafeFileHandleWrapper(handle), writeTimeoutMs, readTimeoutMs);
+        var transport = new AlpsTransport(new SafeFileHandleWrapper(handle), writeTimeoutMs, readTimeoutMs);
+        transport.Drain();
+        return transport;
     }
 
     /// <summary>デバイスを探して開く(FindDevicePath + Open の組み合わせ)。</summary>
@@ -293,6 +334,33 @@ public sealed class AlpsTransport : IDisposable
     private void ProbeDeviceId()
     {
         LastDeviceIdProbe = DeviceIdProbe.TryGet(_handle.Handle);
+    }
+
+    /// <summary>受信パイプに滞留している読み残しを、応答が返らなくなるまで
+    /// 読み捨てる。Open() が最初のコマンド送出前に必ず呼ぶ。
+    ///
+    /// 短いタイムアウトでの読み取りを繰り返し、タイムアウト(=もう何も
+    /// 来ない)を正常な終了条件として扱う。既存のタイムアウト機構
+    /// (TimedIo / CancelIoEx)を経由するため、タイムアウト無しの読み取りで
+    /// インターフェースをウェッジさせる心配はない(DOMAIN §15.2.1)。
+    /// 反復回数・総破棄バイト数・経過時間の 3 つの安全弁を持ち、
+    /// いずれかに達したら異常系としてそこで打ち切る(無限には読み続けない)。</summary>
+    internal int Drain(int readTimeoutMs = DefaultDrainReadTimeoutMs)
+    {
+        byte[] buffer = new byte[DrainBufferSize];
+        int total = 0;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        for (int i = 0; i < DrainMaxIterations && stopwatch.ElapsedMilliseconds < DrainMaxTotalMs; i++)
+        {
+            var (read, timedOut) = TimedIo.TryReadWithTimeout(_handle.Handle, buffer, readTimeoutMs, "drain read");
+            if (timedOut || read <= 0)
+            {
+                break;
+            }
+            total += read;
+        }
+        DrainedByteCount = total;
+        return total;
     }
 
     /// <summary>カセット状態を問い合わせる(`05 01` → 38 バイト。DOMAIN §15.2 / §11.4)。</summary>
@@ -453,6 +521,42 @@ internal static class TimedIo
             throw new TransportException($"{what}: ReadFile returned {read} of {count} bytes");
         }
         return buffer;
+    }
+
+    /// <summary>ドレイン専用の読み取り。ReadWithTimeout と異なり、
+    /// タイムアウトを例外にせず戻り値として返す(ドレイン中のタイムアウトは
+    /// 「もう読み残しが無い」ことを示す正常な終了条件であるため)。
+    /// 読めた分だけを部分読み取りとして受理する(ちょうど buffer.Length
+    /// バイト届くとは限らないため、ReadWithTimeout のような厳格な
+    /// バイト数一致は求めない)。</summary>
+    public static (int bytesRead, bool timedOut) TryReadWithTimeout(
+        SafeFileHandle handle, byte[] buffer, int timeoutMs, string what)
+    {
+        bool ok = false;
+        int read = 0;
+        int win32Error = 0;
+
+        var ioTask = Task.Run(() =>
+        {
+            ok = NativeMethods.ReadFile(handle, buffer, buffer.Length, out read, IntPtr.Zero);
+            if (!ok)
+            {
+                win32Error = Marshal.GetLastWin32Error();
+            }
+        });
+
+        if (!ioTask.Wait(timeoutMs))
+        {
+            NativeMethods.CancelIoEx(handle, IntPtr.Zero);
+            ioTask.Wait(CancelGraceMs);
+            return (0, true);
+        }
+
+        if (!ok)
+        {
+            throw new TransportException($"{what}: ReadFile failed (win32={win32Error})");
+        }
+        return (read, false);
     }
 }
 
