@@ -63,17 +63,25 @@ public static class FwProbe
                 err = "WRITE_FAILED win32=" + Marshal.GetLastWin32Error();
                 return null;
             }
-            byte[] buf = new byte[512];
-            int read;
-            if (!ReadFile(h, buf, buf.Length, out read, IntPtr.Zero))
+            // 応答を最後まで読み切る。途中で打ち切るとデバイス側に読み残しが
+            // 滞留し、次の会話の先頭にそれが出てきて以後すべてがずれる
+            // (2026-08-04 に実地で踏んだ)。
+            var all = new System.Collections.Generic.List<byte>();
+            byte[] buf = new byte[4096];
+            while (true)
             {
-                err = "READ_FAILED win32=" + Marshal.GetLastWin32Error();
-                return null;
+                int read;
+                if (!ReadFile(h, buf, buf.Length, out read, IntPtr.Zero))
+                {
+                    err = "READ_FAILED win32=" + Marshal.GetLastWin32Error();
+                    return null;
+                }
+                for (int i = 0; i < read; i++) { all.Add(buf[i]); }
+                // バッファ未満で終わりとみなす。ちょうど埋まったときだけ続きを読む。
+                if (read < buf.Length) { break; }
             }
             err = null;
-            byte[] outb = new byte[read];
-            Array.Copy(buf, outb, read);
-            return outb;
+            return all.ToArray();
         }
         finally { CloseHandle(h); }
     }
