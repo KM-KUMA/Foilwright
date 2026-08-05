@@ -24,6 +24,10 @@ internal static class Program
     private const string DefaultMediaName = "plain_paper";
     private const string PipeName = "foilwright";
 
+    // D-016: インク指定方式の既定は 'auto'。将来はトレイアプリの設定 UI から
+    // 渡される(D-024)。当面はコマンドライン引数 --ink-mode で選ぶ。
+    private const string DefaultInkMode = "auto";
+
     private static int Main(string[] args)
     {
         if (args.Length == 0)
@@ -46,7 +50,7 @@ internal static class Program
                     }
                     return RunPrint(args[1]);
                 case "listen":
-                    return RunListen();
+                    return RunListen(args.Skip(1).ToArray());
                 default:
                     PrintUsage();
                     return 1;
@@ -64,7 +68,9 @@ internal static class Program
         Console.Error.WriteLine("使い方: Foilwright.Cli <status|print|listen> [引数]");
         Console.Error.WriteLine("  status              プリンタの状態(装填カセット)を表示する");
         Console.Error.WriteLine("  print <file>        RGL バイト列ファイルを送出する");
-        Console.Error.WriteLine("  listen              名前付きパイプで PostScript を受け取り印刷する");
+        Console.Error.WriteLine("  listen [--ink-mode auto|per_page|spot_only]");
+        Console.Error.WriteLine("                      名前付きパイプで PostScript を受け取り印刷する");
+        Console.Error.WriteLine("                      --ink-mode 省略時は 'auto'(DOMAIN §6.6 / D-016)");
     }
 
     // --- リポジトリ内の設定ファイルの場所 --------------------------------------
@@ -189,12 +195,51 @@ internal static class Program
 
     // --- listen ----------------------------------------------------------------
 
-    private static int RunListen()
+    private static int RunListen(string[] args)
     {
+        string inkMode = DefaultInkMode;
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--ink-mode")
+            {
+                if (i + 1 >= args.Length)
+                {
+                    Console.Error.WriteLine("使い方: listen --ink-mode auto|per_page|spot_only");
+                    return 1;
+                }
+                inkMode = args[i + 1];
+                i++;
+            }
+            else
+            {
+                Console.Error.WriteLine($"不明な引数: {args[i]}");
+                return 1;
+            }
+        }
+
+        if (!JobAssembly.ValidInkModes.Contains(inkMode))
+        {
+            Console.Error.WriteLine(
+                $"不明なインク指定方式 '{inkMode}'。次のいずれかを指定してください: {string.Join(", ", JobAssembly.ValidInkModes)}");
+            return 1;
+        }
+
+        // per_page は 1 ページ = 1 インクであり複数ページ入力を要する
+        // (DOMAIN §6.6)。名前付きパイプで受け取る listen は単一ページの
+        // PostScript しか扱えないため、ここで明確に拒否する(黙って別方式に
+        // すり替えない)。
+        if (inkMode == "per_page")
+        {
+            Console.Error.WriteLine(
+                "インク指定方式 'per_page' は現状の listen(単一ページの PostScript のみ受信)では選べません。" +
+                "1 ページ = 1 インクの複数ページ入力が必要です。");
+            return 1;
+        }
+
         string repoRoot = FindRepoRoot();
         var config = LoadDefaultJobConfig(repoRoot);
 
-        Console.WriteLine($"名前付きパイプ \\\\.\\pipe\\{PipeName} で待ち受け中(Ctrl+C で終了)...");
+        Console.WriteLine($"名前付きパイプ \\\\.\\pipe\\{PipeName} で待ち受け中(Ctrl+C で終了)... インク指定方式: {inkMode}");
 
         while (true)
         {
@@ -206,7 +251,7 @@ internal static class Program
 
             try
             {
-                HandleJob(pipe, config);
+                HandleJob(pipe, config, inkMode);
             }
             catch (Exception ex)
             {
@@ -215,7 +260,7 @@ internal static class Program
         }
     }
 
-    private static void HandleJob(NamedPipeServerStream pipe, JobConfig config)
+    private static void HandleJob(NamedPipeServerStream pipe, JobConfig config, string inkMode)
     {
         string psPath = Path.Combine(Path.GetTempPath(), $"foilwright_{Guid.NewGuid():n}.ps");
         string ppmPath = Path.Combine(Path.GetTempPath(), $"foilwright_{Guid.NewGuid():n}.ppm");
@@ -240,10 +285,16 @@ internal static class Program
             var image = fullImage.Crop(config.Paper.LeftMargin, config.Paper.TopMargin, config.Paper.Width, config.Paper.Length);
             Console.WriteLine($"PPM(印字可能領域に切り出し後): {image.Width}x{image.Height}");
 
-            var planes = Raster.ToPlanesMagic(image, config.Palette);
-            var inks = config.Palette
-                .Where(ink => ink.MagicRgb is not null)
-                .Select(ink => new JobInk { Name = ink.Name, PrinterCode = ink.PrinterCode })
+            var jobPlanes = JobAssembly.BuildJobPlanes(image, config.Palette, inkMode);
+            if (jobPlanes.Count == 0)
+            {
+                Console.WriteLine("印刷する内容がありません");
+                return;
+            }
+
+            var planes = jobPlanes.ToDictionary(jp => jp.Ink.Name, jp => jp.Plane);
+            var inks = jobPlanes
+                .Select(jp => new JobInk { Name = jp.Ink.Name, PrinterCode = jp.Ink.PrinterCode })
                 .ToList();
 
             var job = new PrintJob
