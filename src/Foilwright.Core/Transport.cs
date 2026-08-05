@@ -188,8 +188,30 @@ internal static class DeviceIdProbe
     }
 }
 
+/// <summary>送出方式(DOMAIN §15.2 / D-025)。
+///
+/// MD-5500 の USB 直結には ALPS 独自のパケット層があるが、MD-5000 +
+/// USB-パラレル変換ケーブル経由の経路にはこの層が無いとみられる
+/// (根拠: ppmtomd がパラレル向けに生の RGL をそのまま出力していること。
+/// DOMAIN §4.4 の経路表)。デバイス探索・タイムアウト・ドレインは両方式で
+/// 共通のまま、送出手順だけをここで切り替える。</summary>
+public enum TransportMode
+{
+    /// <summary>ALPS 独自パケット層で送る(`05 ff` → `06` → `02 01 {len-1} {data}` → `06`)。
+    /// MD-5500 USB 直結(VID 044E)。</summary>
+    Packet,
+
+    /// <summary>RGL を包まずそのまま書く。MD-5000 + 変換ケーブル(VID 056E、D-025)。
+    /// パケット層の ACK は存在しないため、書き込み後にバルク IN を読んでは
+    /// ならない(DOMAIN §15.2.1: 応答を返さない操作の後に読むとインターフェースが
+    /// ウェッジし、物理再接続でしか回復しない)。</summary>
+    Raw,
+}
+
 /// <summary>usbprint.sys のデバイスインターフェースを直接開き、DOMAIN §15.2 の
-/// パケット層で ALPS プリンタと通信する(D-020)。</summary>
+/// プロトコルで ALPS プリンタ(または変換ケーブル経由の MD-5000)と通信する
+/// (D-020 / D-025)。<see cref="TransportMode"/> で送出方式を切り替える。
+/// デバイス探索・タイムアウト・ドレインは方式に依存しない共通処理。</summary>
 public sealed class AlpsTransport : IDisposable
 {
     // usbprint.sys が公開するデバイスインターフェース GUID(DOMAIN §15.6)。
@@ -206,7 +228,11 @@ public sealed class AlpsTransport : IDisposable
     private readonly SafeFileHandleWrapper _handle;
     private readonly int _writeTimeoutMs;
     private readonly int _readTimeoutMs;
+    private readonly TransportMode _mode;
     private bool _disposed;
+
+    /// <summary>この接続の送出方式(DOMAIN §15.2 / D-025)。</summary>
+    public TransportMode Mode => _mode;
 
     /// <summary>直近の GET_DEVICE_ID 前置き(IOCTL_USBPRINT_GET_1284_ID)の結果。
     /// SendJob / ReadStatus のたびに更新される。失敗しても送出は継続するため、
@@ -247,11 +273,15 @@ public sealed class AlpsTransport : IDisposable
     // internal(private ではない): テストが匿名パイプのハンドルで Drain() を
     // 直接検証できるようにするため(実機を使わずに検証する既存の作法。
     // TransportTimeoutTests.cs / TransportTests.cs 参照)。
-    internal AlpsTransport(SafeFileHandleWrapper handle, int writeTimeoutMs, int readTimeoutMs)
+    // mode に既定値を与えているのは、既存呼び出し(3 引数)を変更せずに
+    // 済ませるため(公開 API 互換の要求)。
+    internal AlpsTransport(
+        SafeFileHandleWrapper handle, int writeTimeoutMs, int readTimeoutMs, TransportMode mode = TransportMode.Packet)
     {
         _handle = handle;
         _writeTimeoutMs = writeTimeoutMs;
         _readTimeoutMs = readTimeoutMs;
+        _mode = mode;
     }
 
     /// <summary>レジストリの DeviceClasses からデバイスインターフェースパスを探す。
@@ -283,10 +313,14 @@ public sealed class AlpsTransport : IDisposable
     /// (実測で判明: 前回の会話の読み残しが滞留していると、以後の応答が
     /// すべてずれる。原因は採取ツールが `05 02`〜`05 04` の 512 バイト超
     /// 応答を固定長 512 バイトで打ち切って読んでいたこと)。</summary>
+    /// mode は既定で Packet(MD-5500 USB 直結・従来どおり)。MD-5000 + 変換ケーブル
+    /// 経由では TransportMode.Raw を渡す(D-025)。ドレイン・タイムアウトは
+    /// mode に関わらず共通して行う。
     public static AlpsTransport Open(
         string devicePath,
         int writeTimeoutMs = DefaultWriteTimeoutMs,
-        int readTimeoutMs = DefaultReadTimeoutMs)
+        int readTimeoutMs = DefaultReadTimeoutMs,
+        TransportMode mode = TransportMode.Packet)
     {
         var handle = NativeMethods.CreateFile(
             devicePath,
@@ -301,18 +335,21 @@ public sealed class AlpsTransport : IDisposable
             int err = Marshal.GetLastWin32Error();
             throw new TransportException($"CreateFile failed for '{devicePath}' (win32={err})");
         }
-        var transport = new AlpsTransport(new SafeFileHandleWrapper(handle), writeTimeoutMs, readTimeoutMs);
+        var transport = new AlpsTransport(new SafeFileHandleWrapper(handle), writeTimeoutMs, readTimeoutMs, mode);
         transport.Drain();
         return transport;
     }
 
-    /// <summary>デバイスを探して開く(FindDevicePath + Open の組み合わせ)。</summary>
+    /// <summary>デバイスを探して開く(FindDevicePath + Open の組み合わせ)。
+    /// vidMatch の既定は ALPS 自身(044E)。変換ケーブル経由(D-025)では
+    /// "VID_056E" と TransportMode.Raw を呼び出し側から渡す。</summary>
     public static AlpsTransport OpenDevice(
         string vidMatch = "VID_044E",
         int writeTimeoutMs = DefaultWriteTimeoutMs,
-        int readTimeoutMs = DefaultReadTimeoutMs)
+        int readTimeoutMs = DefaultReadTimeoutMs,
+        TransportMode mode = TransportMode.Packet)
     {
-        return Open(FindDevicePath(vidMatch), writeTimeoutMs, readTimeoutMs);
+        return Open(FindDevicePath(vidMatch), writeTimeoutMs, readTimeoutMs, mode);
     }
 
     private void WriteExact(ReadOnlySpan<byte> data, string what)
@@ -372,11 +409,24 @@ public sealed class AlpsTransport : IDisposable
         return CassetteStatus.Parse(raw);
     }
 
-    /// <summary>RGL ジョブを送出する。progress は各断片の送出完了ごとに
+    /// <summary>RGL ジョブを送出する。progress は送出の進捗ごとに
     /// (送出済みバイト数, 総バイト数) で呼ばれる(省略可)。
-    /// 断片ごとに `05 ff` → `06` → データパケット → `06` を繰り返す
-    /// (DOMAIN §15.2)。</summary>
+    ///
+    /// Mode==Packet: 断片ごとに `05 ff` → `06` → データパケット → `06` を
+    /// 繰り返す(DOMAIN §15.2。従来どおりの動作)。
+    /// Mode==Raw: RGL を包まずそのまま書く(D-025)。応答が存在しないため
+    /// 書き込み後にバルク IN を読まない(DOMAIN §15.2.1)。</summary>
     public void SendJob(byte[] rgl, Action<int, int>? progress = null)
+    {
+        if (_mode == TransportMode.Raw)
+        {
+            SendJobRaw(rgl, progress);
+            return;
+        }
+        SendJobPacket(rgl, progress);
+    }
+
+    private void SendJobPacket(byte[] rgl, Action<int, int>? progress)
     {
         ProbeDeviceId();
         int done = 0;
@@ -402,6 +452,26 @@ public sealed class AlpsTransport : IDisposable
             done += chunk.Length;
             progress?.Invoke(done, rgl.Length);
         }
+    }
+
+    /// <summary>RGL を包まずそのまま一括で書く(D-025)。
+    ///
+    /// パケット層の 32764 バイト上限(AlpsProtocol.MaxPayload)はデータパケットの
+    /// ヘッダが持つ 16bit 長フィールドに由来する、パケット層固有の制約である。
+    /// 生送出にはそのヘッダが無く、同じ上限が適用される根拠が無いため分割しない
+    /// (未検証のまま上限を推測で持ち込まない)。usbprint.sys の WriteFile が
+    /// 内部でどう分割するかはドライバの実装に委ねる。
+    ///
+    /// 書き込み後にバルク IN を読まない(DOMAIN §15.2.1: 応答を返さない操作の
+    /// 直後に読むとインターフェースがウェッジし、物理再接続でしか回復しない)。</summary>
+    private void SendJobRaw(byte[] rgl, Action<int, int>? progress)
+    {
+        ProbeDeviceId();
+        if (rgl.Length > 0)
+        {
+            WriteExact(rgl, "raw rgl data");
+        }
+        progress?.Invoke(rgl.Length, rgl.Length);
     }
 
     public void Dispose()
