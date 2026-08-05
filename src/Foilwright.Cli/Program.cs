@@ -7,7 +7,10 @@
 //
 // 設定ファイル(profiles/ papers/ palette/ media.yaml)はすべてリポジトリ
 // 直下から読む。値をここにハードコードしない(DOMAIN §4.5)。
-// 既定値: MD-5500 / 600dpi / A4 / 普通紙。
+// 既定値: MD-5000(D-025) / 600dpi / A4 / 普通紙。
+//
+// 機種 → (プロファイル・送出方式・VID) の対応は Foilwright.Core.MachineRoute
+// に集約してある(D-025)。3 サブコマンド共通で --machine / --vid を受け付ける。
 
 using System.IO.Pipes;
 using Foilwright.Core;
@@ -18,7 +21,7 @@ internal static class Program
 {
     // 既定ジョブ設定(D-024: トレイアプリの設定既定値。ここでは Phase 2 の
     // 固定値として置く。将来のトレイアプリ UI 化で設定画面に移す)。
-    private const string DefaultModel = "md-5500";
+    // 機種の既定は D-025 で MD-5000 に戻った(MachineRoute.DefaultMachine)。
     private const int DefaultResolution = 600;
     private const string DefaultPaperName = "a4";
     private const string DefaultMediaName = "plain_paper";
@@ -41,14 +44,9 @@ internal static class Program
             switch (args[0])
             {
                 case "status":
-                    return RunStatus();
+                    return RunStatus(args.Skip(1).ToArray());
                 case "print":
-                    if (args.Length < 2)
-                    {
-                        Console.Error.WriteLine("使い方: Foilwright.Cli print <ジョブのバイト列ファイル>");
-                        return 1;
-                    }
-                    return RunPrint(args[1]);
+                    return RunPrint(args.Skip(1).ToArray());
                 case "listen":
                     return RunListen(args.Skip(1).ToArray());
                 default:
@@ -56,7 +54,8 @@ internal static class Program
                     return 1;
             }
         }
-        catch (Exception ex) when (ex is TransportException or GhostscriptException or ConfigException or PpmFormatException)
+        catch (Exception ex) when (ex is TransportException or GhostscriptException or ConfigException
+            or PpmFormatException or MachineRouteException)
         {
             Console.Error.WriteLine($"エラー: {ex.Message}");
             return 1;
@@ -66,11 +65,69 @@ internal static class Program
     private static void PrintUsage()
     {
         Console.Error.WriteLine("使い方: Foilwright.Cli <status|print|listen> [引数]");
-        Console.Error.WriteLine("  status              プリンタの状態(装填カセット)を表示する");
-        Console.Error.WriteLine("  print <file>        RGL バイト列ファイルを送出する");
-        Console.Error.WriteLine("  listen [--ink-mode auto|per_page|spot_only]");
+        Console.Error.WriteLine("  status [--machine md-5000|md-5500] [--vid XXXX]");
+        Console.Error.WriteLine("                      プリンタの状態(装填カセット)を表示する");
+        Console.Error.WriteLine("  print <file> [--machine md-5000|md-5500] [--vid XXXX]");
+        Console.Error.WriteLine("                      RGL バイト列ファイルを送出する");
+        Console.Error.WriteLine("  listen [--ink-mode auto|per_page|spot_only] [--machine md-5000|md-5500] [--vid XXXX]");
         Console.Error.WriteLine("                      名前付きパイプで PostScript を受け取り印刷する");
         Console.Error.WriteLine("                      --ink-mode 省略時は 'auto'(DOMAIN §6.6 / D-016)");
+        Console.Error.WriteLine($"  --machine 省略時は '{MachineRoute.DefaultMachine}'(D-025)。選べるのは: {MachineRoute.KnownMachinesDescription}");
+        Console.Error.WriteLine("  --vid は機種既定の VID(変換ケーブル等の個体差)を上書きする。例: --vid 056E");
+    }
+
+    /// <summary>3 サブコマンド共通の --machine / --vid を args から取り出す。
+    /// 消費した要素は戻り値の positional に残らない(サブコマンド固有の引数
+    /// だけが positional に残る)。D-025: 機種を選ぶとプロファイル・送出方式・VID
+    /// がまとめて決まる(MachineRoute)。VID だけは個体差がありうるため上書き
+    /// できる。</summary>
+    private static (MachineRoute Route, string DeviceVid, List<string> Positional) ParseMachineArgs(string[] args)
+    {
+        string machine = MachineRoute.DefaultMachine;
+        string? vidOverride = null;
+        var positional = new List<string>();
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--machine")
+            {
+                if (i + 1 >= args.Length)
+                {
+                    throw new MachineRouteException("使い方: --machine md-5000|md-5500");
+                }
+                machine = args[i + 1];
+                i++;
+            }
+            else if (args[i] == "--vid")
+            {
+                if (i + 1 >= args.Length)
+                {
+                    throw new MachineRouteException("使い方: --vid XXXX(例: --vid 056E)");
+                }
+                vidOverride = args[i + 1];
+                i++;
+            }
+            else
+            {
+                positional.Add(args[i]);
+            }
+        }
+
+        var route = MachineRoute.Resolve(machine);
+        string vid = NormalizeVid(vidOverride) ?? route.Vid;
+        return (route, vid, positional);
+    }
+
+    /// <summary>--vid に渡された値を AlpsTransport.FindDevicePath が期待する
+    /// "VID_XXXX" の形に揃える。既にその形なら変えない(利用者が
+    /// "--vid VID_056E" と書いても壊れないようにする)。</summary>
+    private static string? NormalizeVid(string? vid)
+    {
+        if (vid is null)
+        {
+            return null;
+        }
+        return vid.StartsWith("VID_", StringComparison.OrdinalIgnoreCase) ? vid : $"VID_{vid}";
     }
 
     // --- リポジトリ内の設定ファイルの場所 --------------------------------------
@@ -99,9 +156,9 @@ internal static class Program
         public required List<InkDefinition> Palette { get; init; }
     }
 
-    private static JobConfig LoadDefaultJobConfig(string repoRoot)
+    private static JobConfig LoadDefaultJobConfig(string repoRoot, MachineRoute route)
     {
-        var profile = ConfigLoader.LoadProfile(Path.Combine(repoRoot, "profiles", DefaultModel + ".yaml"));
+        var profile = ConfigLoader.LoadProfile(Path.Combine(repoRoot, "profiles", route.ProfileFileName));
         var paperTable = ConfigLoader.ResolvePaperTable(profile, Path.Combine(repoRoot, "papers"));
         if (!paperTable.TryGetValue(DefaultPaperName, out var paper))
         {
@@ -118,9 +175,16 @@ internal static class Program
 
     // --- status ------------------------------------------------------------------
 
-    private static int RunStatus()
+    private static int RunStatus(string[] args)
     {
-        using var transport = AlpsTransport.OpenDevice();
+        var (route, vid, positional) = ParseMachineArgs(args);
+        if (positional.Count > 0)
+        {
+            Console.Error.WriteLine($"不明な引数: {positional[0]}");
+            return 1;
+        }
+
+        using var transport = AlpsTransport.OpenDevice(vid, mode: route.Mode);
         PrintDrainResult(transport);
         var status = transport.ReadStatus();
         PrintDeviceIdProbe(transport);
@@ -141,8 +205,16 @@ internal static class Program
 
     // --- print ---------------------------------------------------------------
 
-    private static int RunPrint(string jobPath)
+    private static int RunPrint(string[] args)
     {
+        var (route, vid, positional) = ParseMachineArgs(args);
+        if (positional.Count != 1)
+        {
+            Console.Error.WriteLine("使い方: Foilwright.Cli print <ジョブのバイト列ファイル> [--machine md-5000|md-5500] [--vid XXXX]");
+            return 1;
+        }
+        string jobPath = positional[0];
+
         if (!File.Exists(jobPath))
         {
             Console.Error.WriteLine($"ファイルなし: {jobPath}");
@@ -151,7 +223,7 @@ internal static class Program
         byte[] rgl = File.ReadAllBytes(jobPath);
         Console.WriteLine($"ジョブ: {jobPath} ({rgl.Length} バイト)");
 
-        using var transport = AlpsTransport.OpenDevice();
+        using var transport = AlpsTransport.OpenDevice(vid, mode: route.Mode);
         PrintDrainResult(transport);
         var before = transport.ReadStatus();
         PrintDeviceIdProbe(transport);
@@ -197,22 +269,24 @@ internal static class Program
 
     private static int RunListen(string[] args)
     {
+        var (route, vid, remaining) = ParseMachineArgs(args);
+
         string inkMode = DefaultInkMode;
-        for (int i = 0; i < args.Length; i++)
+        for (int i = 0; i < remaining.Count; i++)
         {
-            if (args[i] == "--ink-mode")
+            if (remaining[i] == "--ink-mode")
             {
-                if (i + 1 >= args.Length)
+                if (i + 1 >= remaining.Count)
                 {
                     Console.Error.WriteLine("使い方: listen --ink-mode auto|per_page|spot_only");
                     return 1;
                 }
-                inkMode = args[i + 1];
+                inkMode = remaining[i + 1];
                 i++;
             }
             else
             {
-                Console.Error.WriteLine($"不明な引数: {args[i]}");
+                Console.Error.WriteLine($"不明な引数: {remaining[i]}");
                 return 1;
             }
         }
@@ -237,8 +311,9 @@ internal static class Program
         }
 
         string repoRoot = FindRepoRoot();
-        var config = LoadDefaultJobConfig(repoRoot);
+        var config = LoadDefaultJobConfig(repoRoot, route);
 
+        Console.WriteLine($"機種: {route.Machine}(送出方式: {route.Mode}、VID: {vid})");
         Console.WriteLine($"名前付きパイプ \\\\.\\pipe\\{PipeName} で待ち受け中(Ctrl+C で終了)... インク指定方式: {inkMode}");
 
         while (true)
@@ -251,7 +326,7 @@ internal static class Program
 
             try
             {
-                HandleJob(pipe, config, inkMode);
+                HandleJob(pipe, config, inkMode, route, vid);
             }
             catch (Exception ex)
             {
@@ -260,7 +335,8 @@ internal static class Program
         }
     }
 
-    private static void HandleJob(NamedPipeServerStream pipe, JobConfig config, string inkMode)
+    private static void HandleJob(
+        NamedPipeServerStream pipe, JobConfig config, string inkMode, MachineRoute route, string vid)
     {
         string psPath = Path.Combine(Path.GetTempPath(), $"foilwright_{Guid.NewGuid():n}.ps");
         string ppmPath = Path.Combine(Path.GetTempPath(), $"foilwright_{Guid.NewGuid():n}.ppm");
@@ -310,7 +386,7 @@ internal static class Program
             byte[] rgl = Emitter.EmitJob(planes, job);
             Console.WriteLine($"RGL 組み立て完了: {rgl.Length} バイト。送出中...");
 
-            using var transport = AlpsTransport.OpenDevice();
+            using var transport = AlpsTransport.OpenDevice(vid, mode: route.Mode);
             PrintDrainResult(transport);
             transport.SendJob(rgl, (done, total) => Console.WriteLine($"  {done}/{total} バイト"));
             PrintDeviceIdProbe(transport);
