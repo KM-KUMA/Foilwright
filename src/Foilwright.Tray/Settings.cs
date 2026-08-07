@@ -24,9 +24,12 @@ public sealed class TraySettings
     // listen と同じ制約)。
     public string InkMode { get; set; } = "auto";
 
-    public int Resolution { get; set; } = JobPipeline.DefaultResolution;
+    // D-027: DOMAIN §7.1 の残りの設定項目。
+    public string ResolutionKey { get; set; } = JobPipeline.DefaultResolutionKey;
     public string PaperName { get; set; } = JobPipeline.DefaultPaperName;
     public string MediaName { get; set; } = JobPipeline.DefaultMediaName;
+    public string Halftone { get; set; } = JobPipeline.DefaultHalftone;
+    public string WhiteMode { get; set; } = JobPipeline.DefaultWhiteMode;
 
     private static string SettingsPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),

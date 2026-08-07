@@ -90,11 +90,20 @@ public static class Ghostscript
             .FirstOrDefault(File.Exists);
     }
 
-    /// <summary>PostScript ファイルを解像度 dpi の PPM(P6)へ変換する。
+    /// <summary>PostScript ファイルを解像度 dpi の PPM(P6)へ変換する
+    /// (正方画素。dpiX == dpiY の場合の従来どおりの呼び出し)。</summary>
+    public static void ConvertToPpm(string inputPostScriptPath, string outputPpmPath, int dpi)
+        => ConvertToPpm(inputPostScriptPath, outputPpmPath, dpi, dpi);
+
+    /// <summary>PostScript ファイルを解像度 dpiX x dpiY の PPM(P6)へ変換する。
     /// 出力先 outputPpmPath は呼び出し側が指定し、変換後の後始末(削除)も
     /// 呼び出し側の責任(DOMAIN §3.6 の 99.5MB 級ファイルをメモリに載せない
-    /// 方針に合わせ、常にファイル経由で受け渡す)。</summary>
-    public static void ConvertToPpm(string inputPostScriptPath, string outputPpmPath, int dpi)
+    /// 方針に合わせ、常にファイル経由で受け渡す)。
+    ///
+    /// dpiX != dpiY(例: 1200x600)のときは非正方画素になる。Ghostscript の
+    /// -r は "-r{x}x{y}" 形式で非正方解像度を受け付ける(DOMAIN §7.1: 1200x600
+    /// は幅方向だけ 2 倍になるため)。</summary>
+    public static void ConvertToPpm(string inputPostScriptPath, string outputPpmPath, int dpiX, int dpiY)
     {
         string gs = FindExecutable();
 
@@ -111,7 +120,7 @@ public static class Ghostscript
         psi.ArgumentList.Add("-dBATCH");
         psi.ArgumentList.Add("-dSAFER");
         psi.ArgumentList.Add("-sDEVICE=ppmraw");
-        psi.ArgumentList.Add($"-r{dpi}");
+        psi.ArgumentList.Add(dpiX == dpiY ? $"-r{dpiX}" : $"-r{dpiX}x{dpiY}");
         psi.ArgumentList.Add($"-sOutputFile={outputPpmPath}");
         psi.ArgumentList.Add(inputPostScriptPath);
 

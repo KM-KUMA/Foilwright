@@ -23,7 +23,7 @@ internal static class Program
     // 既定ジョブ設定(D-024: トレイアプリの設定既定値。ここでは Phase 2 の
     // 固定値として置く。将来のトレイアプリ UI 化で設定画面に移す)。
     // 機種の既定は D-025 で MD-5000 に戻った(MachineRoute.DefaultMachine)。
-    private const int DefaultResolution = 600;
+    private const string DefaultResolutionKey = "600";
     private const string DefaultPaperName = "a4";
     private const string DefaultMediaName = "plain_paper";
     private const string PipeName = "foilwright";
@@ -31,6 +31,10 @@ internal static class Program
     // D-016: インク指定方式の既定は 'auto'。将来はトレイアプリの設定 UI から
     // 渡される(D-024)。当面はコマンドライン引数 --ink-mode で選ぶ。
     private const string DefaultInkMode = "auto";
+
+    // DOMAIN §7.1 / D-027: ハーフトーン・白版モードの既定。
+    private const string DefaultHalftone = "none";
+    private const string DefaultWhiteMode = "auto";
 
     private static int Main(string[] args)
     {
@@ -70,9 +74,15 @@ internal static class Program
         Console.Error.WriteLine("                      プリンタの状態(装填カセット)を表示する");
         Console.Error.WriteLine("  print <file> [--machine md-5000|md-5500] [--vid XXXX]");
         Console.Error.WriteLine("                      RGL バイト列ファイルを送出する");
-        Console.Error.WriteLine("  listen [--ink-mode auto|per_page|spot_only] [--machine md-5000|md-5500] [--vid XXXX]");
+        Console.Error.WriteLine("  listen [--ink-mode auto|per_page|spot_only] [--resolution 600|1200x600]");
+        Console.Error.WriteLine("         [--media <名前>] [--halftone none|halftone|coarse_halftone]");
+        Console.Error.WriteLine("         [--white-mode none|auto|magic] [--machine md-5000|md-5500] [--vid XXXX]");
         Console.Error.WriteLine("                      名前付きパイプで PostScript を受け取り印刷する");
         Console.Error.WriteLine("                      --ink-mode 省略時は 'auto'(DOMAIN §6.6 / D-016)");
+        Console.Error.WriteLine($"                      --resolution 省略時は '{DefaultResolutionKey}'。選べる値はプロファイルの resolutions による(DOMAIN §7.1)");
+        Console.Error.WriteLine($"                      --media 省略時は '{DefaultMediaName}'。選べる値は media.yaml による(DOMAIN §5.5.2)");
+        Console.Error.WriteLine($"                      --halftone 省略時は '{DefaultHalftone}'(DOMAIN §4.2.1)");
+        Console.Error.WriteLine($"                      --white-mode 省略時は '{DefaultWhiteMode}'(DOMAIN §7.1 / D-027)");
         Console.Error.WriteLine($"  --machine 省略時は '{MachineRoute.DefaultMachine}'(D-025)。選べるのは: {MachineRoute.KnownMachinesDescription}");
         Console.Error.WriteLine("  --vid は機種既定の VID(変換ケーブル等の個体差)を上書きする。例: --vid 056E");
     }
@@ -157,7 +167,7 @@ internal static class Program
         public required List<InkDefinition> Palette { get; init; }
     }
 
-    private static JobConfig LoadDefaultJobConfig(string repoRoot, MachineRoute route)
+    private static JobConfig LoadDefaultJobConfig(string repoRoot, MachineRoute route, string mediaName)
     {
         var profile = ConfigLoader.LoadProfile(Path.Combine(repoRoot, "profiles", route.ProfileFileName));
         var paperTable = ConfigLoader.ResolvePaperTable(profile, Path.Combine(repoRoot, "papers"));
@@ -166,9 +176,9 @@ internal static class Program
             throw new ConfigException($"paper '{DefaultPaperName}' not found in paper table '{profile.PaperTable}'");
         }
         var mediaTable = ConfigLoader.LoadMediaTable(Path.Combine(repoRoot, "media.yaml"));
-        if (!mediaTable.TryGetValue(DefaultMediaName, out var media))
+        if (!mediaTable.TryGetValue(mediaName, out var media))
         {
-            throw new ConfigException($"media '{DefaultMediaName}' not found in media.yaml");
+            throw new ConfigException($"media '{mediaName}' not found in media.yaml");
         }
         var palette = ConfigLoader.LoadPalette(Path.Combine(repoRoot, "palette", "default.yaml"));
         return new JobConfig { Profile = profile, Paper = paper, Media = media, Palette = palette };
@@ -268,26 +278,50 @@ internal static class Program
 
     // --- listen ----------------------------------------------------------------
 
+    /// <summary>listen が受け付けるジョブごとの設定(DOMAIN §7.1)。</summary>
+    private sealed class JobOptions
+    {
+        public string InkMode { get; init; } = DefaultInkMode;
+        public string ResolutionKey { get; init; } = DefaultResolutionKey;
+        public string MediaName { get; init; } = DefaultMediaName;
+        public string Halftone { get; init; } = DefaultHalftone;
+        public string WhiteMode { get; init; } = DefaultWhiteMode;
+    }
+
     private static int RunListen(string[] args)
     {
         var (route, vid, remaining) = ParseMachineArgs(args);
 
         string inkMode = DefaultInkMode;
+        string resolutionKey = DefaultResolutionKey;
+        string mediaName = DefaultMediaName;
+        string halftone = DefaultHalftone;
+        string whiteMode = DefaultWhiteMode;
+
         for (int i = 0; i < remaining.Count; i++)
         {
-            if (remaining[i] == "--ink-mode")
+            string opt = remaining[i];
+            if (opt is "--ink-mode" or "--resolution" or "--media" or "--halftone" or "--white-mode")
             {
                 if (i + 1 >= remaining.Count)
                 {
-                    Console.Error.WriteLine("使い方: listen --ink-mode auto|per_page|spot_only");
+                    Console.Error.WriteLine($"使い方: listen {opt} <値>");
                     return 1;
                 }
-                inkMode = remaining[i + 1];
+                string value = remaining[i + 1];
                 i++;
+                switch (opt)
+                {
+                    case "--ink-mode": inkMode = value; break;
+                    case "--resolution": resolutionKey = value; break;
+                    case "--media": mediaName = value; break;
+                    case "--halftone": halftone = value; break;
+                    case "--white-mode": whiteMode = value; break;
+                }
             }
             else
             {
-                Console.Error.WriteLine($"不明な引数: {remaining[i]}");
+                Console.Error.WriteLine($"不明な引数: {opt}");
                 return 1;
             }
         }
@@ -311,11 +345,50 @@ internal static class Program
             return 1;
         }
 
+        if (!JobAssembly.ValidHalftones.Contains(halftone))
+        {
+            Console.Error.WriteLine(
+                $"不明なハーフトーン '{halftone}'。次のいずれかを指定してください: {string.Join(", ", JobAssembly.ValidHalftones)}");
+            return 1;
+        }
+
+        if (!JobAssembly.ValidWhiteModes.Contains(whiteMode))
+        {
+            Console.Error.WriteLine(
+                $"不明な白版モード '{whiteMode}'。次のいずれかを指定してください: {string.Join(", ", JobAssembly.ValidWhiteModes)}");
+            return 1;
+        }
+
         string repoRoot = FindRepoRoot();
-        var config = LoadDefaultJobConfig(repoRoot, route);
+        var config = LoadDefaultJobConfig(repoRoot, route, mediaName);
+
+        // --resolution はプロファイルの resolutions から探す。プロファイル読み込み後
+        // でなければ選べる値を検証できないため、機種ごとの config ロード後にここで検証する。
+        ResolutionEntry resolutionEntry;
+        try
+        {
+            resolutionEntry = config.Profile.ResolveResolutionByKey(resolutionKey);
+        }
+        catch (ConfigException ex)
+        {
+            Console.Error.WriteLine($"エラー: {ex.Message}");
+            return 1;
+        }
+
+        var options = new JobOptions
+        {
+            InkMode = inkMode,
+            ResolutionKey = resolutionKey,
+            MediaName = mediaName,
+            Halftone = halftone,
+            WhiteMode = whiteMode,
+        };
 
         Console.WriteLine($"機種: {route.Machine}(送出方式: {route.Mode}、VID: {vid})");
-        Console.WriteLine($"名前付きパイプ \\\\.\\pipe\\{PipeName} で待ち受け中(Ctrl+C で終了)... インク指定方式: {inkMode}");
+        Console.WriteLine(
+            $"名前付きパイプ \\\\.\\pipe\\{PipeName} で待ち受け中(Ctrl+C で終了)... " +
+            $"インク指定方式: {inkMode} / 解像度: {resolutionEntry.Key} / メディア: {mediaName} / " +
+            $"ハーフトーン: {halftone} / 白版モード: {whiteMode}");
 
         while (true)
         {
@@ -327,7 +400,7 @@ internal static class Program
 
             try
             {
-                HandleJob(pipe, config, inkMode, route, vid);
+                HandleJob(pipe, config, options, resolutionEntry, route, vid);
             }
             catch (Exception ex)
             {
@@ -337,7 +410,8 @@ internal static class Program
     }
 
     private static void HandleJob(
-        NamedPipeServerStream pipe, JobConfig config, string inkMode, MachineRoute route, string vid)
+        NamedPipeServerStream pipe, JobConfig config, JobOptions options, ResolutionEntry resolutionEntry,
+        MachineRoute route, string vid)
     {
         string psPath = Path.Combine(Path.GetTempPath(), $"foilwright_{Guid.NewGuid():n}.ps");
         string ppmPath = Path.Combine(Path.GetTempPath(), $"foilwright_{Guid.NewGuid():n}.ppm");
@@ -351,7 +425,7 @@ internal static class Program
             Console.WriteLine($"PostScript 受信完了: {new FileInfo(psPath).Length} バイト");
 
             Console.WriteLine("Ghostscript で PPM へ変換中...");
-            Ghostscript.ConvertToPpm(psPath, ppmPath, DefaultResolution);
+            Ghostscript.ConvertToPpm(psPath, ppmPath, resolutionEntry.DpiX, resolutionEntry.DpiY);
 
             var fullImage = PpmImage.Read(ppmPath);
             Console.WriteLine($"PPM(用紙全面): {fullImage.Width}x{fullImage.Height}");
@@ -359,10 +433,13 @@ internal static class Program
             // Ghostscript は用紙全面を描くが、プリンタが刷れるのは印字可能領域
             // だけ(papers/5000-series.yaml の left_margin/top_margin/width/length)。
             // ラスタの原点は印字可能領域の原点に対応する(-autoshift と整合)。
-            var image = fullImage.Crop(config.Paper.LeftMargin, config.Paper.TopMargin, config.Paper.Width, config.Paper.Length);
+            // 用紙表は 600dpi 基準のため、選んだ解像度へ換算してから切り出す
+            // (DOMAIN §7.1: 1200x600 は幅方向だけ 2 倍)。
+            var scaledPaper = config.Paper.ScaleToResolution(resolutionEntry.DpiX, resolutionEntry.DpiY);
+            var image = fullImage.Crop(scaledPaper.LeftMargin, scaledPaper.TopMargin, scaledPaper.Width, scaledPaper.Length);
             Console.WriteLine($"PPM(印字可能領域に切り出し後): {image.Width}x{image.Height}");
 
-            var jobPlanes = JobAssembly.BuildJobPlanes(image, config.Palette, inkMode);
+            var jobPlanes = JobAssembly.BuildJobPlanes(image, config.Palette, options.InkMode, options.Halftone, options.WhiteMode);
             if (jobPlanes.Count == 0)
             {
                 Console.WriteLine("印刷する内容がありません");
@@ -376,7 +453,10 @@ internal static class Program
 
             var job = new PrintJob
             {
-                Resolution = DefaultResolution,
+                // Emitter.EmitJob は Paper を常に 600dpi 基準の値として受け取り、
+                // Resolution に応じた換算を内部で行う(ScaleToResolution とは別処理
+                // なので、ここは config.Paper(未換算)をそのまま渡す)。
+                Resolution = resolutionEntry.DpiX,
                 Paper = config.Paper,
                 Media = config.Media,
                 Inks = inks,

@@ -33,6 +33,12 @@ public sealed class ResolutionEntry
     public required int DpiX { get; init; }
     public required int DpiY { get; init; }
     public bool IsDefault { get; init; }
+
+    /// <summary>設定・CLI 引数で使う表示名。dpi_x == dpi_y なら "600" のように
+    /// 単一値、異なるなら "1200x600" のように連結する。コードに解像度の
+    /// 値そのものを埋め込まないための、プロファイルから導出した識別子
+    /// (DOMAIN §4.5)。</summary>
+    public string Key => DpiX == DpiY ? DpiX.ToString() : $"{DpiX}x{DpiY}";
 }
 
 /// <summary>機種プロファイル(DOMAIN §5.1)。</summary>
@@ -48,6 +54,36 @@ public sealed class ProfileSpec
 
     /// <summary>実測待ちの最大印字幅(ドット)。未計測の間は null(DOMAIN §5.2)。</summary>
     public int? MaxWidthDots { get; init; }
+
+    /// <summary>dpiX(例: 600 / 1200)から、このプロファイルが提供する解像度
+    /// エントリを引く。存在しなければ ConfigException(不正な設定値)。
+    /// 解像度の選択肢をコードに埋め込まないため、常に Resolutions(YAML 由来)
+    /// から探す(DOMAIN §4.5 / §7.1)。</summary>
+    public ResolutionEntry ResolveResolution(int dpiX)
+    {
+        var match = Resolutions.FirstOrDefault(r => r.DpiX == dpiX);
+        if (match is null)
+        {
+            throw new ConfigException(
+                $"resolution {dpiX}dpi is not offered by profile '{Model}'; available: " +
+                string.Join(", ", Resolutions.Select(r => r.Key)));
+        }
+        return match;
+    }
+
+    /// <summary>解像度キー(ResolutionEntry.Key の形式、例: "600" / "1200x600")
+    /// から解像度エントリを引く。CLI / トレイアプリの --resolution 引数向け。</summary>
+    public ResolutionEntry ResolveResolutionByKey(string key)
+    {
+        var match = Resolutions.FirstOrDefault(r => r.Key == key);
+        if (match is null)
+        {
+            throw new ConfigException(
+                $"resolution '{key}' is not offered by profile '{Model}'; available: " +
+                string.Join(", ", Resolutions.Select(r => r.Key)));
+        }
+        return match;
+    }
 }
 
 /// <summary>パレット中の 1 インク(DOMAIN §6.1 / D-019)。</summary>
@@ -87,6 +123,21 @@ public sealed class PaperSpec
     public required int Length { get; init; }
     public required int LeftMargin { get; init; }
     public required int TopMargin { get; init; }
+
+    /// <summary>600dpi 基準の値を実際の出力解像度へ換算する
+    /// (papers/5000-series.yaml 冒頭コメント: 300dpi → 半分、1200dpi → width
+    /// のみ 2 倍)。Width/LeftMargin は dpiX/600 の比、Length/TopMargin は
+    /// dpiY/600 の比で換算する — Emitter.EmitJob の内部換算(ref/emitter.py と
+    /// 同じ規則)と揃え、Ghostscript のラスタライズ結果を印字可能領域の
+    /// 実ドット数で切り出せるようにする。</summary>
+    public PaperSpec ScaleToResolution(int dpiX, int dpiY) => new()
+    {
+        Code = Code,
+        Width = Width * dpiX / 600,
+        Length = Length * dpiY / 600,
+        LeftMargin = LeftMargin * dpiX / 600,
+        TopMargin = TopMargin * dpiY / 600,
+    };
 }
 
 /// <summary>メディア種別表の 1 エントリ(DOMAIN §5.5.2)。</summary>

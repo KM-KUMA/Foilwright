@@ -37,6 +37,11 @@ public sealed class PreviewResult
     public required int Width { get; init; }
     public required int Height { get; init; }
 
+    /// <summary>このプレビューを作った際に解決した解像度。Emitter.PrintJob.Resolution
+    /// に渡す値(ResolutionEntry.DpiX)はこれを使う — Print() を呼ぶ側が
+    /// 再度プロファイルを読んで解決し直す必要をなくす。</summary>
+    public required ResolutionEntry Resolution { get; init; }
+
     /// <summary>Emitter.EmitJob にそのまま渡せるプレーン。</summary>
     public required Dictionary<string, byte[]> Planes { get; init; }
 
@@ -51,9 +56,11 @@ public sealed class PreviewResult
 public static class JobPipeline
 {
     // Foilwright.Cli.Program の既定値と同じ(D-024 のトレイアプリ設定既定値)。
-    public const int DefaultResolution = 600;
+    public const string DefaultResolutionKey = "600";
     public const string DefaultPaperName = "a4";
     public const string DefaultMediaName = "plain_paper";
+    public const string DefaultHalftone = "none";
+    public const string DefaultWhiteMode = "auto";
 
     private const int PreviewMaxWidth = 900;
 
@@ -93,20 +100,27 @@ public static class JobPipeline
 
     /// <summary>PostScript ファイルを変換し、プレビュー用のビットマップと
     /// ジョブ情報を組み立てる。送出は一切行わない(UI 側が確認するまで印刷は
-    /// 始まってはならない。DOMAIN §7.2)。</summary>
+    /// 始まってはならない。DOMAIN §7.2)。
+    ///
+    /// resolutionKey: ResolutionEntry.Key の形式(例: "600" / "1200x600")。
+    /// プロファイルの resolutions から解決する(DOMAIN §4.5: コードに埋め込まない)。</summary>
     public static PreviewResult BuildPreview(
         string psPath, string repoRoot, MachineRoute route, string inkMode,
-        string paperName, string mediaName, int resolution)
+        string paperName, string mediaName, string resolutionKey, string halftone, string whiteMode)
     {
         var config = LoadJobConfig(repoRoot, route, paperName, mediaName);
+        var resolutionEntry = config.Profile.ResolveResolutionByKey(resolutionKey);
         string ppmPath = Path.Combine(Path.GetTempPath(), $"foilwright_{Guid.NewGuid():n}.ppm");
         try
         {
-            Ghostscript.ConvertToPpm(psPath, ppmPath, resolution);
+            Ghostscript.ConvertToPpm(psPath, ppmPath, resolutionEntry.DpiX, resolutionEntry.DpiY);
             var fullImage = PpmImage.Read(ppmPath);
-            var image = fullImage.Crop(config.Paper.LeftMargin, config.Paper.TopMargin, config.Paper.Width, config.Paper.Length);
+            // 用紙表は 600dpi 基準のため、選んだ解像度へ換算してから切り出す
+            // (DOMAIN §7.1: 1200x600 は幅方向だけ 2 倍)。
+            var scaledPaper = config.Paper.ScaleToResolution(resolutionEntry.DpiX, resolutionEntry.DpiY);
+            var image = fullImage.Crop(scaledPaper.LeftMargin, scaledPaper.TopMargin, scaledPaper.Width, scaledPaper.Length);
 
-            var jobPlanes = JobAssembly.BuildJobPlanes(image, config.Palette, inkMode);
+            var jobPlanes = JobAssembly.BuildJobPlanes(image, config.Palette, inkMode, halftone, whiteMode);
 
             var planes = jobPlanes.ToDictionary(jp => jp.Ink.Name, jp => jp.Plane);
             var jobInks = jobPlanes
@@ -135,6 +149,7 @@ public static class JobPipeline
                 Planes = planes,
                 JobInks = jobInks,
                 RequiredInks = jobPlanes.Select(jp => jp.Ink).ToList(),
+                Resolution = resolutionEntry,
             };
         }
         finally

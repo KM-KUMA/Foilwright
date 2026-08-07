@@ -180,4 +180,121 @@ public class JobAssemblyTests
 
         Assert.Throws<ArgumentException>(() => JobAssembly.BuildJobPlanes(image, palette, "bogus"));
     }
+
+    // --- 白版モード(D-027)の検証用パレット・画像 --------------------------
+    //
+    // white は auto_undercoat: true(実パレットの default.yaml と同じ判別方法。
+    // 名前を決め打ちしない)。4 画素 x 1 行:
+    //   x=0: (255,0,0)     -- red の magic_rgb に一致
+    //   x=1: (0,255,255)   -- どの特色にも一致しない -> CMYK 分解で cyan(C)へ
+    //   x=2: (230,230,230) -- white の magic_rgb に直接一致
+    //   x=3: (255,255,255) -- どの特色にも CMYK にも一致しない(空)
+    private static List<InkDefinition> MakePaletteWithWhite()
+    {
+        return new List<InkDefinition>
+        {
+            new InkDefinition { Name = "white", Label = "white", PrinterCode = 0x0b, Order = 10, MagicRgb = new[] { 230, 230, 230 }, Tolerance = 0, AutoUndercoat = true },
+            new InkDefinition { Name = "red", Label = "red", PrinterCode = 0x10, Order = 20, MagicRgb = new[] { 255, 0, 0 }, Tolerance = 0 },
+            new InkDefinition { Name = "cyan", Label = "cyan", PrinterCode = 0x01, Order = 60, Channel = "C" },
+        };
+    }
+
+    private static PpmImage MakeWhiteTestImage()
+    {
+        byte[] pixels =
+        {
+            255, 0, 0,
+            0, 255, 255,
+            230, 230, 230,
+            255, 255, 255,
+        };
+        return new PpmImage(4, 1, pixels);
+    }
+
+    [Fact]
+    public void WhiteMode_None_ExcludesWhitePlaneEntirely()
+    {
+        var palette = MakePaletteWithWhite();
+        var image = MakeWhiteTestImage();
+
+        var result = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "none");
+        var names = result.Select(r => r.Ink.Name).ToHashSet();
+
+        Assert.DoesNotContain("white", names);
+        Assert.Contains("red", names);
+        Assert.Contains("cyan", names);
+    }
+
+    [Fact]
+    public void WhiteMode_Auto_IsUnionOfOtherInksPlusOwnMagicMatch()
+    {
+        var palette = MakePaletteWithWhite();
+        var image = MakeWhiteTestImage();
+
+        var result = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "auto");
+        var byName = result.ToDictionary(r => r.Ink.Name, r => r.Plane);
+
+        Assert.True(byName.ContainsKey("white"));
+        // x=0(red 分)、x=1(cyan/CMYK 分)、x=2(white 自身の直接一致)の和集合。
+        Assert.True(BitSet(byName["white"], 0));
+        Assert.True(BitSet(byName["white"], 1));
+        Assert.True(BitSet(byName["white"], 2));
+        Assert.False(BitSet(byName["white"], 3));
+    }
+
+    [Fact]
+    public void WhiteMode_Magic_OnlyDirectMagicColourMatches()
+    {
+        var palette = MakePaletteWithWhite();
+        var image = MakeWhiteTestImage();
+
+        var result = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "magic");
+        var byName = result.ToDictionary(r => r.Ink.Name, r => r.Plane);
+
+        Assert.True(byName.ContainsKey("white"));
+        // x=2(white の magic_rgb への直接一致)のみ。他インクの画素は
+        // 巻き込まない(auto_undercoat の和集合を作らない)。
+        Assert.False(BitSet(byName["white"], 0));
+        Assert.False(BitSet(byName["white"], 1));
+        Assert.True(BitSet(byName["white"], 2));
+        Assert.False(BitSet(byName["white"], 3));
+    }
+
+    [Fact]
+    public void BuildJobPlanes_UnknownWhiteMode_Throws()
+    {
+        var palette = MakePaletteWithWhite();
+        var image = MakeWhiteTestImage();
+
+        Assert.Throws<ArgumentException>(() => JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "bogus"));
+    }
+
+    // --- ハーフトーン(DOMAIN §4.2.1)の選択可否の検証 ------------------------
+    // Raster.cs のハーフトーン展開ロジック自体は変更していないため、ここでは
+    // JobAssembly 経由で 3 モードすべてが選択でき、例外なく完了することだけを
+    // 確認する(展開結果の画素パターン自体は Raster.cs 側の責務)。
+    [Theory]
+    [InlineData("none")]
+    [InlineData("halftone")]
+    [InlineData("coarse_halftone")]
+    public void BuildJobPlanes_AllHalftoneModes_AreSelectable(string halftone)
+    {
+        var palette = MakePalette();
+        var image = MakeMixedImage();
+
+        var result = JobAssembly.BuildJobPlanes(image, palette, "auto", halftone: halftone);
+
+        // 少なくとも特色一致分(red・black)は残る。例外が出ないことが本題。
+        var names = result.Select(r => r.Ink.Name).ToHashSet();
+        Assert.Contains("red", names);
+    }
+
+    [Fact]
+    public void BuildJobPlanes_UnknownHalftone_Throws()
+    {
+        var palette = MakePalette();
+        var image = MakeMixedImage();
+
+        Assert.Throws<ArgumentException>(() => JobAssembly.BuildJobPlanes(image, palette, "auto", halftone: "bogus"));
+    }
 }

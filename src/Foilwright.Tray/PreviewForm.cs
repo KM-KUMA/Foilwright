@@ -27,6 +27,10 @@ public sealed class PreviewForm : Form
 
     private readonly ComboBox _machineCombo;
     private readonly ComboBox _inkModeCombo;
+    private readonly ComboBox _resolutionCombo;
+    private readonly ComboBox _mediaCombo;
+    private readonly ComboBox _halftoneCombo;
+    private readonly ComboBox _whiteModeCombo;
     private readonly Button _saveDefaultsButton;
     private readonly PictureBox _previewBox;
     private readonly Label _jobSummaryLabel;
@@ -39,6 +43,12 @@ public sealed class PreviewForm : Form
 
     private PreviewResult? _current;
     private bool _busy;
+
+    /// <summary>メディア種別コンボの 1 項目。表示は label(§5.5.2)、実体は name。</summary>
+    private sealed record MediaItem(string Name, string Label)
+    {
+        public override string ToString() => Label;
+    }
 
     public PreviewForm(string psPath, TraySettings settings)
     {
@@ -80,8 +90,8 @@ public sealed class PreviewForm : Form
         root.Controls.Add(right, 1, 0);
 
         // 設定(§7.1: ジョブごとの上書き)
-        var settingsGroup = new GroupBox { Text = "設定(このジョブに適用)", Dock = DockStyle.Top, Height = 130 };
-        var settingsLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, Padding = new Padding(8) };
+        var settingsGroup = new GroupBox { Text = "設定(このジョブに適用)", Dock = DockStyle.Top, Height = 250 };
+        var settingsLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 7, Padding = new Padding(8) };
         settingsLayout.Controls.Add(new Label { Text = "機種:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
         _machineCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
         _machineCombo.Items.AddRange(MachineRoute.KnownMachinesDescription.Split('|'));
@@ -96,16 +106,53 @@ public sealed class PreviewForm : Form
         _inkModeCombo.SelectedItem = settings.InkMode is "auto" or "spot_only" ? settings.InkMode : "auto";
         settingsLayout.Controls.Add(_inkModeCombo, 1, 1);
 
+        // 解像度(§7.1)。選択肢はプロファイルの resolutions から読む
+        // (機種によって変わりうるため、機種の変更時にも作り直す)。
+        settingsLayout.Controls.Add(new Label { Text = "解像度:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 2);
+        _resolutionCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+        settingsLayout.Controls.Add(_resolutionCombo, 1, 2);
+
+        // メディア種別(§7.1 / §5.5.2)。選択肢は media.yaml から読む。
+        settingsLayout.Controls.Add(new Label { Text = "メディア種別:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
+        _mediaCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+        settingsLayout.Controls.Add(_mediaCombo, 1, 3);
+
+        // ハーフトーン(§7.1 / §4.2.1)。
+        settingsLayout.Controls.Add(new Label { Text = "ハーフトーン:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 4);
+        _halftoneCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+        _halftoneCombo.Items.AddRange(JobAssembly.ValidHalftones.Cast<object>().ToArray());
+        _halftoneCombo.SelectedItem = JobAssembly.ValidHalftones.Contains(settings.Halftone) ? settings.Halftone : "none";
+        settingsLayout.Controls.Add(_halftoneCombo, 1, 4);
+
+        // 白版モード(§7.1 / D-027)。
+        settingsLayout.Controls.Add(new Label { Text = "白版モード:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 5);
+        _whiteModeCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+        _whiteModeCombo.Items.AddRange(JobAssembly.ValidWhiteModes.Cast<object>().ToArray());
+        _whiteModeCombo.SelectedItem = JobAssembly.ValidWhiteModes.Contains(settings.WhiteMode) ? settings.WhiteMode : "auto";
+        settingsLayout.Controls.Add(_whiteModeCombo, 1, 5);
+
         _saveDefaultsButton = new Button { Text = "この設定を既定値として保存", AutoSize = true };
         _saveDefaultsButton.Click += (_, _) => SaveAsDefaults();
-        settingsLayout.Controls.Add(_saveDefaultsButton, 0, 2);
+        settingsLayout.Controls.Add(_saveDefaultsButton, 0, 6);
         settingsLayout.SetColumnSpan(_saveDefaultsButton, 2);
 
         settingsGroup.Controls.Add(settingsLayout);
         right.Controls.Add(settingsGroup);
 
-        _machineCombo.SelectedIndexChanged += (_, _) => _ = RefreshPreviewAsync();
+        PopulateResolutionCombo(settings.Machine, settings.ResolutionKey);
+        PopulateMediaCombo(settings.MediaName);
+
+        _machineCombo.SelectedIndexChanged += (_, _) =>
+        {
+            // 機種が変わると選べる解像度が変わりうる(DOMAIN §5.1)ため作り直す。
+            PopulateResolutionCombo((string)_machineCombo.SelectedItem!, (string?)_resolutionCombo.SelectedItem);
+            _ = RefreshPreviewAsync();
+        };
         _inkModeCombo.SelectedIndexChanged += (_, _) => _ = RefreshPreviewAsync();
+        _resolutionCombo.SelectedIndexChanged += (_, _) => _ = RefreshPreviewAsync();
+        _mediaCombo.SelectedIndexChanged += (_, _) => _ = RefreshPreviewAsync();
+        _halftoneCombo.SelectedIndexChanged += (_, _) => _ = RefreshPreviewAsync();
+        _whiteModeCombo.SelectedIndexChanged += (_, _) => _ = RefreshPreviewAsync();
 
         // ジョブ内容(§7.2 の 2: パス数・使用インク・順序)
         var jobGroup = new GroupBox { Text = "ジョブ内容", Dock = DockStyle.Top, Height = 240 };
@@ -167,10 +214,66 @@ public sealed class PreviewForm : Form
         Load += async (_, _) => await RefreshPreviewAsync();
     }
 
+    /// <summary>解像度コンボの選択肢を機種プロファイルの resolutions から作り直す
+    /// (DOMAIN §4.5: コードに埋め込まない。機種で選べる解像度が変わりうるため
+    /// 機種変更のたびに呼ぶ)。</summary>
+    private void PopulateResolutionCombo(string machine, string? preferredKey)
+    {
+        try
+        {
+            var route = MachineRoute.Resolve(machine);
+            var profile = ConfigLoader.LoadProfile(Path.Combine(_repoRoot, "profiles", route.ProfileFileName));
+            _resolutionCombo.Items.Clear();
+            foreach (var entry in profile.Resolutions)
+            {
+                _resolutionCombo.Items.Add(entry.Key);
+            }
+            string? fallback = profile.Resolutions.FirstOrDefault(r => r.IsDefault)?.Key
+                ?? profile.Resolutions.FirstOrDefault()?.Key;
+            _resolutionCombo.SelectedItem = preferredKey is not null && _resolutionCombo.Items.Contains(preferredKey)
+                ? preferredKey
+                : fallback;
+        }
+        catch (Exception ex) when (ex is ConfigException or MachineRouteException)
+        {
+            // 選択肢の作成に失敗しても致命的にはしない。RefreshPreviewAsync 側で
+            // あらためてエラーを表示する。
+        }
+    }
+
+    /// <summary>メディア種別コンボの選択肢を media.yaml から作り直す(DOMAIN §4.5)。</summary>
+    private void PopulateMediaCombo(string preferredName)
+    {
+        try
+        {
+            var mediaTable = ConfigLoader.LoadMediaTable(Path.Combine(_repoRoot, "media.yaml"));
+            _mediaCombo.Items.Clear();
+            MediaItem? preferred = null;
+            foreach (var kv in mediaTable.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                var item = new MediaItem(kv.Key, kv.Value.Label);
+                _mediaCombo.Items.Add(item);
+                if (kv.Key == preferredName)
+                {
+                    preferred = item;
+                }
+            }
+            _mediaCombo.SelectedItem = preferred ?? (_mediaCombo.Items.Count > 0 ? _mediaCombo.Items[0] : null);
+        }
+        catch (ConfigException)
+        {
+            // 選択肢の作成に失敗しても致命的にはしない。
+        }
+    }
+
     private void SaveAsDefaults()
     {
         _settings.Machine = (string)_machineCombo.SelectedItem!;
         _settings.InkMode = (string)_inkModeCombo.SelectedItem!;
+        _settings.ResolutionKey = (string)_resolutionCombo.SelectedItem!;
+        _settings.MediaName = ((MediaItem)_mediaCombo.SelectedItem!).Name;
+        _settings.Halftone = (string)_halftoneCombo.SelectedItem!;
+        _settings.WhiteMode = (string)_whiteModeCombo.SelectedItem!;
         _settings.Save();
         MessageBox.Show(this, "既定値として保存しました。", "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
@@ -189,16 +292,20 @@ public sealed class PreviewForm : Form
         {
             string machine = (string)_machineCombo.SelectedItem!;
             string inkMode = (string)_inkModeCombo.SelectedItem!;
+            string resolutionKey = (string)_resolutionCombo.SelectedItem!;
+            string mediaName = ((MediaItem)_mediaCombo.SelectedItem!).Name;
+            string halftone = (string)_halftoneCombo.SelectedItem!;
+            string whiteMode = (string)_whiteModeCombo.SelectedItem!;
             var route = MachineRoute.Resolve(machine);
 
             var result = await Task.Run(() => JobPipeline.BuildPreview(
-                _psPath, _repoRoot, route, inkMode, _settings.PaperName, _settings.MediaName, _settings.Resolution));
+                _psPath, _repoRoot, route, inkMode, _settings.PaperName, mediaName, resolutionKey, halftone, whiteMode));
 
             _current?.Preview.Dispose();
             _current = result;
             _previewBox.Image = result.Preview;
             _jobSummaryLabel.Text =
-                $"パス数: {result.Inks.Count} / 解像度: {_settings.Resolution}dpi / サイズ: {result.Width}x{result.Height}";
+                $"パス数: {result.Inks.Count} / 解像度: {result.Resolution.Key} / サイズ: {result.Width}x{result.Height}";
 
             _inkGrid.Rows.Clear();
             foreach (var ink in result.Inks)
@@ -320,11 +427,14 @@ public sealed class PreviewForm : Form
         try
         {
             string machine = (string)_machineCombo.SelectedItem!;
+            string mediaName = ((MediaItem)_mediaCombo.SelectedItem!).Name;
             var route = MachineRoute.Resolve(machine);
-            var config = JobPipeline.LoadJobConfig(_repoRoot, route, _settings.PaperName, _settings.MediaName);
+            var config = JobPipeline.LoadJobConfig(_repoRoot, route, _settings.PaperName, mediaName);
             var job = new PrintJob
             {
-                Resolution = _settings.Resolution,
+                // Emitter.EmitJob は Paper を常に 600dpi 基準の値として受け取り、
+                // Resolution に応じた換算を内部で行う(config.Paper を未換算のまま渡す)。
+                Resolution = _current.Resolution.DpiX,
                 Paper = config.Paper,
                 Media = config.Media,
                 Inks = _current.JobInks,
@@ -361,6 +471,10 @@ public sealed class PreviewForm : Form
         _busy = busy;
         _machineCombo.Enabled = !busy;
         _inkModeCombo.Enabled = !busy;
+        _resolutionCombo.Enabled = !busy;
+        _mediaCombo.Enabled = !busy;
+        _halftoneCombo.Enabled = !busy;
+        _whiteModeCombo.Enabled = !busy;
         _saveDefaultsButton.Enabled = !busy;
         _statusRefreshButton.Enabled = !busy;
         _cancelButton.Enabled = !busy;

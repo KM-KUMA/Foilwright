@@ -26,7 +26,7 @@ internal static class Program
         int pngIndex = Array.IndexOf(args, "--debug-preview-png");
         if (pngIndex >= 0 && pngIndex + 2 < args.Length)
         {
-            RunDebugPreviewPng(args[pngIndex + 1], args[pngIndex + 2]);
+            RunDebugPreviewPng(args[pngIndex + 1], args[pngIndex + 2], args.Skip(pngIndex + 3).ToArray());
             return;
         }
 
@@ -66,8 +66,12 @@ internal static class Program
 
     /// <summary>ウィンドウを開かずプレビュー画像を PNG として保存する。
     /// 対話的デスクトップの有無に依存しない検証経路(実機・送出は一切行わない)。
-    /// 終了コード: 0=成功、1=失敗(標準エラーに理由を出す)。</summary>
-    private static void RunDebugPreviewPng(string psPath, string outputPngPath)
+    /// 終了コード: 0=成功、1=失敗(標準エラーに理由を出す)。
+    ///
+    /// extraArgs: 保存済み設定(TraySettings)を上書きする任意のオプション
+    /// (--resolution / --media / --halftone / --white-mode)。実機・UI 無しで
+    /// 設定項目ごとの挙動を確認するための検証用オプション(DOMAIN §7.1)。</summary>
+    private static void RunDebugPreviewPng(string psPath, string outputPngPath, string[] extraArgs)
     {
         try
         {
@@ -82,13 +86,31 @@ internal static class Program
             var settings = TraySettings.Load();
             var route = MachineRoute.Resolve(settings.Machine);
 
+            string resolutionKey = settings.ResolutionKey;
+            string mediaName = settings.MediaName;
+            string halftone = settings.Halftone;
+            string whiteMode = settings.WhiteMode;
+            for (int i = 0; i < extraArgs.Length - 1; i++)
+            {
+                switch (extraArgs[i])
+                {
+                    case "--resolution": resolutionKey = extraArgs[i + 1]; i++; break;
+                    case "--media": mediaName = extraArgs[i + 1]; i++; break;
+                    case "--halftone": halftone = extraArgs[i + 1]; i++; break;
+                    case "--white-mode": whiteMode = extraArgs[i + 1]; i++; break;
+                }
+            }
+
             var result = JobPipeline.BuildPreview(
-                psPath, repoRoot, route, settings.InkMode, settings.PaperName, settings.MediaName, settings.Resolution);
+                psPath, repoRoot, route, settings.InkMode, settings.PaperName, mediaName,
+                resolutionKey, halftone, whiteMode);
 
             result.Preview.Save(outputPngPath, System.Drawing.Imaging.ImageFormat.Png);
 
             Console.WriteLine($"プレビュー画像: {outputPngPath}");
-            Console.WriteLine($"パス数: {result.Inks.Count} / サイズ: {result.Width}x{result.Height}");
+            Console.WriteLine(
+                $"パス数: {result.Inks.Count} / 解像度: {result.Resolution.Key} / メディア: {mediaName} / " +
+                $"ハーフトーン: {halftone} / 白版モード: {whiteMode} / サイズ: {result.Width}x{result.Height}");
             foreach (var ink in result.Inks)
             {
                 Console.WriteLine(
