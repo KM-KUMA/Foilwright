@@ -1,4 +1,4 @@
-// Foilwright.Core.Tests — StatusDecoder(CassetteStatus → 日本語表示)の検証。
+﻿// Foilwright.Core.Tests — StatusDecoder(CassetteStatus → 日本語表示)の検証。
 //
 // ここで使う 38 バイトの応答はすべて DOMAIN §11.4 に記録された実測値。
 // ただし §11.4 の「ペーパーフィード異常」2 例(MD-5500 / MD-5000)は文中の
@@ -6,6 +6,12 @@
 // 抜けている)。ここでは末尾 2 レコード(rec[9]=80 00 00 / rec[10])と
 // ヘッダの状態バイトだけを実測値どおりに保ち、抜けている 1 レコード分は
 // 検証に影響しない ff 00 00(未装着)で埋めて 38 バイトに揃えている。
+//
+// 【訂正(2026-08-08、DOMAIN §11.4)】以下の変数名・コメントは採取時の呼称
+// 「ペーパーフィード異常」をそのまま残しているが、これは同一のバイト列の
+// 出どころを指す名前に過ぎない。rec[9] 先頭 0x80 が示す実際の意味は
+// 「機構エラーのいずれか(8 種類、種別不明)」であり、デコーダの出力は
+// 特定の機構名を含まない(Describe_MechanismError_DoesNotNameSpecificMechanism 参照)。
 
 using Foilwright.Core;
 
@@ -110,8 +116,8 @@ public class StatusDecoderTests
         Assert.True(report.IsError);
         Assert.False(report.IsPrinting);
         Assert.True(report.CassetteInfoMayBeStale);
-        Assert.Equal("ペーパーフィードメカニズムに異常が発生しました", report.ErrorDetail);
-        Assert.Contains("ペーパーフィードメカニズムに異常が発生しました", report.StatusSummary);
+        Assert.Equal("機構に異常が発生しました(種別は特定できません)", report.ErrorDetail);
+        Assert.Contains("機構に異常が発生しました(種別は特定できません)", report.StatusSummary);
     }
 
     [Fact]
@@ -122,7 +128,26 @@ public class StatusDecoderTests
         var report = StatusDecoder.Describe(status);
 
         Assert.True(report.IsError);
-        Assert.Equal("ペーパーフィードメカニズムに異常が発生しました", report.ErrorDetail);
+        Assert.Equal("機構に異常が発生しました(種別は特定できません)", report.ErrorDetail);
+    }
+
+    [Fact]
+    public void Describe_MechanismError_DoesNotNameSpecificMechanism()
+    {
+        // DOMAIN §11.4【訂正】(2026-08-08): 「rec[9] 先頭 0x80」は 2026-08-04 に
+        // 「ペーパーフィードメカニズム異常」と確定したが、同一機体で純正ドライバが
+        // 「キャリッジメカニズムに異常」を表示中に採取した応答が 1 バイトも
+        // 違わなかったため撤回した。05 01 の応答は §13.8.3 の 8 種類の機構エラーを
+        // 区別しないので、表示文言に特定の機構名を書き込んではならない。
+        var md5500 = StatusDecoder.Describe(CassetteStatus.Parse(Md5500PaperFeedErrorResponse));
+        var md5000 = StatusDecoder.Describe(CassetteStatus.Parse(Md5000ErrorResponse));
+
+        foreach (var detail in new[] { md5500.ErrorDetail, md5000.ErrorDetail })
+        {
+            Assert.NotNull(detail);
+            Assert.DoesNotContain("ペーパーフィード", detail);
+            Assert.DoesNotContain("キャリッジ", detail);
+        }
     }
 
     [Fact]
