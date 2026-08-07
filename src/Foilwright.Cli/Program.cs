@@ -13,6 +13,7 @@
 // に集約してある(D-025)。3 サブコマンド共通で --machine / --vid を受け付ける。
 
 using System.IO.Pipes;
+using System.Linq;
 using Foilwright.Core;
 
 namespace Foilwright.Cli;
@@ -189,16 +190,16 @@ internal static class Program
         var status = transport.ReadStatus();
         PrintDeviceIdProbe(transport);
 
+        var report = StatusDecoder.Describe(status);
+
         Console.WriteLine($"ヘッダ: {Convert.ToHexString(status.Header)}");
-        Console.WriteLine($"状態バイト(5 バイト目): 0x{status.StatusByte:x2}" +
-            (status.StatusByte == 0x00 ? " (待機)" : status.StatusByte == 0x09 ? " (実行中)" : status.StatusByte == 0x01 ? " (完了/待機)" : " (未知)"));
-        Console.WriteLine("カセットスロット(11 スロット、先頭バイトがバーコード番号、0xff = 未装着):");
-        for (int i = 0; i < status.SlotBarcodes.Count; i++)
+        Console.WriteLine($"状態: {report.StatusSummary}");
+        Console.WriteLine($"装着中のカセット: {report.HeadCassetteName}");
+        Console.WriteLine("ホルダ: " + string.Join("  ",
+            report.HolderSlots.Select(s => $"[{s.SlotNumber}] {s.Name}")));
+        if (report.CassetteInfoMayBeStale)
         {
-            byte barcode = status.SlotBarcodes[i];
-            string marker = i == CassetteStatus.HeadSlotIndex ? "  <- ヘッドに装着中" : string.Empty;
-            string value = barcode == CassetteStatus.NotLoaded ? "未装着" : $"0x{barcode:x2}";
-            Console.WriteLine($"  slot[{i,2}] = {value}{marker}");
+            Console.WriteLine("注意: エラー中はカセット情報が更新されないため、現物と一致しない可能性があります");
         }
         return 0;
     }
