@@ -68,6 +68,13 @@ public sealed class InkDefinition
     /// プロセスインクでなければ null(D-019)。</summary>
     public string? Channel { get; init; }
 
+    /// <summary>カセットの物理的なバーコード番号(0〜255)。状態応答(`05 01`)の
+    /// スロットの先頭バイトと突き合わせて過不足を判定するために使う(D-026 /
+    /// DOMAIN §7.3 / §13.7.5)。`printer_code` とは別の番号体系であり混同しない
+    /// こと。省略可能 — 値が無いインクは過不足判定の対象にできず「判定不能」
+    /// として扱う(CassetteCheck)。</summary>
+    public int? Barcode { get; init; }
+
     public bool AutoUndercoat { get; init; }
     public int Passes { get; init; } = 1;
 }
@@ -349,6 +356,10 @@ public static class ConfigLoader
         bool autoUndercoat = raw.TryGetValue("auto_undercoat", out var auRaw) && auRaw is not null
             && ParseBool(auRaw, $"palette ink '{name}'.auto_undercoat");
 
+        int? barcode = raw.TryGetValue("barcode", out var barcodeRaw) && barcodeRaw is not null
+            ? ParseInt(barcodeRaw, $"palette ink '{name}'.barcode", 0, 255)
+            : null;
+
         string label = AsString(raw["label"], $"palette ink '{name}'.label");
 
         return new InkDefinition
@@ -360,6 +371,7 @@ public static class ConfigLoader
             MagicRgb = magicRgb,
             Tolerance = tolerance,
             Channel = channel,
+            Barcode = barcode,
             AutoUndercoat = autoUndercoat,
             Passes = passes,
         };

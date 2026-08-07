@@ -1,4 +1,4 @@
-# Foilwright — パレット定義(既定)
+﻿# Foilwright — パレット定義(既定)
 # Copyright (C) 2026 JunkQuality (github.com/KM-KUMA/Foilwright)
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
@@ -30,6 +30,7 @@ inks:
     label: 紙用特色ホワイト (MDC-SCWH)
     magic_rgb: [230, 230, 230]
     printer_code: 0x0B
+    barcode: 16        # カセットのバーコード番号(D-026 / DOMAIN §13.7.5)。printer_code とは別体系
     tolerance: 8
     order: 10
     auto_undercoat: true
@@ -42,6 +43,7 @@ inks:
     label: メタリックゴールド (MDC-METG)
     magic_rgb: [225, 160, 0]
     printer_code: 0x04
+    barcode: 8
     tolerance: 12
     order: 50
 
@@ -49,6 +51,7 @@ inks:
     label: メタリックシルバー (MDC-METS)
     magic_rgb: [189, 193, 197]
     printer_code: 0x07
+    barcode: 11
     tolerance: 12
     order: 50
 
@@ -56,6 +59,7 @@ inks:
     label: メタリックレッド (MDC-METR)
     magic_rgb: [163, 36, 115]
     printer_code: 0x05
+    barcode: 9
     tolerance: 12
     order: 50
 
@@ -63,6 +67,7 @@ inks:
     label: メタリックブルー (MDC-METB)
     magic_rgb: [0, 176, 201]
     printer_code: 0x06
+    barcode: 10
     tolerance: 12
     order: 50
 
@@ -72,18 +77,21 @@ inks:
   - name: cyan
     label: 紙用シアン (MDC-FLCC)
     printer_code: 0x01
+    barcode: 3
     channel: C
     order: 60
 
   - name: magenta
     label: 紙用マゼンタ (MDC-FLCM)
     printer_code: 0x02
+    barcode: 2
     channel: M
     order: 70
 
   - name: yellow
     label: 紙用イエロー (MDC-FLCY)
     printer_code: 0x03
+    barcode: 1
     channel: Y
     order: 80
 
@@ -91,6 +99,7 @@ inks:
     label: 紙用ブラック (MDC-FLCK)
     magic_rgb: [0, 0, 0]
     printer_code: 0x00
+    barcode: 0
     tolerance: 8
     channel: K
     order: 90

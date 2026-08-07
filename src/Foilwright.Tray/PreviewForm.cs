@@ -128,9 +128,8 @@ public sealed class PreviewForm : Form
         jobGroup.Controls.Add(_jobSummaryLabel);
         right.Controls.Add(jobGroup);
 
-        // プリンタ状態(§7.2 の 7)。今回は枠のみで生の値を表示する
-        // (デコード = カセットの過不足判定 §7.3 は別エージェントが実装中)。
-        var statusGroup = new GroupBox { Text = "プリンタ状態(生の値。デコードは別途実装中)", Dock = DockStyle.Top, Height = 150 };
+        // プリンタ状態(§7.2 の 7)+ カセットの過不足表示(§7.3 / D-026)。
+        var statusGroup = new GroupBox { Text = "プリンタ状態 / カセットの過不足", Dock = DockStyle.Top, Height = 190 };
         var statusLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(8) };
         statusLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         statusLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -239,7 +238,7 @@ public sealed class PreviewForm : Form
             string machine = (string)_machineCombo.SelectedItem!;
             var route = MachineRoute.Resolve(machine);
             var status = await Task.Run(() => JobPipeline.ReadRawStatus(route, route.Vid));
-            _statusText.Text =
+            string raw =
                 $"ヘッダ: {Convert.ToHexString(status.Header)}\r\n" +
                 $"状態バイト: 0x{status.StatusByte:x2}\r\n" +
                 "スロット(先頭バイトがバーコード番号、0xff = 未装着):\r\n" +
@@ -247,6 +246,8 @@ public sealed class PreviewForm : Form
                     "\r\n",
                     status.SlotBarcodes.Select((b, i) =>
                         $"  slot[{i,2}] = 0x{b:x2}{(i == CassetteStatus.HeadSlotIndex ? "  <- ヘッドに装着中" : string.Empty)}"));
+
+            _statusText.Text = raw + "\r\n\r\n" + BuildCassetteCheckText(status);
         }
         catch (TransportException ex)
         {
@@ -256,6 +257,41 @@ public sealed class PreviewForm : Form
         {
             SetBusy(false, string.Empty);
         }
+    }
+
+    // §7.3 / D-026: ジョブが必要とするインクと状態応答の装填状況を突き合わせ、
+    // 利用者に見せる文言を組み立てる。エラー中や barcode 未設定のインクは
+    // 「足りない」と誤って言わないよう、判定不能であることを明示する。
+    private string BuildCassetteCheckText(CassetteStatus status)
+    {
+        if (_current is null)
+        {
+            return "カセットの過不足: このジョブの内容が未確定のため判定できません(プレビューの作成を待ってください)。";
+        }
+
+        var result = CassetteCheck.Evaluate(_current.RequiredInks, status);
+
+        string line;
+        switch (result.Status)
+        {
+            case CassetteCheckStatus.Indeterminate:
+                return "カセットの過不足: 判定できません(エラー中のため、カセット情報が現物と一致しない可能性があります)。";
+            case CassetteCheckStatus.Sufficient:
+                line = "カセットの過不足: 必要なインクはすべて装填されています。";
+                break;
+            default:
+                string missingLabels = string.Join("、", result.MissingInks.Select(i => i.Label));
+                line = $"カセットの過不足: 不足しているインクがあります — {missingLabels}";
+                break;
+        }
+
+        if (result.UndeterminableInks.Count > 0)
+        {
+            string undeterminableLabels = string.Join("、", result.UndeterminableInks.Select(i => i.Label));
+            line += $"\r\n(バーコード未設定のため判定できないインク: {undeterminableLabels})";
+        }
+
+        return line;
     }
 
     private async Task PrintAsync()

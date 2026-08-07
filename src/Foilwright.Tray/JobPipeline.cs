@@ -42,6 +42,10 @@ public sealed class PreviewResult
 
     /// <summary>Emitter.EmitJob にそのまま渡せる印刷順のインク一覧。</summary>
     public required List<JobInk> JobInks { get; init; }
+
+    /// <summary>ジョブが実際に使うインクの定義一覧(Barcode を含む)。
+    /// カセットの過不足判定(§7.3 / D-026 / CassetteCheck)に渡す。</summary>
+    public required IReadOnlyList<InkDefinition> RequiredInks { get; init; }
 }
 
 public static class JobPipeline
@@ -130,6 +134,7 @@ public static class JobPipeline
                 Height = image.Height,
                 Planes = planes,
                 JobInks = jobInks,
+                RequiredInks = jobPlanes.Select(jp => jp.Ink).ToList(),
             };
         }
         finally
