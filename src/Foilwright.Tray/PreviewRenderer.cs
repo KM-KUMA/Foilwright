@@ -57,7 +57,7 @@ public static class PreviewRenderer
                 for (int px = 0; px < previewWidth; px++)
                 {
                     int sx = Math.Min(sourceWidth - 1, (int)(px / scale));
-                    Color color = SampleColor(sx, sy, rowBytes, jobPlanes);
+                    Color color = SampleColor(sx, sy, px, py, rowBytes, jobPlanes);
                     int idx = rowOffset + px * 3;
                     buffer[idx] = color.B;
                     buffer[idx + 1] = color.G;
@@ -74,7 +74,8 @@ public static class PreviewRenderer
     }
 
     private static Color SampleColor(
-        int sx, int sy, int rowBytes, IReadOnlyList<(InkDefinition Ink, byte[] Plane)> jobPlanes)
+        int sx, int sy, int px, int py, int rowBytes,
+        IReadOnlyList<(InkDefinition Ink, byte[] Plane)> jobPlanes)
     {
         Color result = BackgroundColor;
         int byteIndex = sy * rowBytes + sx / 8;
@@ -92,12 +93,20 @@ public static class PreviewRenderer
             {
                 continue;
             }
-            result = ResolvePixelColor(ink, sx, sy);
+            result = ResolvePixelColor(ink, px, py);
         }
         return result;
     }
 
-    private static Color ResolvePixelColor(InkDefinition ink, int sx, int sy)
+    /// <summary>市松の 1 マスの辺(プレビュー画素)。1 では縮小時に潰れて
+    /// 見えなくなるため、縮小率に依存せず目視できる幅を取る。</summary>
+    private const int HatchCellPixels = 4;
+
+    /// <param name="px">プレビュー側の X。**元画像の座標ではない。**
+    /// 元画像の座標で位相を決めると、縮小のサンプリングで奇偶が規則的に
+    /// 間引かれ、市松が単色に潰れる(実測で確認)。</param>
+    /// <param name="py">プレビュー側の Y。同上。</param>
+    private static Color ResolvePixelColor(InkDefinition ink, int px, int py)
     {
         Color baseColor = ResolveDisplayColor(ink);
         if (!IsHardToSeeOnBackground(baseColor))
@@ -105,8 +114,10 @@ public static class PreviewRenderer
             return baseColor;
         }
         // 白などの明色は薄いグレーの背景に埋没するため、市松模様で目印色と
-        // 交互に塗って輪郭を可視化する。
-        return (sx + sy) % 2 == 0 ? baseColor : LightInkMarkerColor;
+        // 交互に塗って輪郭を可視化する(DOMAIN §7.2: プレビューは必須機能で
+        // あり、白が見えないと誤爆を検出できない)。
+        int cell = (px / HatchCellPixels) + (py / HatchCellPixels);
+        return cell % 2 == 0 ? baseColor : LightInkMarkerColor;
     }
 
     /// <summary>ジョブ内容リスト(凡例)にも使う代表色。palette/*.yaml の
