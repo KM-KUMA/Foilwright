@@ -76,13 +76,15 @@ internal static class Program
         Console.Error.WriteLine("                      RGL バイト列ファイルを送出する");
         Console.Error.WriteLine("  listen [--ink-mode auto|per_page|spot_only] [--resolution 600|1200x600]");
         Console.Error.WriteLine("         [--media <名前>] [--halftone none|halftone|coarse_halftone]");
-        Console.Error.WriteLine("         [--white-mode none|auto|magic] [--machine md-5000|md-5500] [--vid XXXX]");
+        Console.Error.WriteLine("         [--white-mode none|auto|magic] [--no-curl-correction]");
+        Console.Error.WriteLine("         [--machine md-5000|md-5500] [--vid XXXX]");
         Console.Error.WriteLine("                      名前付きパイプで PostScript を受け取り印刷する");
         Console.Error.WriteLine("                      --ink-mode 省略時は 'auto'(DOMAIN §6.6 / D-016)");
         Console.Error.WriteLine($"                      --resolution 省略時は '{DefaultResolutionKey}'。選べる値はプロファイルの resolutions による(DOMAIN §7.1)");
         Console.Error.WriteLine($"                      --media 省略時は '{DefaultMediaName}'。選べる値は media.yaml による(DOMAIN §5.5.2)");
         Console.Error.WriteLine($"                      --halftone 省略時は '{DefaultHalftone}'(DOMAIN §4.2.1)");
         Console.Error.WriteLine($"                      --white-mode 省略時は '{DefaultWhiteMode}'(DOMAIN §7.1 / D-027)");
+        Console.Error.WriteLine("                      --no-curl-correction を指定するとカール矯正を止める(デカール・フィルム用。DOMAIN §10.10.4)");
         Console.Error.WriteLine($"  --machine 省略時は '{MachineRoute.DefaultMachine}'(D-025)。選べるのは: {MachineRoute.KnownMachinesDescription}");
         Console.Error.WriteLine("  --vid は機種既定の VID(変換ケーブル等の個体差)を上書きする。例: --vid 056E");
     }
@@ -286,6 +288,10 @@ internal static class Program
         public string MediaName { get; init; } = DefaultMediaName;
         public string Halftone { get; init; } = DefaultHalftone;
         public string WhiteMode { get; init; } = DefaultWhiteMode;
+
+        // カール矯正の抑制(DOMAIN §7.1 / §10.10.4)。デカール・フィルム用に
+        // 裏面印刷でカール矯正を止めたい場合に立てる。既定は false(矯正する)。
+        public bool NoCurlCorrection { get; init; }
     }
 
     private static int RunListen(string[] args)
@@ -297,10 +303,16 @@ internal static class Program
         string mediaName = DefaultMediaName;
         string halftone = DefaultHalftone;
         string whiteMode = DefaultWhiteMode;
+        bool noCurlCorrection = false;
 
         for (int i = 0; i < remaining.Count; i++)
         {
             string opt = remaining[i];
+            if (opt == "--no-curl-correction")
+            {
+                noCurlCorrection = true;
+                continue;
+            }
             if (opt is "--ink-mode" or "--resolution" or "--media" or "--halftone" or "--white-mode")
             {
                 if (i + 1 >= remaining.Count)
@@ -382,13 +394,14 @@ internal static class Program
             MediaName = mediaName,
             Halftone = halftone,
             WhiteMode = whiteMode,
+            NoCurlCorrection = noCurlCorrection,
         };
 
         Console.WriteLine($"機種: {route.Machine}(送出方式: {route.Mode}、VID: {vid})");
         Console.WriteLine(
             $"名前付きパイプ \\\\.\\pipe\\{PipeName} で待ち受け中(Ctrl+C で終了)... " +
             $"インク指定方式: {inkMode} / 解像度: {resolutionEntry.Key} / メディア: {mediaName} / " +
-            $"ハーフトーン: {halftone} / 白版モード: {whiteMode}");
+            $"ハーフトーン: {halftone} / 白版モード: {whiteMode} / カール矯正を止める: {noCurlCorrection}");
 
         while (true)
         {
@@ -462,6 +475,7 @@ internal static class Program
                 Inks = inks,
                 Width = image.Width,
                 Height = image.Height,
+                NoCurlCorrection = options.NoCurlCorrection,
             };
 
             byte[] rgl = Emitter.EmitJob(planes, job);

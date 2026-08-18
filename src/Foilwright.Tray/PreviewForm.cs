@@ -31,6 +31,7 @@ public sealed class PreviewForm : Form
     private readonly ComboBox _mediaCombo;
     private readonly ComboBox _halftoneCombo;
     private readonly ComboBox _whiteModeCombo;
+    private readonly CheckBox _noCurlCheck;
     private readonly Button _saveDefaultsButton;
     private readonly PictureBox _previewBox;
     private readonly Label _jobSummaryLabel;
@@ -90,8 +91,10 @@ public sealed class PreviewForm : Form
         root.Controls.Add(right, 1, 0);
 
         // 設定(§7.1: ジョブごとの上書き)
-        var settingsGroup = new GroupBox { Text = "設定(このジョブに適用)", Dock = DockStyle.Top, Height = 250 };
-        var settingsLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 7, Padding = new Padding(8) };
+        // 行を 1 つ増やした分だけ高さも足す(TableLayoutPanel は Dock=Fill なので、
+        // ここを据え置くと最下段の保存ボタンが押し出されて見えなくなる)。
+        var settingsGroup = new GroupBox { Text = "設定(このジョブに適用)", Dock = DockStyle.Top, Height = 285 };
+        var settingsLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 8, Padding = new Padding(8) };
         settingsLayout.Controls.Add(new Label { Text = "機種:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
         _machineCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
         _machineCombo.Items.AddRange(MachineRoute.KnownMachinesDescription.Split('|'));
@@ -131,9 +134,15 @@ public sealed class PreviewForm : Form
         _whiteModeCombo.SelectedItem = JobAssembly.ValidWhiteModes.Contains(settings.WhiteMode) ? settings.WhiteMode : "auto";
         settingsLayout.Controls.Add(_whiteModeCombo, 1, 5);
 
+        // カール矯正の抑制(§7.1 / DOMAIN §10.10.4)。デカール・フィルム用に
+        // 裏面印刷でカール矯正を止めたい場合に使う。
+        settingsLayout.Controls.Add(new Label { Text = "カール矯正を止める:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 6);
+        _noCurlCheck = new CheckBox { Text = "デカール・フィルム用(§10.10.4)", AutoSize = true, Checked = settings.NoCurlCorrection };
+        settingsLayout.Controls.Add(_noCurlCheck, 1, 6);
+
         _saveDefaultsButton = new Button { Text = "この設定を既定値として保存", AutoSize = true };
         _saveDefaultsButton.Click += (_, _) => SaveAsDefaults();
-        settingsLayout.Controls.Add(_saveDefaultsButton, 0, 6);
+        settingsLayout.Controls.Add(_saveDefaultsButton, 0, 7);
         settingsLayout.SetColumnSpan(_saveDefaultsButton, 2);
 
         settingsGroup.Controls.Add(settingsLayout);
@@ -274,6 +283,7 @@ public sealed class PreviewForm : Form
         _settings.MediaName = ((MediaItem)_mediaCombo.SelectedItem!).Name;
         _settings.Halftone = (string)_halftoneCombo.SelectedItem!;
         _settings.WhiteMode = (string)_whiteModeCombo.SelectedItem!;
+        _settings.NoCurlCorrection = _noCurlCheck.Checked;
         _settings.Save();
         MessageBox.Show(this, "既定値として保存しました。", "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
@@ -440,6 +450,7 @@ public sealed class PreviewForm : Form
                 Inks = _current.JobInks,
                 Width = _current.Width,
                 Height = _current.Height,
+                NoCurlCorrection = _noCurlCheck.Checked,
             };
             var planes = _current.Planes;
 
@@ -475,6 +486,7 @@ public sealed class PreviewForm : Form
         _mediaCombo.Enabled = !busy;
         _halftoneCombo.Enabled = !busy;
         _whiteModeCombo.Enabled = !busy;
+        _noCurlCheck.Enabled = !busy;
         _saveDefaultsButton.Enabled = !busy;
         _statusRefreshButton.Enabled = !busy;
         _cancelButton.Enabled = !busy;

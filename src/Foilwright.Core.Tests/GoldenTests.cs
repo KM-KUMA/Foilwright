@@ -127,7 +127,8 @@ public class GoldenTests
 
     private static PrintJob BuildJob(
         int resolution, string model, IReadOnlyList<JobInk> inks, int width, int height,
-        int xShift = 0, int yShift = 0, bool noCurlCorrection = false, MediaSpec? mediaOverride = null)
+        int xShift = 0, int yShift = 0, bool noCurlCorrection = false,
+        MediaSpec? mediaOverride = null, string transferMode = "colour_plane")
     {
         var (paper, media) = BuildJobBasics(resolution, model, out _);
         return new PrintJob
@@ -141,17 +142,22 @@ public class GoldenTests
             XShift = xShift,
             YShift = yShift,
             NoCurlCorrection = noCurlCorrection,
+            TransferMode = transferMode,
         };
     }
 
     private static byte[] Render(
         string ppmFileName, int resolution, string model, IReadOnlyList<JobInk> inks,
         IReadOnlyDictionary<string, string> palette, string halftone = "none",
-        int xShift = 0, int yShift = 0, MediaSpec? mediaOverride = null)
+        int xShift = 0, int yShift = 0, MediaSpec? mediaOverride = null,
+        bool noCurlCorrection = false, string transferMode = "colour_plane")
     {
         var image = PpmImage.Read(Path.Combine(CasesDir, ppmFileName));
         var planes = Raster.ToPlanes(image, palette, halftone);
-        var job = BuildJob(resolution, model, inks, image.Width, image.Height, xShift, yShift, mediaOverride: mediaOverride);
+        var job = BuildJob(
+            resolution, model, inks, image.Width, image.Height, xShift, yShift,
+            noCurlCorrection: noCurlCorrection, mediaOverride: mediaOverride,
+            transferMode: transferMode);
         return Emitter.EmitJob(planes, job);
     }
 
@@ -384,6 +390,35 @@ public class GoldenTests
             }
         }
         return ejects;
+    }
+
+    [Fact]
+    public void G17_NoCurl_Md5000_600()
+    {
+        // -nocurlcorrection: デカールシートは平らなまま送らなければならない
+        // ため、カール補正バイトを抑制する(DOMAIN §10.10.4)。本プロジェクトの
+        // 主用途そのものなので、g1 との 1 バイト差に golden を割いている。
+        //
+        // g17 が g1 と違うのはオフセット 0x24 の 1 バイトだけで、
+        // `1b 1a 00 00 43` が `1b 1a 01 00 43` になる。
+        var actual = Render(
+            "c1_black_120x120.ppm", 600, "md-5000", DefaultInks, DefaultPalette,
+            noCurlCorrection: true);
+        AssertGoldenMatch(actual, "g17_c1_nocurl_md5000_600.bin");
+    }
+
+    [Fact]
+    public void G16_BlackRaster_Md5000_600()
+    {
+        // -black: 単一プレーンの転送モード。モードバイト自身がどのリボンを
+        // 使うかを表すため、色選択コマンドもパス間のバックフィードも持たない。
+        // colourPlane の g1 より 35 バイト短い(1026 対 1061)。DOMAIN §11.1.1。
+        var inks = new[] { new JobInk { Name = "black", PrinterCode = 0x00 } };
+        var palette = new Dictionary<string, string> { ["black"] = "K" };
+        var actual = Render(
+            "c1_black_120x120.ppm", 600, "md-5000", inks, palette,
+            transferMode: "black_raster");
+        AssertGoldenMatch(actual, "g16_c1_blackraster_md5000_600.bin");
     }
 
     [Fact]

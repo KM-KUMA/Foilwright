@@ -31,6 +31,10 @@ public sealed class TraySettings
     public string Halftone { get; set; } = JobPipeline.DefaultHalftone;
     public string WhiteMode { get; set; } = JobPipeline.DefaultWhiteMode;
 
+    // カール矯正の抑制(DOMAIN §7.1 / §10.10.4)。デカール・フィルム等、
+    // 裏面印刷でカール矯正を止めたい用途向け。既定は false(矯正する)。
+    public bool NoCurlCorrection { get; set; }
+
     private static string SettingsPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "Foilwright",

@@ -100,6 +100,7 @@ internal static class Program
             string mediaName = settings.MediaName;
             string halftone = settings.Halftone;
             string whiteMode = settings.WhiteMode;
+            bool noCurlCorrection = settings.NoCurlCorrection;
             string machine = settings.Machine;
             for (int i = 0; i < extraArgs.Length - 1; i++)
             {
@@ -111,6 +112,10 @@ internal static class Program
                     case "--white-mode": whiteMode = extraArgs[i + 1]; i++; break;
                     case "--machine": machine = extraArgs[i + 1]; i++; break;
                 }
+            }
+            if (Array.IndexOf(extraArgs, "--no-curl-correction") >= 0)
+            {
+                noCurlCorrection = true;
             }
             route = MachineRoute.Resolve(machine);
 
@@ -129,6 +134,7 @@ internal static class Program
                 Inks = result.JobInks,
                 Width = result.Width,
                 Height = result.Height,
+                NoCurlCorrection = noCurlCorrection,
             };
             byte[] rgl = JobPipeline.BuildRgl(result.Planes, job);
             File.WriteAllBytes(outputRglPath, rgl);
