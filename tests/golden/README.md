@@ -29,11 +29,15 @@ ppmtomd 1.6 が生成した既知正解のバイト列(DOMAIN §9)。ref/ と sr
 | g13_c6_halftone_md5000_600.bin | c6_fullcolour_240x120.ppm | `-model MD-5000 -resolution 600 -colourcorrection Plain -dither Halftone` | 同上 |
 | g14_c6_coarsehalftone_md5000_600.bin | c6_fullcolour_240x120.ppm | `-model MD-5000 -resolution 600 -colourcorrection Plain -dither CoarseHalftone` | 同上 |
 | g15_c1_cardboard_md5000_600.bin | c1_black_120x120.ppm | `-model MD-5000 -resolution 600 -media Cardboard` | 同上 |
+| g16_c1_blackraster_md5000_600.bin | c1_black_120x120.ppm | `-model MD-5000 -resolution 600 -black` | 2026-08-19 |
+| g17_c1_nocurl_md5000_600.bin | c1_black_120x120.ppm | `-model MD-5000 -resolution 600 -nocurlcorrection` | 2026-08-19 |
 
 ## 検証済みの事実(2026-07-28)
 
 - **g1 と g5 はバイト完全一致**(`cmp` 差分ゼロ)。MD-5000 と MD-5500 は ppmtomd レベルでコマンド差分なし(DOMAIN §11 #3 の裏付け)
 - g1 と g4 の差分はバイト 8 の解像度コード(`\033*t{res}R` の 0x03→0x04)とページ幅(4800→9600 ドット)のみ。docs/research/ppmtomd-survey.md の Q1/Q2 と整合
+- **g17 と g1 の差分はカール補正バイト 1 箇所のみ**(オフセット 0x24 の`00` → `01`。`ESC SUB {curl} 00 43`)。デカール用途で止めるのはこの 1 バイト(DOMAIN §10.10.4)。2026-08-19 に採取・確認
+- **g16 は g1 より 35 バイト短い**(1026 対 1061)。blackRaster は転送モード自体がリボンを指すため、色選択コマンド 4 個とバックフィード 3 個を持たない(DOMAIN §11.1.1)。2026-08-19 に採取・確認
 - 全 golden の先頭は `1b 25 80 41`(ESC % 0x80 A = RGL モード選択)
 - **パスの実行順は CMYK コンポーネント順で固定**(C → M → Y → K)。ppmtomd が順序を入れ替えるのは DyeSub のときだけで(ppmtomd.c:1456-1464)、本プロジェクトの対象外(DOMAIN §1.3)
 - **色選択コマンドのコードバイト**(`1b 1a {code} {flag} 72` の code)は mddata.c の colour enum 順。golden から読み取った実測値: Black=0x00 / Cyan=0x01 / Magenta=0x02 / Yellow=0x03 / MetallicGold=0x04 / MetallicMagenta=0x05 / MetallicCyan=0x06 / MetallicSilver=0x07 / White=0x0B。{flag} は最終プレーンのみ 0x80

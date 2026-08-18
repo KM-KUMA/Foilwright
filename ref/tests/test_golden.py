@@ -218,7 +218,9 @@ def test_g11_white_finish_colour_md5000_600():
         job,
         _WHITE_FINISH_PALETTE,
     )
-    _assert_golden_match(actual, GOLDEN_DIR / "g11_c5_white_finish_colour_md5000_600.bin")
+    _assert_golden_match(
+        actual, GOLDEN_DIR / "g11_c5_white_finish_colour_md5000_600.bin"
+    )
 
 
 def _count_ejects(data: bytes) -> int:
@@ -381,3 +383,29 @@ def test_g7_metallic4_md5000_600():
         _METALLIC4_PALETTE,
     )
     _assert_golden_match(actual, GOLDEN_DIR / "g7_c5_metallic4_md5000_600.bin")
+
+
+def test_g17_nocurl_md5000_600():
+    """-nocurlcorrection: decal stock must stay flat, so the curl-correction
+    byte is suppressed (DOMAIN §10.10.4). This is the main use case of the
+    whole project -- water slide decals -- so the one byte that separates it
+    from g1 is worth its own golden.
+
+    g17 differs from g1 in exactly one byte, at offset 0x24:
+    `1b 1a 00 00 43` becomes `1b 1a 01 00 43`."""
+    job = dict(_job(600, "md-5000", _DEFAULT_INKS), no_curl_correction=True)
+    actual = _render(CASES_DIR / "c1_black_120x120.ppm", job, _DEFAULT_PALETTE)
+    _assert_golden_match(actual, GOLDEN_DIR / "g17_c1_nocurl_md5000_600.bin")
+
+
+def test_g16_blackraster_md5000_600():
+    """-black: the single-plane transfer mode. The mode byte itself says which
+    ribbon to use, so the stream carries no colour-selection command and no
+    backfeed between passes -- 35 bytes shorter than the colourPlane g1
+    (1026 vs 1061). DOMAIN §11.1.1."""
+    job = dict(
+        _job(600, "md-5000", [{"name": "black", "printer_code": 0x00}]),
+        transfer_mode="black_raster",
+    )
+    actual = _render(CASES_DIR / "c1_black_120x120.ppm", job, {"black": "K"})
+    _assert_golden_match(actual, GOLDEN_DIR / "g16_c1_blackraster_md5000_600.bin")
