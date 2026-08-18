@@ -158,6 +158,14 @@ public static class JobPipeline
         }
     }
 
+    /// <summary>RGL を組み立てるだけで送出しない。実機を消費せずに
+    /// バイト列を検査するための経路(§9.5: バイト列の検証と実機の刷り上がり
+    /// 確認は到達範囲が異なる)。</summary>
+    public static byte[] BuildRgl(Dictionary<string, byte[]> planes, PrintJob job)
+    {
+        return Emitter.EmitJob(planes, job);
+    }
+
     /// <summary>実機へ送出する。DOMAIN §15.2.1: トレイアプリが送出を排他的に
     /// 所有する — この呼び出しの間は状態問い合わせ(ReadRawStatus)を挟んでは
     /// ならない(呼び出し側 UI が busy フラグで担保する)。</summary>

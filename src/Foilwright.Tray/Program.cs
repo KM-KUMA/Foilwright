@@ -30,6 +30,13 @@ internal static class Program
             return;
         }
 
+        int rglIndex = Array.IndexOf(args, "--debug-rgl");
+        if (rglIndex >= 0 && rglIndex + 2 < args.Length)
+        {
+            RunDebugRgl(args[rglIndex + 1], args[rglIndex + 2], args.Skip(rglIndex + 3).ToArray());
+            return;
+        }
+
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         Application.SetHighDpiMode(HighDpiMode.SystemAware);
@@ -71,6 +78,77 @@ internal static class Program
     /// extraArgs: 保存済み設定(TraySettings)を上書きする任意のオプション
     /// (--resolution / --media / --halftone / --white-mode)。実機・UI 無しで
     /// 設定項目ごとの挙動を確認するための検証用オプション(DOMAIN §7.1)。</summary>
+    /// <summary>PostScript から RGL を組み立ててファイルへ書き出す。
+    /// **送出はしない。** 実機を消費せずにバイト列を検査するための経路で、
+    /// 送るかどうかは書き出した内容を確認してから別途判断する(§9.5)。</summary>
+    private static void RunDebugRgl(string psPath, string outputRglPath, string[] extraArgs)
+    {
+        try
+        {
+            if (!File.Exists(psPath))
+            {
+                Console.Error.WriteLine($"ファイルが見つかりません: {psPath}");
+                Environment.ExitCode = 1;
+                return;
+            }
+
+            string repoRoot = JobPipeline.FindRepoRoot();
+            var settings = TraySettings.Load();
+            var route = MachineRoute.Resolve(settings.Machine);
+
+            string resolutionKey = settings.ResolutionKey;
+            string mediaName = settings.MediaName;
+            string halftone = settings.Halftone;
+            string whiteMode = settings.WhiteMode;
+            string machine = settings.Machine;
+            for (int i = 0; i < extraArgs.Length - 1; i++)
+            {
+                switch (extraArgs[i])
+                {
+                    case "--resolution": resolutionKey = extraArgs[i + 1]; i++; break;
+                    case "--media": mediaName = extraArgs[i + 1]; i++; break;
+                    case "--halftone": halftone = extraArgs[i + 1]; i++; break;
+                    case "--white-mode": whiteMode = extraArgs[i + 1]; i++; break;
+                    case "--machine": machine = extraArgs[i + 1]; i++; break;
+                }
+            }
+            route = MachineRoute.Resolve(machine);
+
+            var result = JobPipeline.BuildPreview(
+                psPath, repoRoot, route, settings.InkMode, settings.PaperName, mediaName,
+                resolutionKey, halftone, whiteMode);
+
+            var config = JobPipeline.LoadJobConfig(repoRoot, route, settings.PaperName, mediaName);
+            var job = new PrintJob
+            {
+                // Emitter.EmitJob は Paper を常に 600dpi 基準で受け取り、
+                // Resolution に応じた換算を内部で行う(未換算のまま渡す)。
+                Resolution = result.Resolution.DpiX,
+                Paper = config.Paper,
+                Media = config.Media,
+                Inks = result.JobInks,
+                Width = result.Width,
+                Height = result.Height,
+            };
+            byte[] rgl = JobPipeline.BuildRgl(result.Planes, job);
+            File.WriteAllBytes(outputRglPath, rgl);
+
+            Console.WriteLine($"RGL: {outputRglPath} ({rgl.Length} バイト)");
+            Console.WriteLine(
+                $"機種: {machine} / パス数: {result.Inks.Count} / 解像度: {result.Resolution.Key} / " +
+                $"メディア: {mediaName} / 白版モード: {whiteMode} / サイズ: {result.Width}x{result.Height}");
+            foreach (var ink in result.Inks)
+            {
+                Console.WriteLine($"  order={ink.Order} label={ink.Label} passes={ink.Passes}");
+            }
+        }
+        catch (Exception ex) when (ex is GhostscriptException or ConfigException or PpmFormatException or MachineRouteException)
+        {
+            Console.Error.WriteLine($"エラー: {ex.Message}");
+            Environment.ExitCode = 1;
+        }
+    }
+
     private static void RunDebugPreviewPng(string psPath, string outputPngPath, string[] extraArgs)
     {
         try
