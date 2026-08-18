@@ -30,7 +30,7 @@ public sealed class InkPreviewInfo
     public required System.Drawing.Color Color { get; init; }
 }
 
-public sealed class PreviewResult
+public sealed class PreviewResult : IDisposable
 {
     public required System.Drawing.Bitmap Preview { get; init; }
     public required IReadOnlyList<InkPreviewInfo> Inks { get; init; }
@@ -51,6 +51,27 @@ public sealed class PreviewResult
     /// <summary>ジョブが実際に使うインクの定義一覧(Barcode を含む)。
     /// カセットの過不足判定(§7.3 / D-026 / CassetteCheck)に渡す。</summary>
     public required IReadOnlyList<InkDefinition> RequiredInks { get; init; }
+
+    /// <summary>Ghostscript で変換し、用紙寸法で切り出し済みの画像。D-028 補足:
+    /// インク除外の切り替えでは Ghostscript を再実行せず、この画像を保持した
+    /// まま <see cref="JobPipeline.RebuildFromImage"/> でジョブ組み立てだけを
+    /// やり直す。</summary>
+    public required PpmImage Image { get; set; }
+
+    /// <summary>このプレビューを組み立てた際のジョブ設定(パレット・用紙・
+    /// メディア・プロファイル)。RebuildFromImage の再呼び出しに必要。</summary>
+    public required JobConfig Config { get; set; }
+
+    /// <summary>Bitmap(GDI ハンドル)と、切り出し済み画像・プレーン(管理ヒープ上の
+    /// 大きなバイト配列。A4/600dpi で約 68MB、1200x600 で約 137MB)を解放する。
+    /// 古いプレビューを差し替える際は必ずこれを呼ぶこと(DOMAIN §7.2 補足)。</summary>
+    public void Dispose()
+    {
+        Preview.Dispose();
+        Planes.Clear();
+        Image = null!;
+        Config = null!;
+    }
 }
 
 public static class JobPipeline
@@ -106,7 +127,8 @@ public static class JobPipeline
     /// プロファイルの resolutions から解決する(DOMAIN §4.5: コードに埋め込まない)。</summary>
     public static PreviewResult BuildPreview(
         string psPath, string repoRoot, MachineRoute route, string inkMode,
-        string paperName, string mediaName, string resolutionKey, string halftone, string whiteMode)
+        string paperName, string mediaName, string resolutionKey, string halftone, string whiteMode,
+        IReadOnlySet<string>? excludedInks = null)
     {
         var config = LoadJobConfig(repoRoot, route, paperName, mediaName);
         var resolutionEntry = config.Profile.ResolveResolutionByKey(resolutionKey);
@@ -120,42 +142,74 @@ public static class JobPipeline
             var scaledPaper = config.Paper.ScaleToResolution(resolutionEntry.DpiX, resolutionEntry.DpiY);
             var image = fullImage.Crop(scaledPaper.LeftMargin, scaledPaper.TopMargin, scaledPaper.Width, scaledPaper.Length);
 
-            var jobPlanes = JobAssembly.BuildJobPlanes(image, config.Palette, inkMode, halftone, whiteMode);
-
-            var planes = jobPlanes.ToDictionary(jp => jp.Ink.Name, jp => jp.Plane);
-            var jobInks = jobPlanes
-                .Select(jp => new JobInk { Name = jp.Ink.Name, PrinterCode = jp.Ink.PrinterCode })
-                .ToList();
-            var inkInfos = jobPlanes
-                .Select(jp => new InkPreviewInfo
-                {
-                    Name = jp.Ink.Name,
-                    Label = jp.Ink.Label,
-                    Order = jp.Ink.Order,
-                    Passes = jp.Ink.Passes,
-                    PrinterCode = jp.Ink.PrinterCode,
-                    Color = PreviewRenderer.ResolveDisplayColor(jp.Ink),
-                })
-                .ToList();
-
-            var bitmap = PreviewRenderer.Render(image.Width, image.Height, jobPlanes, PreviewMaxWidth);
-
-            return new PreviewResult
-            {
-                Preview = bitmap,
-                Inks = inkInfos,
-                Width = image.Width,
-                Height = image.Height,
-                Planes = planes,
-                JobInks = jobInks,
-                RequiredInks = jobPlanes.Select(jp => jp.Ink).ToList(),
-                Resolution = resolutionEntry,
-            };
+            return BuildPreviewCore(image, config, resolutionEntry, inkMode, halftone, whiteMode, excludedInks);
         }
         finally
         {
             TryDelete(ppmPath);
         }
+    }
+
+    /// <summary>切り出し済みの画像を保持したまま、ジョブ組み立て(インク割り当て・
+    /// プレーン分解・プレビュー描画)だけをやり直す。Ghostscript は再実行しない
+    /// (D-028 補足)。プレビュー画面でインクの除外(チェック)を切り替えたときに使う。
+    ///
+    /// excludedInks: D-028 の「除外 = そのジョブのパレットからそのインクを外す」を
+    /// 実現する集合。ここに含まれるインクは <paramref name="config"/>.Palette から
+    /// 除いたうえで組み立てるため、`auto` では該当画素がそのまま CMYK 分解へ回る
+    /// (プレーンを作ってから捨てるのではない)。</summary>
+    public static PreviewResult RebuildFromImage(
+        PpmImage image, JobConfig config, ResolutionEntry resolution,
+        string inkMode, string halftone, string whiteMode,
+        IReadOnlySet<string>? excludedInks)
+    {
+        return BuildPreviewCore(image, config, resolution, inkMode, halftone, whiteMode, excludedInks);
+    }
+
+    /// <summary>BuildPreview と RebuildFromImage の共通処理(インク割り当て以降)。
+    /// D-028: excludedInks に含まれるインクはパレットから除いてから
+    /// JobAssembly.BuildJobPlanes に渡す — プレーンを作ってから捨てるのではない。</summary>
+    private static PreviewResult BuildPreviewCore(
+        PpmImage image, JobConfig config, ResolutionEntry resolutionEntry,
+        string inkMode, string halftone, string whiteMode, IReadOnlySet<string>? excludedInks)
+    {
+        var palette = excludedInks is { Count: > 0 }
+            ? config.Palette.Where(ink => !excludedInks.Contains(ink.Name)).ToList()
+            : config.Palette;
+
+        var jobPlanes = JobAssembly.BuildJobPlanes(image, palette, inkMode, halftone, whiteMode);
+
+        var planes = jobPlanes.ToDictionary(jp => jp.Ink.Name, jp => jp.Plane);
+        var jobInks = jobPlanes
+            .Select(jp => new JobInk { Name = jp.Ink.Name, PrinterCode = jp.Ink.PrinterCode })
+            .ToList();
+        var inkInfos = jobPlanes
+            .Select(jp => new InkPreviewInfo
+            {
+                Name = jp.Ink.Name,
+                Label = jp.Ink.Label,
+                Order = jp.Ink.Order,
+                Passes = jp.Ink.Passes,
+                PrinterCode = jp.Ink.PrinterCode,
+                Color = PreviewRenderer.ResolveDisplayColor(jp.Ink),
+            })
+            .ToList();
+
+        var bitmap = PreviewRenderer.Render(image.Width, image.Height, jobPlanes, PreviewMaxWidth);
+
+        return new PreviewResult
+        {
+            Preview = bitmap,
+            Inks = inkInfos,
+            Width = image.Width,
+            Height = image.Height,
+            Planes = planes,
+            JobInks = jobInks,
+            RequiredInks = jobPlanes.Select(jp => jp.Ink).ToList(),
+            Resolution = resolutionEntry,
+            Image = image,
+            Config = config,
+        };
     }
 
     /// <summary>RGL を組み立てるだけで送出しない。実機を消費せずに

@@ -102,6 +102,9 @@ internal static class Program
             string whiteMode = settings.WhiteMode;
             bool noCurlCorrection = settings.NoCurlCorrection;
             string machine = settings.Machine;
+            // D-028: UI 無しで除外の効果を検証するための隠しオプション
+            // (カンマ区切りのインク名。src/Foilwright.Tray/PreviewForm.cs のチェック列と同義)。
+            HashSet<string>? excludedInks = null;
             for (int i = 0; i < extraArgs.Length - 1; i++)
             {
                 switch (extraArgs[i])
@@ -111,6 +114,12 @@ internal static class Program
                     case "--halftone": halftone = extraArgs[i + 1]; i++; break;
                     case "--white-mode": whiteMode = extraArgs[i + 1]; i++; break;
                     case "--machine": machine = extraArgs[i + 1]; i++; break;
+                    case "--exclude-inks":
+                        excludedInks = extraArgs[i + 1]
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                            .ToHashSet();
+                        i++;
+                        break;
                 }
             }
             if (Array.IndexOf(extraArgs, "--no-curl-correction") >= 0)
@@ -119,9 +128,14 @@ internal static class Program
             }
             route = MachineRoute.Resolve(machine);
 
+            if (excludedInks is { Count: > 0 })
+            {
+                Console.WriteLine($"除外するインク(D-028): {string.Join(", ", excludedInks)}");
+            }
+
             var result = JobPipeline.BuildPreview(
                 psPath, repoRoot, route, settings.InkMode, settings.PaperName, mediaName,
-                resolutionKey, halftone, whiteMode);
+                resolutionKey, halftone, whiteMode, excludedInks);
 
             var config = JobPipeline.LoadJobConfig(repoRoot, route, settings.PaperName, mediaName);
             var job = new PrintJob
@@ -174,6 +188,8 @@ internal static class Program
             string mediaName = settings.MediaName;
             string halftone = settings.Halftone;
             string whiteMode = settings.WhiteMode;
+            // D-028: UI 無しで除外の効果を検証するための隠しオプション。
+            HashSet<string>? excludedInks = null;
             for (int i = 0; i < extraArgs.Length - 1; i++)
             {
                 switch (extraArgs[i])
@@ -182,12 +198,23 @@ internal static class Program
                     case "--media": mediaName = extraArgs[i + 1]; i++; break;
                     case "--halftone": halftone = extraArgs[i + 1]; i++; break;
                     case "--white-mode": whiteMode = extraArgs[i + 1]; i++; break;
+                    case "--exclude-inks":
+                        excludedInks = extraArgs[i + 1]
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                            .ToHashSet();
+                        i++;
+                        break;
                 }
+            }
+
+            if (excludedInks is { Count: > 0 })
+            {
+                Console.WriteLine($"除外するインク(D-028): {string.Join(", ", excludedInks)}");
             }
 
             var result = JobPipeline.BuildPreview(
                 psPath, repoRoot, route, settings.InkMode, settings.PaperName, mediaName,
-                resolutionKey, halftone, whiteMode);
+                resolutionKey, halftone, whiteMode, excludedInks);
 
             result.Preview.Save(outputPngPath, System.Drawing.Imaging.ImageFormat.Png);
 

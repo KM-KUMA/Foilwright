@@ -45,6 +45,11 @@ public sealed class PreviewForm : Form
     private PreviewResult? _current;
     private bool _busy;
 
+    /// <summary>D-028: プレビューでチェックを外したインクの名前(name)。
+    /// 「そのジョブのパレットからそのインクを外す」の上書き集合であり、
+    /// ジョブごとの上書きに留まる(TraySettings には保存しない)。</summary>
+    private readonly HashSet<string> _excludedInks = new();
+
     /// <summary>メディア種別コンボの 1 項目。表示は label(§5.5.2)、実体は name。</summary>
     private sealed record MediaItem(string Name, string Label)
     {
@@ -171,15 +176,40 @@ public sealed class PreviewForm : Form
             Dock = DockStyle.Fill,
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
-            ReadOnly = true,
+            // グリッド全体は読み取り専用にせず、"使う" 列だけを編集可能にする
+            // (D-028: チェックを外すとそのジョブのパレットからそのインクを外す)。
+            ReadOnly = false,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
             RowHeadersVisible = false,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         };
+        var useColumn = new DataGridViewCheckBoxColumn { Name = "Use", HeaderText = "使う" };
+        _inkGrid.Columns.Add(useColumn);
         _inkGrid.Columns.Add("Order", "順序");
         _inkGrid.Columns.Add("Color", "色");
         _inkGrid.Columns.Add("Label", "インク");
         _inkGrid.Columns.Add("Passes", "パス数");
+        _inkGrid.Columns["Order"]!.ReadOnly = true;
+        _inkGrid.Columns["Color"]!.ReadOnly = true;
+        _inkGrid.Columns["Label"]!.ReadOnly = true;
+        _inkGrid.Columns["Passes"]!.ReadOnly = true;
+        // チェックボックス列は確定(コミット)が 1 セル遅れる既知の挙動があるため、
+        // CurrentCellDirtyStateChanged で即座にコミットしてから CellValueChanged を拾う。
+        _inkGrid.CurrentCellDirtyStateChanged += (_, _) =>
+        {
+            if (_inkGrid.IsCurrentCellDirty && _inkGrid.CurrentCell is DataGridViewCheckBoxCell)
+            {
+                _inkGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+            }
+        };
+        _inkGrid.CellValueChanged += async (_, e) =>
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex != useColumn.Index)
+            {
+                return;
+            }
+            await OnInkUseChangedAsync(e.RowIndex);
+        };
         jobGroup.Controls.Add(_inkGrid);
         jobGroup.Controls.Add(_jobSummaryLabel);
         right.Controls.Add(jobGroup);
@@ -308,31 +338,17 @@ public sealed class PreviewForm : Form
             string whiteMode = (string)_whiteModeCombo.SelectedItem!;
             var route = MachineRoute.Resolve(machine);
 
+            // D-028: 除外集合は解像度・メディア・機種などを変えて再プレビューしても
+            // そのまま持ち越す(除外したインクがもう現れなければ自然に消える)。
             var result = await Task.Run(() => JobPipeline.BuildPreview(
-                _psPath, _repoRoot, route, inkMode, _settings.PaperName, mediaName, resolutionKey, halftone, whiteMode));
+                _psPath, _repoRoot, route, inkMode, _settings.PaperName, mediaName, resolutionKey, halftone, whiteMode,
+                _excludedInks));
 
-            _current?.Preview.Dispose();
-            _current = result;
-            _previewBox.Image = result.Preview;
-            _jobSummaryLabel.Text =
-                $"パス数: {result.Inks.Count} / 解像度: {result.Resolution.Key} / サイズ: {result.Width}x{result.Height}";
-
-            _inkGrid.Rows.Clear();
-            foreach (var ink in result.Inks)
-            {
-                int rowIndex = _inkGrid.Rows.Add(ink.Order, string.Empty, ink.Label, ink.Passes);
-                _inkGrid.Rows[rowIndex].Cells["Color"].Style.BackColor = ink.Color;
-            }
-
-            if (result.Inks.Count == 0)
-            {
-                MessageBox.Show(
-                    this, "印刷する内容がありません(全プレーンが空です)。", "Foilwright",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
+            ApplyPreviewResult(result);
         }
         catch (Exception ex) when (ex is GhostscriptException or ConfigException or PpmFormatException)
         {
+            _current?.Dispose();
             _current = null;
             MessageBox.Show(this, $"プレビューの作成に失敗しました: {ex.Message}", "Foilwright",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -342,6 +358,113 @@ public sealed class PreviewForm : Form
             SetBusy(false, string.Empty);
         }
     }
+
+    /// <summary>チェック列(D-028)を切り替えたときのハンドラ。Ghostscript を
+    /// 再実行せず、切り出し済みの画像を保持したまま JobPipeline.RebuildFromImage
+    /// でジョブ組み立てだけをやり直す(D-028 補足)。</summary>
+    private async Task OnInkUseChangedAsync(int rowIndex)
+    {
+        if (_busy || _current is null)
+        {
+            return;
+        }
+        if (rowIndex < 0 || rowIndex >= _inkGrid.Rows.Count)
+        {
+            return;
+        }
+        var row = _inkGrid.Rows[rowIndex];
+        if (row.Tag is not string inkName)
+        {
+            return;
+        }
+        bool use = row.Cells["Use"].Value is bool b && b;
+        if (use)
+        {
+            _excludedInks.Remove(inkName);
+        }
+        else
+        {
+            _excludedInks.Add(inkName);
+        }
+
+        SetBusy(true, "ジョブを再構成中...");
+        try
+        {
+            string inkMode = (string)_inkModeCombo.SelectedItem!;
+            string halftone = (string)_halftoneCombo.SelectedItem!;
+            string whiteMode = (string)_whiteModeCombo.SelectedItem!;
+            var previous = _current;
+
+            var result = await Task.Run(() => JobPipeline.RebuildFromImage(
+                previous.Image, previous.Config, previous.Resolution, inkMode, halftone, whiteMode, _excludedInks));
+
+            ApplyPreviewResult(result);
+        }
+        finally
+        {
+            SetBusy(false, string.Empty);
+        }
+    }
+
+    /// <summary>新しい PreviewResult を画面へ反映し、古いものを破棄する
+    /// (§7.2 補足: Bitmap だけでなく、切り出し済み画像・プレーンも解放する)。</summary>
+    private void ApplyPreviewResult(PreviewResult result)
+    {
+        _current?.Dispose();
+        _current = result;
+        _previewBox.Image = result.Preview;
+        _jobSummaryLabel.Text =
+            $"パス数: {result.Inks.Count} / 解像度: {result.Resolution.Key} / サイズ: {result.Width}x{result.Height}";
+
+        PopulateInkGrid(result);
+
+        if (result.Inks.Count == 0)
+        {
+            MessageBox.Show(
+                this, "印刷する内容がありません(全プレーンが空です)。", "Foilwright",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    /// <summary>ジョブ内容のグリッドを作り直す。D-028: チェックを外した(除外した)
+    /// インクは jobPlanes に現れなくなるため、行が消えて再チェックできなくなって
+    /// しまう。そこで「現在使われているインク」に加え、「除外集合に入っているが
+    /// 現在は現れていないインク」もパレット定義から拾って行を残す(チェックを
+    /// 外したり戻したりを、再ラスタライズ無しで自由に行き来できるようにするため)。</summary>
+    private void PopulateInkGrid(PreviewResult result)
+    {
+        // Rows.Add/Clear は CellValueChanged を発火させうるが、この呼び出しは
+        // 常に SetBusy(true) の内側(RefreshPreviewAsync / OnInkUseChangedAsync)
+        // で行われるため、OnInkUseChangedAsync 先頭の _busy ガードで再入を防げる。
+        _inkGrid.Rows.Clear();
+
+        var activeNames = new HashSet<string>(result.Inks.Select(ink => ink.Name));
+        var rows = new List<(string Name, int Order, string Label, int Passes, Color Color, bool Used)>();
+        foreach (var ink in result.Inks)
+        {
+            rows.Add((ink.Name, ink.Order, ink.Label, ink.Passes, ink.Color, true));
+        }
+        foreach (var def in result.Config.Palette)
+        {
+            if (_excludedInks.Contains(def.Name) && !activeNames.Contains(def.Name))
+            {
+                rows.Add((def.Name, def.Order, def.Label, 0, PreviewRenderer.ResolveDisplayColor(def), false));
+            }
+        }
+
+        foreach (var row in rows.OrderBy(r => r.Order))
+        {
+            int rowIndex = _inkGrid.Rows.Add(row.Used, row.Order, string.Empty, row.Label, row.Passes);
+            var gridRow = _inkGrid.Rows[rowIndex];
+            gridRow.Cells["Color"].Style.BackColor = row.Color;
+            gridRow.Tag = row.Name;
+            if (!row.Used)
+            {
+                gridRow.DefaultCellStyle.ForeColor = Color.Gray;
+            }
+        }
+    }
+
 
     private async Task RefreshStatusAsync()
     {
@@ -489,6 +612,8 @@ public sealed class PreviewForm : Form
         _noCurlCheck.Enabled = !busy;
         _saveDefaultsButton.Enabled = !busy;
         _statusRefreshButton.Enabled = !busy;
+        // D-028: 再構成中はチェック列(除外の切り替え)を編集不可にする。
+        _inkGrid.Columns["Use"]!.ReadOnly = busy;
         _cancelButton.Enabled = !busy;
         _printButton.Enabled = !busy && _current is { Inks.Count: > 0 };
         Text = busy && statusMessage.Length > 0
@@ -499,7 +624,7 @@ public sealed class PreviewForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
-        _current?.Preview.Dispose();
+        _current?.Dispose();
         base.OnFormClosed(e);
     }
 }
