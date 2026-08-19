@@ -2,15 +2,19 @@
 # Copyright (C) 2026 JunkQuality (github.com/KM-KUMA/Foilwright)
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# 出典: ppmtomd 1.6 の papersize_info_5000[](ppmtomd.c:70-81)。実機未確認の
-# 参考値である(DOMAIN §5.5)。
+# 出典: ppmtomd 1.6 の papersize_info_5000[](ppmtomd.c:70-81)。実機確認が
+# 済んでいるのは a4 と b5 だけで、残りは参考値である(DOMAIN §5.5)。
 #
 # すべて 600dpi 基準のドット。解像度が変わると換算する:
 #   300dpi  → 半分   1200dpi → width のみ 2 倍(ppmtomd.c:1903, 1911-1912)
 #
 # code は色選択と同じく ppmtomd の enum 順で、配列インデックスがそのまま
-# プリンタへ送る用紙サイズコードになる。A4 = 0x04 は golden g1 のバイト列
-# (1b 26 6c 04 00 41)で確認済み。
+# プリンタへ送る用紙サイズコードになる。
+#
+# 実機確認の状況(2026-08-20):
+#   a4 = 0x04  golden g1 のバイト列(1b 26 6c 04 00 41)で確認済み。
+#   b5 = 0x05  実機で給紙・印刷・排出まで通ることを確認(DOMAIN §5.5)。
+#   残り 6 種   未確認。
 #
 # left_margin / top_margin は印刷できない領域。現在の emitter はまだ使って
 # いないが、実際の印刷位置合わせで必要になる。
