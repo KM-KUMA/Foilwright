@@ -28,6 +28,7 @@ public sealed class PreviewForm : Form
     private readonly ComboBox _machineCombo;
     private readonly ComboBox _inkModeCombo;
     private readonly ComboBox _resolutionCombo;
+    private readonly ComboBox _paperCombo;
     private readonly ComboBox _mediaCombo;
     private readonly ComboBox _halftoneCombo;
     private readonly ComboBox _whiteModeCombo;
@@ -69,6 +70,13 @@ public sealed class PreviewForm : Form
     private sealed record MediaItem(string Name, string Label)
     {
         public override string ToString() => Label;
+    }
+
+    /// <summary>用紙コンボの 1 項目。用紙表(papers/{系列}.yaml)には label が無いため
+    /// (メディア種別と違い日本語ラベルを持たない。§5.5)、表示は name をそのまま使う。</summary>
+    private sealed record PaperItem(string Name)
+    {
+        public override string ToString() => Name;
     }
 
     public PreviewForm(string psPath, TraySettings settings)
@@ -123,8 +131,8 @@ public sealed class PreviewForm : Form
         // 設定(§7.1: ジョブごとの上書き)
         // 行を 1 つ増やした分だけ高さも足す(TableLayoutPanel は Dock=Fill なので、
         // ここを据え置くと最下段の保存ボタンが押し出されて見えなくなる)。
-        var settingsGroup = new GroupBox { Text = "設定(このジョブに適用)", Dock = DockStyle.Top, Height = 320 };
-        var settingsLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 9, Padding = new Padding(8) };
+        var settingsGroup = new GroupBox { Text = "設定(このジョブに適用)", Dock = DockStyle.Top, Height = 355 };
+        var settingsLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 10, Padding = new Padding(8) };
         settingsLayout.Controls.Add(new Label { Text = "機種:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
         _machineCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
         _machineCombo.Items.AddRange(MachineRoute.KnownMachinesDescription.Split('|'));
@@ -145,59 +153,77 @@ public sealed class PreviewForm : Form
         _resolutionCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
         settingsLayout.Controls.Add(_resolutionCombo, 1, 2);
 
+        // 用紙(§7.1 / §5.5 / §15.10.2)。選択肢は用紙表(papers/{系列}.yaml)から
+        // 読む(DOMAIN §4.5: コードに用紙名を列挙しない)。位置は解像度の直後
+        // (用紙 → メディア種別の並び)。
+        settingsLayout.Controls.Add(new Label { Text = "用紙:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
+        _paperCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+        settingsLayout.Controls.Add(_paperCombo, 1, 3);
+
         // メディア種別(§7.1 / §5.5.2)。選択肢は media.yaml から読む。
-        settingsLayout.Controls.Add(new Label { Text = "メディア種別:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
+        settingsLayout.Controls.Add(new Label { Text = "メディア種別:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 4);
         _mediaCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
-        settingsLayout.Controls.Add(_mediaCombo, 1, 3);
+        settingsLayout.Controls.Add(_mediaCombo, 1, 4);
 
         // ハーフトーン(§7.1 / §4.2.1)。
-        settingsLayout.Controls.Add(new Label { Text = "ハーフトーン:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 4);
+        settingsLayout.Controls.Add(new Label { Text = "ハーフトーン:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 5);
         _halftoneCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
         _halftoneCombo.Items.AddRange(JobAssembly.ValidHalftones.Cast<object>().ToArray());
         _halftoneCombo.SelectedItem = JobAssembly.ValidHalftones.Contains(settings.Halftone) ? settings.Halftone : "none";
-        settingsLayout.Controls.Add(_halftoneCombo, 1, 4);
+        settingsLayout.Controls.Add(_halftoneCombo, 1, 5);
 
         // 白版モード(§7.1 / D-027)。
-        settingsLayout.Controls.Add(new Label { Text = "白版モード:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 5);
+        settingsLayout.Controls.Add(new Label { Text = "白版モード:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 6);
         _whiteModeCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
         _whiteModeCombo.Items.AddRange(JobAssembly.ValidWhiteModes.Cast<object>().ToArray());
         _whiteModeCombo.SelectedItem = JobAssembly.ValidWhiteModes.Contains(settings.WhiteMode) ? settings.WhiteMode : "auto";
-        settingsLayout.Controls.Add(_whiteModeCombo, 1, 5);
+        settingsLayout.Controls.Add(_whiteModeCombo, 1, 6);
 
         // 色補正(§7.1 / D-029)。既定は photo。選択肢は Colour.ValidColourCorrections
         // から読む(DOMAIN §4.5: コードに列挙しない)。
-        settingsLayout.Controls.Add(new Label { Text = "色補正:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 6);
+        settingsLayout.Controls.Add(new Label { Text = "色補正:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 7);
         _colourCorrectionCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
         _colourCorrectionCombo.Items.AddRange(Colour.ValidColourCorrections.Cast<object>().ToArray());
         _colourCorrectionCombo.SelectedItem =
             Colour.ValidColourCorrections.Contains(settings.ColourCorrection) ? settings.ColourCorrection : "photo";
-        settingsLayout.Controls.Add(_colourCorrectionCombo, 1, 6);
+        settingsLayout.Controls.Add(_colourCorrectionCombo, 1, 7);
 
         // カール矯正の抑制(§7.1 / DOMAIN §10.10.4)。デカール・フィルム用に
         // 裏面印刷でカール矯正を止めたい場合に使う。
-        settingsLayout.Controls.Add(new Label { Text = "カール矯正を止める:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 7);
+        settingsLayout.Controls.Add(new Label { Text = "カール矯正を止める:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 8);
         _noCurlCheck = new CheckBox { Text = "デカール・フィルム用(§10.10.4)", AutoSize = true, Checked = settings.NoCurlCorrection };
-        settingsLayout.Controls.Add(_noCurlCheck, 1, 7);
+        settingsLayout.Controls.Add(_noCurlCheck, 1, 8);
 
         _saveDefaultsButton = new Button { Text = "この設定を既定値として保存", AutoSize = true };
         _saveDefaultsButton.Click += (_, _) => SaveAsDefaults();
-        settingsLayout.Controls.Add(_saveDefaultsButton, 0, 8);
+        settingsLayout.Controls.Add(_saveDefaultsButton, 0, 9);
         settingsLayout.SetColumnSpan(_saveDefaultsButton, 2);
 
         settingsGroup.Controls.Add(settingsLayout);
         right.Controls.Add(settingsGroup);
 
         PopulateResolutionCombo(settings.Machine, settings.ResolutionKey);
+        PopulatePaperCombo(settings.Machine, settings.PaperName);
         PopulateMediaCombo(settings.MediaName);
 
         _machineCombo.SelectedIndexChanged += (_, _) =>
         {
             // 機種が変わると選べる解像度が変わりうる(DOMAIN §5.1)ため作り直す。
             PopulateResolutionCombo((string)_machineCombo.SelectedItem!, (string?)_resolutionCombo.SelectedItem);
+            // 用紙表もプロファイルの paper_table 参照(機種系列)で変わりうるため
+            // 同様に作り直す(DOMAIN §5.1 / §5.5)。
+            PopulatePaperCombo((string)_machineCombo.SelectedItem!, (_paperCombo.SelectedItem as PaperItem)?.Name);
             _ = RefreshPreviewAsync();
         };
         _inkModeCombo.SelectedIndexChanged += (_, _) => _ = RefreshPreviewAsync();
         _resolutionCombo.SelectedIndexChanged += (_, _) => _ = RefreshPreviewAsync();
+        // 用紙が変わると印字可能領域への切り出し位置が変わる(DOMAIN §3.6.1 /
+        // §15.10.2)ため、メディア種別と同様に RefreshPreviewAsync
+        // (Ghostscript の再実行を含む)を呼ぶ。インク除外・パス数上書き
+        // (D-028/D-031)のように RebuildFromImage だけで済ませられない —
+        // それらは切り出し済みの画像の中身(インク割り当て)しか変えないが、
+        // 用紙の変更は画像そのものの切り出し範囲を変えるため。
+        _paperCombo.SelectedIndexChanged += (_, _) => _ = RefreshPreviewAsync();
         _mediaCombo.SelectedIndexChanged += (_, _) => _ = RefreshPreviewAsync();
         _halftoneCombo.SelectedIndexChanged += (_, _) => _ = RefreshPreviewAsync();
         _whiteModeCombo.SelectedIndexChanged += (_, _) => _ = RefreshPreviewAsync();
@@ -382,6 +408,37 @@ public sealed class PreviewForm : Form
         }
     }
 
+    /// <summary>用紙コンボの選択肢を用紙表(papers/{系列}.yaml)から作り直す
+    /// (DOMAIN §4.5: コードに用紙名を列挙しない)。用紙表はプロファイルの
+    /// paper_table 参照(機種系列)で決まるため、機種の変更時にも作り直す
+    /// (PopulateResolutionCombo と同じ理由)。</summary>
+    private void PopulatePaperCombo(string machine, string? preferredName)
+    {
+        try
+        {
+            var route = MachineRoute.Resolve(machine);
+            var profile = ConfigLoader.LoadProfile(Path.Combine(_repoRoot, "profiles", route.ProfileFileName));
+            var paperTable = ConfigLoader.ResolvePaperTable(profile, Path.Combine(_repoRoot, "papers"));
+            _paperCombo.Items.Clear();
+            PaperItem? preferred = null;
+            foreach (var kv in paperTable.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                var item = new PaperItem(kv.Key);
+                _paperCombo.Items.Add(item);
+                if (kv.Key == preferredName)
+                {
+                    preferred = item;
+                }
+            }
+            _paperCombo.SelectedItem = preferred ?? (_paperCombo.Items.Count > 0 ? _paperCombo.Items[0] : null);
+        }
+        catch (Exception ex) when (ex is ConfigException or MachineRouteException)
+        {
+            // 選択肢の作成に失敗しても致命的にはしない。RefreshPreviewAsync 側で
+            // あらためてエラーを表示する(PopulateResolutionCombo と同じ方針)。
+        }
+    }
+
     /// <summary>メディア種別コンボの選択肢を media.yaml から作り直す(DOMAIN §4.5)。</summary>
     private void PopulateMediaCombo(string preferredName)
     {
@@ -412,6 +469,7 @@ public sealed class PreviewForm : Form
         _settings.Machine = (string)_machineCombo.SelectedItem!;
         _settings.InkMode = (string)_inkModeCombo.SelectedItem!;
         _settings.ResolutionKey = (string)_resolutionCombo.SelectedItem!;
+        _settings.PaperName = ((PaperItem)_paperCombo.SelectedItem!).Name;
         _settings.MediaName = ((MediaItem)_mediaCombo.SelectedItem!).Name;
         _settings.Halftone = (string)_halftoneCombo.SelectedItem!;
         _settings.WhiteMode = (string)_whiteModeCombo.SelectedItem!;
@@ -441,6 +499,7 @@ public sealed class PreviewForm : Form
             string machine = (string)_machineCombo.SelectedItem!;
             string inkMode = (string)_inkModeCombo.SelectedItem!;
             string resolutionKey = (string)_resolutionCombo.SelectedItem!;
+            string paperName = ((PaperItem)_paperCombo.SelectedItem!).Name;
             string mediaName = ((MediaItem)_mediaCombo.SelectedItem!).Name;
             string halftone = (string)_halftoneCombo.SelectedItem!;
             string whiteMode = (string)_whiteModeCombo.SelectedItem!;
@@ -450,7 +509,7 @@ public sealed class PreviewForm : Form
             // D-030: 許可リストは解像度・メディア・機種などを変えて再プレビューしても
             // そのまま持ち越す(許可されていないインクがもう現れなければ自然に消える)。
             var result = await Task.Run(() => JobPipeline.BuildPreview(
-                _psPath, _repoRoot, route, inkMode, _settings.PaperName, mediaName, resolutionKey, halftone, whiteMode,
+                _psPath, _repoRoot, route, inkMode, paperName, mediaName, resolutionKey, halftone, whiteMode,
                 _usedInks, _passesOverride, colourCorrection));
 
             ApplyPreviewResult(result);
@@ -757,9 +816,14 @@ public sealed class PreviewForm : Form
         try
         {
             string machine = (string)_machineCombo.SelectedItem!;
+            string paperName = ((PaperItem)_paperCombo.SelectedItem!).Name;
             string mediaName = ((MediaItem)_mediaCombo.SelectedItem!).Name;
             var route = MachineRoute.Resolve(machine);
-            var config = JobPipeline.LoadJobConfig(_repoRoot, route, _settings.PaperName, mediaName);
+            // §15.10.2: 送出する用紙は必ずコンボの選択値と一致させる。ここが
+            // _settings.PaperName(保存済みの既定値)のままだと、プレビューで
+            // 用紙を切り替えても実際の送出は古い既定値のまま行われ、
+            // プレビューと送出結果がずれる(切り出し位置がずれる実害)。
+            var config = JobPipeline.LoadJobConfig(_repoRoot, route, paperName, mediaName);
             var job = new PrintJob
             {
                 // Emitter.EmitJob は Paper を常に 600dpi 基準の値として受け取り、
@@ -803,6 +867,7 @@ public sealed class PreviewForm : Form
         _machineCombo.Enabled = !busy;
         _inkModeCombo.Enabled = !busy;
         _resolutionCombo.Enabled = !busy;
+        _paperCombo.Enabled = !busy;
         _mediaCombo.Enabled = !busy;
         _halftoneCombo.Enabled = !busy;
         _whiteModeCombo.Enabled = !busy;

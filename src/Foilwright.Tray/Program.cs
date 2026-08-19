@@ -76,7 +76,7 @@ internal static class Program
     /// 終了コード: 0=成功、1=失敗(標準エラーに理由を出す)。
     ///
     /// extraArgs: 保存済み設定(TraySettings)を上書きする任意のオプション
-    /// (--resolution / --media / --halftone / --white-mode)。実機・UI 無しで
+    /// (--resolution / --paper / --media / --halftone / --white-mode)。実機・UI 無しで
     /// 設定項目ごとの挙動を確認するための検証用オプション(DOMAIN §7.1)。</summary>
     /// <summary>PostScript から RGL を組み立ててファイルへ書き出す。
     /// **送出はしない。** 実機を消費せずにバイト列を検査するための経路で、
@@ -97,6 +97,7 @@ internal static class Program
             var route = MachineRoute.Resolve(settings.Machine);
 
             string resolutionKey = settings.ResolutionKey;
+            string paperName = settings.PaperName;
             string mediaName = settings.MediaName;
             string halftone = settings.Halftone;
             string whiteMode = settings.WhiteMode;
@@ -117,6 +118,7 @@ internal static class Program
                 switch (extraArgs[i])
                 {
                     case "--resolution": resolutionKey = extraArgs[i + 1]; i++; break;
+                    case "--paper": paperName = extraArgs[i + 1]; i++; break;
                     case "--media": mediaName = extraArgs[i + 1]; i++; break;
                     case "--halftone": halftone = extraArgs[i + 1]; i++; break;
                     case "--white-mode": whiteMode = extraArgs[i + 1]; i++; break;
@@ -146,7 +148,7 @@ internal static class Program
             }
             route = MachineRoute.Resolve(machine);
 
-            var config = JobPipeline.LoadJobConfig(repoRoot, route, settings.PaperName, mediaName);
+            var config = JobPipeline.LoadJobConfig(repoRoot, route, paperName, mediaName);
 
             // D-030: --use-inks が指定されていればそれを許可リストの起点にし、
             // 無ければ TraySettings の既定(旧設定はメタリック無効)を使う。
@@ -167,7 +169,7 @@ internal static class Program
                 $"パス数の上書き(D-031): {(passesOverride.Count == 0 ? "(なし。パレットの既定値を使用)" : string.Join(", ", passesOverride.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value}")))}");
 
             var result = JobPipeline.BuildPreview(
-                psPath, repoRoot, route, settings.InkMode, settings.PaperName, mediaName,
+                psPath, repoRoot, route, settings.InkMode, paperName, mediaName,
                 resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection);
             var job = new PrintJob
             {
@@ -187,7 +189,10 @@ internal static class Program
             Console.WriteLine($"RGL: {outputRglPath} ({rgl.Length} バイト)");
             Console.WriteLine(
                 $"機種: {machine} / パス数: {result.Inks.Count} / 解像度: {result.Resolution.Key} / " +
-                $"メディア: {mediaName} / 白版モード: {whiteMode} / サイズ: {result.Width}x{result.Height}");
+                // 用紙名とサイズ(= 印字可能領域。result.Width/Height は用紙表の
+                // left_margin/top_margin/width/length で切り出し済み。§3.6.1)を
+                // ログへ出す(用紙の取り違え検出。§15.10.2)。
+                $"用紙: {paperName} / メディア: {mediaName} / 白版モード: {whiteMode} / サイズ: {result.Width}x{result.Height}");
             foreach (var ink in result.Inks)
             {
                 Console.WriteLine($"  order={ink.Order} label={ink.Label} passes={ink.Passes}");
@@ -216,6 +221,7 @@ internal static class Program
             var route = MachineRoute.Resolve(settings.Machine);
 
             string resolutionKey = settings.ResolutionKey;
+            string paperName = settings.PaperName;
             string mediaName = settings.MediaName;
             string halftone = settings.Halftone;
             string whiteMode = settings.WhiteMode;
@@ -231,6 +237,7 @@ internal static class Program
                 switch (extraArgs[i])
                 {
                     case "--resolution": resolutionKey = extraArgs[i + 1]; i++; break;
+                    case "--paper": paperName = extraArgs[i + 1]; i++; break;
                     case "--media": mediaName = extraArgs[i + 1]; i++; break;
                     case "--halftone": halftone = extraArgs[i + 1]; i++; break;
                     case "--white-mode": whiteMode = extraArgs[i + 1]; i++; break;
@@ -254,7 +261,7 @@ internal static class Program
                 }
             }
 
-            var config = JobPipeline.LoadJobConfig(repoRoot, route, settings.PaperName, mediaName);
+            var config = JobPipeline.LoadJobConfig(repoRoot, route, paperName, mediaName);
             var usedInks = useInksArg ?? settings.ResolveUsedInks(config.Palette);
             if (excludeInksArg is { Count: > 0 })
             {
@@ -268,14 +275,17 @@ internal static class Program
                 $"パス数の上書き(D-031): {(passesOverride.Count == 0 ? "(なし。パレットの既定値を使用)" : string.Join(", ", passesOverride.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value}")))}");
 
             var result = JobPipeline.BuildPreview(
-                psPath, repoRoot, route, settings.InkMode, settings.PaperName, mediaName,
+                psPath, repoRoot, route, settings.InkMode, paperName, mediaName,
                 resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection);
 
             result.Preview.Save(outputPngPath, System.Drawing.Imaging.ImageFormat.Png);
 
             Console.WriteLine($"プレビュー画像: {outputPngPath}");
             Console.WriteLine(
-                $"パス数: {result.Inks.Count} / 解像度: {result.Resolution.Key} / メディア: {mediaName} / " +
+                $"パス数: {result.Inks.Count} / 解像度: {result.Resolution.Key} / " +
+                // 用紙名とサイズ(= 印字可能領域。§3.6.1 / §15.10.2)をログへ出す
+                // (用紙の取り違え検出)。
+                $"用紙: {paperName} / メディア: {mediaName} / " +
                 $"ハーフトーン: {halftone} / 白版モード: {whiteMode} / サイズ: {result.Width}x{result.Height}");
             foreach (var ink in result.Inks)
             {

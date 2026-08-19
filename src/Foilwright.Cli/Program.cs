@@ -78,12 +78,13 @@ internal static class Program
         Console.Error.WriteLine("  print <file> [--machine md-5000|md-5500] [--vid XXXX]");
         Console.Error.WriteLine("                      RGL バイト列ファイルを送出する");
         Console.Error.WriteLine("  listen [--ink-mode auto|per_page|spot_only] [--resolution 600|1200x600]");
-        Console.Error.WriteLine("         [--media <名前>] [--halftone none|halftone|coarse_halftone]");
+        Console.Error.WriteLine("         [--paper <名前>] [--media <名前>] [--halftone none|halftone|coarse_halftone]");
         Console.Error.WriteLine("         [--white-mode none|auto|magic] [--colour-correction none|plain|photo]");
         Console.Error.WriteLine("         [--no-curl-correction] [--machine md-5000|md-5500] [--vid XXXX]");
         Console.Error.WriteLine("                      名前付きパイプで PostScript を受け取り印刷する");
         Console.Error.WriteLine("                      --ink-mode 省略時は 'auto'(DOMAIN §6.6 / D-016)");
         Console.Error.WriteLine($"                      --resolution 省略時は '{DefaultResolutionKey}'。選べる値はプロファイルの resolutions による(DOMAIN §7.1)");
+        Console.Error.WriteLine($"                      --paper 省略時は '{DefaultPaperName}'。選べる値は用紙表(papers/{{系列}}.yaml)による(DOMAIN §5.5 / §15.10.2)");
         Console.Error.WriteLine($"                      --media 省略時は '{DefaultMediaName}'。選べる値は media.yaml による(DOMAIN §5.5.2)");
         Console.Error.WriteLine($"                      --halftone 省略時は '{DefaultHalftone}'(DOMAIN §4.2.1)");
         Console.Error.WriteLine($"                      --white-mode 省略時は '{DefaultWhiteMode}'(DOMAIN §7.1 / D-027)");
@@ -173,13 +174,13 @@ internal static class Program
         public required List<InkDefinition> Palette { get; init; }
     }
 
-    private static JobConfig LoadDefaultJobConfig(string repoRoot, MachineRoute route, string mediaName)
+    private static JobConfig LoadDefaultJobConfig(string repoRoot, MachineRoute route, string paperName, string mediaName)
     {
         var profile = ConfigLoader.LoadProfile(Path.Combine(repoRoot, "profiles", route.ProfileFileName));
         var paperTable = ConfigLoader.ResolvePaperTable(profile, Path.Combine(repoRoot, "papers"));
-        if (!paperTable.TryGetValue(DefaultPaperName, out var paper))
+        if (!paperTable.TryGetValue(paperName, out var paper))
         {
-            throw new ConfigException($"paper '{DefaultPaperName}' not found in paper table '{profile.PaperTable}'");
+            throw new ConfigException($"paper '{paperName}' not found in paper table '{profile.PaperTable}'");
         }
         var mediaTable = ConfigLoader.LoadMediaTable(Path.Combine(repoRoot, "media.yaml"));
         if (!mediaTable.TryGetValue(mediaName, out var media))
@@ -307,6 +308,7 @@ internal static class Program
 
         string inkMode = DefaultInkMode;
         string resolutionKey = DefaultResolutionKey;
+        string paperName = DefaultPaperName;
         string mediaName = DefaultMediaName;
         string halftone = DefaultHalftone;
         string whiteMode = DefaultWhiteMode;
@@ -321,7 +323,7 @@ internal static class Program
                 noCurlCorrection = true;
                 continue;
             }
-            if (opt is "--ink-mode" or "--resolution" or "--media" or "--halftone" or "--white-mode" or "--colour-correction")
+            if (opt is "--ink-mode" or "--resolution" or "--paper" or "--media" or "--halftone" or "--white-mode" or "--colour-correction")
             {
                 if (i + 1 >= remaining.Count)
                 {
@@ -334,6 +336,7 @@ internal static class Program
                 {
                     case "--ink-mode": inkMode = value; break;
                     case "--resolution": resolutionKey = value; break;
+                    case "--paper": paperName = value; break;
                     case "--media": mediaName = value; break;
                     case "--halftone": halftone = value; break;
                     case "--white-mode": whiteMode = value; break;
@@ -388,7 +391,10 @@ internal static class Program
         }
 
         string repoRoot = FindRepoRoot();
-        var config = LoadDefaultJobConfig(repoRoot, route, mediaName);
+        // 不明な用紙名は LoadDefaultJobConfig 内で ConfigException を投げる
+        // (Main の catch がまとめて拾い、エラー文言を表示して終了コード 1 で
+        // 終わる。既定値へ黙って落とさない)。
+        var config = LoadDefaultJobConfig(repoRoot, route, paperName, mediaName);
 
         // --resolution はプロファイルの resolutions から探す。プロファイル読み込み後
         // でなければ選べる値を検証できないため、機種ごとの config ロード後にここで検証する。
@@ -417,7 +423,7 @@ internal static class Program
         Console.WriteLine($"機種: {route.Machine}(送出方式: {route.Mode}、VID: {vid})");
         Console.WriteLine(
             $"名前付きパイプ \\\\.\\pipe\\{PipeName} で待ち受け中(Ctrl+C で終了)... " +
-            $"インク指定方式: {inkMode} / 解像度: {resolutionEntry.Key} / メディア: {mediaName} / " +
+            $"インク指定方式: {inkMode} / 解像度: {resolutionEntry.Key} / 用紙: {paperName} / メディア: {mediaName} / " +
             $"ハーフトーン: {halftone} / 白版モード: {whiteMode} / 色補正: {colourCorrection} / " +
             $"カール矯正を止める: {noCurlCorrection}");
 
