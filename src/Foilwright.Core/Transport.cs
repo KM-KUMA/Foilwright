@@ -105,6 +105,12 @@ public sealed class CassetteStatus
     public required byte[] Header { get; init; } // 5 バイト。5 バイト目が実行状態(00=待機/09=実行中/01=完了)
     public required IReadOnlyList<byte> SlotBarcodes { get; init; } // 11 バイト
 
+    /// <summary>応答 38 バイトをそのまま保持したもの(DOMAIN §11.4 / §15.2)。
+    /// Header / SlotBarcodes が捨てている各レコードの 2〜3 バイト目
+    /// (§7.2 で「リボン残量」と当初解釈したが撤回済み・意味未解明)を
+    /// 生の値のまま観察するための保持であり、ここでの解釈は加えない。</summary>
+    public required IReadOnlyList<byte> RawResponse { get; init; } // 38 バイト
+
     /// <summary>5 バイト目(状態バイト)。00=送出前 / 09=印刷実行中 / 01=完了(DOMAIN §15.4)。</summary>
     public byte StatusByte => Header[4];
 
@@ -124,7 +130,7 @@ public sealed class CassetteStatus
         {
             slots[i] = raw[5 + i * 3];
         }
-        return new CassetteStatus { Header = header, SlotBarcodes = slots };
+        return new CassetteStatus { Header = header, SlotBarcodes = slots, RawResponse = raw };
     }
 }
 

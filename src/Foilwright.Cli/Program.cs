@@ -73,8 +73,9 @@ internal static class Program
     private static void PrintUsage()
     {
         Console.Error.WriteLine("使い方: Foilwright.Cli <status|print|listen> [引数]");
-        Console.Error.WriteLine("  status [--machine md-5000|md-5500] [--vid XXXX]");
+        Console.Error.WriteLine("  status [--machine md-5000|md-5500] [--vid XXXX] [--raw]");
         Console.Error.WriteLine("                      プリンタの状態(装填カセット)を表示する");
+        Console.Error.WriteLine("                      --raw を付けると 05 01 応答 38 バイトを解釈を加えずそのまま表示する(DOMAIN §7.2/§11.4)");
         Console.Error.WriteLine("  print <file> [--machine md-5000|md-5500] [--vid XXXX]");
         Console.Error.WriteLine("                      RGL バイト列ファイルを送出する");
         Console.Error.WriteLine("  listen [--ink-mode auto|per_page|spot_only] [--resolution 600|1200x600]");
@@ -195,7 +196,20 @@ internal static class Program
 
     private static int RunStatus(string[] args)
     {
-        var (route, vid, positional) = ParseMachineArgs(args);
+        var (route, vid, remaining) = ParseMachineArgs(args);
+
+        bool raw = false;
+        var positional = new List<string>();
+        foreach (string arg in remaining)
+        {
+            if (arg == "--raw")
+            {
+                raw = true;
+                continue;
+            }
+            positional.Add(arg);
+        }
+
         if (positional.Count > 0)
         {
             Console.Error.WriteLine($"不明な引数: {positional[0]}");
@@ -218,7 +232,48 @@ internal static class Program
         {
             Console.WriteLine("注意: エラー中はカセット情報が更新されないため、現物と一致しない可能性があります");
         }
+        if (raw)
+        {
+            PrintRawStatus(status);
+        }
         return 0;
+    }
+
+    /// <summary>05 01 応答 38 バイトを解釈を加えずそのまま表示する(DOMAIN §7.2/§11.4)。
+    /// レコードの 2〜3 バイト目は当初「リボン残量」と解釈したが実測で否定され、
+    /// 撤回済み(§7.2)。意味は未解明のため、ここでは断定的な語(残量・% 等)を
+    /// 使わず生の値だけを出す。16 ビット値の併記は「イエロー 653」という記録の
+    /// 読み方を示す参考表示であり、これも解釈ではない。</summary>
+    private static void PrintRawStatus(CassetteStatus status)
+    {
+        var raw = status.RawResponse;
+        Console.WriteLine();
+        Console.WriteLine("--- --raw: 05 01 応答 38 バイト(意味は未解明。DOMAIN §7.2/§11.4)---");
+
+        Console.Write("16 進ダンプ:");
+        for (int i = 0; i < raw.Count; i++)
+        {
+            if (i % 16 == 0)
+            {
+                Console.WriteLine();
+                Console.Write($"  {i,2:d2}: ");
+            }
+            Console.Write($"{raw[i]:x2} ");
+        }
+        Console.WriteLine();
+
+        Console.WriteLine($"ヘッダ 5 バイト: {Convert.ToHexString(raw.Take(5).ToArray())}");
+
+        Console.WriteLine("レコード 11 個(3 バイトずつ。バイト1〜2 は参考として LE16 も併記。解釈ではない):");
+        for (int rec = 0; rec < 11; rec++)
+        {
+            int off = 5 + rec * 3;
+            byte b0 = raw[off];
+            byte b1 = raw[off + 1];
+            byte b2 = raw[off + 2];
+            int le16 = b1 | (b2 << 8);
+            Console.WriteLine($"  [{rec,2}] {b0:x2} {b1:x2} {b2:x2}  (参考 LE16(byte1-2)={le16})");
+        }
     }
 
     // --- print ---------------------------------------------------------------
