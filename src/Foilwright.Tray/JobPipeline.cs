@@ -83,6 +83,10 @@ public static class JobPipeline
     public const string DefaultHalftone = "none";
     public const string DefaultWhiteMode = "auto";
 
+    // D-029: 色補正の既定は photo。photo_colcor テーブルはリポジトリ直下
+    // colour/photo_colcor.bin に同梱してある(D-029 §3)。
+    public const string DefaultColourCorrection = "photo";
+
     private const int PreviewMaxWidth = 900;
 
     /// <summary>実行アセンブリの場所からリポジトリ直下を探す。
@@ -128,7 +132,7 @@ public static class JobPipeline
     public static PreviewResult BuildPreview(
         string psPath, string repoRoot, MachineRoute route, string inkMode,
         string paperName, string mediaName, string resolutionKey, string halftone, string whiteMode,
-        IReadOnlySet<string>? excludedInks = null)
+        IReadOnlySet<string>? excludedInks = null, string colourCorrection = DefaultColourCorrection)
     {
         var config = LoadJobConfig(repoRoot, route, paperName, mediaName);
         var resolutionEntry = config.Profile.ResolveResolutionByKey(resolutionKey);
@@ -142,7 +146,7 @@ public static class JobPipeline
             var scaledPaper = config.Paper.ScaleToResolution(resolutionEntry.DpiX, resolutionEntry.DpiY);
             var image = fullImage.Crop(scaledPaper.LeftMargin, scaledPaper.TopMargin, scaledPaper.Width, scaledPaper.Length);
 
-            return BuildPreviewCore(image, config, resolutionEntry, inkMode, halftone, whiteMode, excludedInks);
+            return BuildPreviewCore(image, config, resolutionEntry, inkMode, halftone, whiteMode, excludedInks, colourCorrection);
         }
         finally
         {
@@ -161,23 +165,32 @@ public static class JobPipeline
     public static PreviewResult RebuildFromImage(
         PpmImage image, JobConfig config, ResolutionEntry resolution,
         string inkMode, string halftone, string whiteMode,
-        IReadOnlySet<string>? excludedInks)
+        IReadOnlySet<string>? excludedInks, string colourCorrection = DefaultColourCorrection)
     {
-        return BuildPreviewCore(image, config, resolution, inkMode, halftone, whiteMode, excludedInks);
+        return BuildPreviewCore(image, config, resolution, inkMode, halftone, whiteMode, excludedInks, colourCorrection);
     }
 
     /// <summary>BuildPreview と RebuildFromImage の共通処理(インク割り当て以降)。
     /// D-028: excludedInks に含まれるインクはパレットから除いてから
-    /// JobAssembly.BuildJobPlanes に渡す — プレーンを作ってから捨てるのではない。</summary>
+    /// JobAssembly.BuildJobPlanes に渡す — プレーンを作ってから捨てるのではない。
+    /// D-029: colourCorrection == "photo" のとき、photo_colcor テーブル
+    /// (colour/photo_colcor.bin、リポジトリ直下から解決)と選択中の解像度を
+    /// JobAssembly.BuildJobPlanes へ渡す。ガンマの既定値が解像度で変わるため
+    /// (600 は 0.8、1200 は -0.9)、解像度を渡し忘れると色がずれる。</summary>
     private static PreviewResult BuildPreviewCore(
         PpmImage image, JobConfig config, ResolutionEntry resolutionEntry,
-        string inkMode, string halftone, string whiteMode, IReadOnlySet<string>? excludedInks)
+        string inkMode, string halftone, string whiteMode, IReadOnlySet<string>? excludedInks,
+        string colourCorrection)
     {
         var palette = excludedInks is { Count: > 0 }
             ? config.Palette.Where(ink => !excludedInks.Contains(ink.Name)).ToList()
             : config.Palette;
 
-        var jobPlanes = JobAssembly.BuildJobPlanes(image, palette, inkMode, halftone, whiteMode);
+        string repoRoot = FindRepoRoot();
+        string photoLutPath = Path.Combine(repoRoot, "colour", "photo_colcor.bin");
+
+        var jobPlanes = JobAssembly.BuildJobPlanes(
+            image, palette, inkMode, halftone, whiteMode, colourCorrection, resolutionEntry.DpiX, photoLutPath);
 
         var planes = jobPlanes.ToDictionary(jp => jp.Ink.Name, jp => jp.Plane);
         var jobInks = jobPlanes

@@ -100,6 +100,7 @@ internal static class Program
             string mediaName = settings.MediaName;
             string halftone = settings.Halftone;
             string whiteMode = settings.WhiteMode;
+            string colourCorrection = settings.ColourCorrection;
             bool noCurlCorrection = settings.NoCurlCorrection;
             string machine = settings.Machine;
             // D-028: UI 無しで除外の効果を検証するための隠しオプション
@@ -113,6 +114,7 @@ internal static class Program
                     case "--media": mediaName = extraArgs[i + 1]; i++; break;
                     case "--halftone": halftone = extraArgs[i + 1]; i++; break;
                     case "--white-mode": whiteMode = extraArgs[i + 1]; i++; break;
+                    case "--colour-correction": colourCorrection = extraArgs[i + 1]; i++; break;
                     case "--machine": machine = extraArgs[i + 1]; i++; break;
                     case "--exclude-inks":
                         excludedInks = extraArgs[i + 1]
@@ -133,9 +135,11 @@ internal static class Program
                 Console.WriteLine($"除外するインク(D-028): {string.Join(", ", excludedInks)}");
             }
 
+            Console.WriteLine($"色補正(D-029): {colourCorrection}");
+
             var result = JobPipeline.BuildPreview(
                 psPath, repoRoot, route, settings.InkMode, settings.PaperName, mediaName,
-                resolutionKey, halftone, whiteMode, excludedInks);
+                resolutionKey, halftone, whiteMode, excludedInks, colourCorrection);
 
             var config = JobPipeline.LoadJobConfig(repoRoot, route, settings.PaperName, mediaName);
             var job = new PrintJob
@@ -188,6 +192,7 @@ internal static class Program
             string mediaName = settings.MediaName;
             string halftone = settings.Halftone;
             string whiteMode = settings.WhiteMode;
+            string colourCorrection = settings.ColourCorrection;
             // D-028: UI 無しで除外の効果を検証するための隠しオプション。
             HashSet<string>? excludedInks = null;
             for (int i = 0; i < extraArgs.Length - 1; i++)
@@ -198,6 +203,7 @@ internal static class Program
                     case "--media": mediaName = extraArgs[i + 1]; i++; break;
                     case "--halftone": halftone = extraArgs[i + 1]; i++; break;
                     case "--white-mode": whiteMode = extraArgs[i + 1]; i++; break;
+                    case "--colour-correction": colourCorrection = extraArgs[i + 1]; i++; break;
                     case "--exclude-inks":
                         excludedInks = extraArgs[i + 1]
                             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -212,9 +218,11 @@ internal static class Program
                 Console.WriteLine($"除外するインク(D-028): {string.Join(", ", excludedInks)}");
             }
 
+            Console.WriteLine($"色補正(D-029): {colourCorrection}");
+
             var result = JobPipeline.BuildPreview(
                 psPath, repoRoot, route, settings.InkMode, settings.PaperName, mediaName,
-                resolutionKey, halftone, whiteMode, excludedInks);
+                resolutionKey, halftone, whiteMode, excludedInks, colourCorrection);
 
             result.Preview.Save(outputPngPath, System.Drawing.Imaging.ImageFormat.Png);
 

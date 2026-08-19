@@ -31,6 +31,10 @@ public sealed class TraySettings
     public string Halftone { get; set; } = JobPipeline.DefaultHalftone;
     public string WhiteMode { get; set; } = JobPipeline.DefaultWhiteMode;
 
+    // D-029: 色補正(none/plain/photo)。既定は photo(下色除去のみの plain は
+    // 写真的なフルカラー原稿で紫・緑・茶を黒一色に潰した実測を受けての決定)。
+    public string ColourCorrection { get; set; } = "photo";
+
     // カール矯正の抑制(DOMAIN §7.1 / §10.10.4)。デカール・フィルム等、
     // 裏面印刷でカール矯正を止めたい用途向け。既定は false(矯正する)。
     public bool NoCurlCorrection { get; set; }

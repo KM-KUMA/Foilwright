@@ -36,6 +36,9 @@ internal static class Program
     private const string DefaultHalftone = "none";
     private const string DefaultWhiteMode = "auto";
 
+    // DOMAIN §7.1 / D-029: 色補正の既定。
+    private const string DefaultColourCorrection = "photo";
+
     private static int Main(string[] args)
     {
         if (args.Length == 0)
@@ -76,14 +79,15 @@ internal static class Program
         Console.Error.WriteLine("                      RGL バイト列ファイルを送出する");
         Console.Error.WriteLine("  listen [--ink-mode auto|per_page|spot_only] [--resolution 600|1200x600]");
         Console.Error.WriteLine("         [--media <名前>] [--halftone none|halftone|coarse_halftone]");
-        Console.Error.WriteLine("         [--white-mode none|auto|magic] [--no-curl-correction]");
-        Console.Error.WriteLine("         [--machine md-5000|md-5500] [--vid XXXX]");
+        Console.Error.WriteLine("         [--white-mode none|auto|magic] [--colour-correction none|plain|photo]");
+        Console.Error.WriteLine("         [--no-curl-correction] [--machine md-5000|md-5500] [--vid XXXX]");
         Console.Error.WriteLine("                      名前付きパイプで PostScript を受け取り印刷する");
         Console.Error.WriteLine("                      --ink-mode 省略時は 'auto'(DOMAIN §6.6 / D-016)");
         Console.Error.WriteLine($"                      --resolution 省略時は '{DefaultResolutionKey}'。選べる値はプロファイルの resolutions による(DOMAIN §7.1)");
         Console.Error.WriteLine($"                      --media 省略時は '{DefaultMediaName}'。選べる値は media.yaml による(DOMAIN §5.5.2)");
         Console.Error.WriteLine($"                      --halftone 省略時は '{DefaultHalftone}'(DOMAIN §4.2.1)");
         Console.Error.WriteLine($"                      --white-mode 省略時は '{DefaultWhiteMode}'(DOMAIN §7.1 / D-027)");
+        Console.Error.WriteLine($"                      --colour-correction 省略時は '{DefaultColourCorrection}'(DOMAIN §7.1 / D-029)");
         Console.Error.WriteLine("                      --no-curl-correction を指定するとカール矯正を止める(デカール・フィルム用。DOMAIN §10.10.4)");
         Console.Error.WriteLine($"  --machine 省略時は '{MachineRoute.DefaultMachine}'(D-025)。選べるのは: {MachineRoute.KnownMachinesDescription}");
         Console.Error.WriteLine("  --vid は機種既定の VID(変換ケーブル等の個体差)を上書きする。例: --vid 056E");
@@ -289,6 +293,9 @@ internal static class Program
         public string Halftone { get; init; } = DefaultHalftone;
         public string WhiteMode { get; init; } = DefaultWhiteMode;
 
+        // D-029: 色補正(none/plain/photo)。既定は photo。
+        public string ColourCorrection { get; init; } = DefaultColourCorrection;
+
         // カール矯正の抑制(DOMAIN §7.1 / §10.10.4)。デカール・フィルム用に
         // 裏面印刷でカール矯正を止めたい場合に立てる。既定は false(矯正する)。
         public bool NoCurlCorrection { get; init; }
@@ -303,6 +310,7 @@ internal static class Program
         string mediaName = DefaultMediaName;
         string halftone = DefaultHalftone;
         string whiteMode = DefaultWhiteMode;
+        string colourCorrection = DefaultColourCorrection;
         bool noCurlCorrection = false;
 
         for (int i = 0; i < remaining.Count; i++)
@@ -313,7 +321,7 @@ internal static class Program
                 noCurlCorrection = true;
                 continue;
             }
-            if (opt is "--ink-mode" or "--resolution" or "--media" or "--halftone" or "--white-mode")
+            if (opt is "--ink-mode" or "--resolution" or "--media" or "--halftone" or "--white-mode" or "--colour-correction")
             {
                 if (i + 1 >= remaining.Count)
                 {
@@ -329,6 +337,7 @@ internal static class Program
                     case "--media": mediaName = value; break;
                     case "--halftone": halftone = value; break;
                     case "--white-mode": whiteMode = value; break;
+                    case "--colour-correction": colourCorrection = value; break;
                 }
             }
             else
@@ -371,6 +380,13 @@ internal static class Program
             return 1;
         }
 
+        if (!Colour.ValidColourCorrections.Contains(colourCorrection))
+        {
+            Console.Error.WriteLine(
+                $"不明な色補正 '{colourCorrection}'。次のいずれかを指定してください: {string.Join(", ", Colour.ValidColourCorrections)}");
+            return 1;
+        }
+
         string repoRoot = FindRepoRoot();
         var config = LoadDefaultJobConfig(repoRoot, route, mediaName);
 
@@ -394,6 +410,7 @@ internal static class Program
             MediaName = mediaName,
             Halftone = halftone,
             WhiteMode = whiteMode,
+            ColourCorrection = colourCorrection,
             NoCurlCorrection = noCurlCorrection,
         };
 
@@ -401,7 +418,8 @@ internal static class Program
         Console.WriteLine(
             $"名前付きパイプ \\\\.\\pipe\\{PipeName} で待ち受け中(Ctrl+C で終了)... " +
             $"インク指定方式: {inkMode} / 解像度: {resolutionEntry.Key} / メディア: {mediaName} / " +
-            $"ハーフトーン: {halftone} / 白版モード: {whiteMode} / カール矯正を止める: {noCurlCorrection}");
+            $"ハーフトーン: {halftone} / 白版モード: {whiteMode} / 色補正: {colourCorrection} / " +
+            $"カール矯正を止める: {noCurlCorrection}");
 
         while (true)
         {
@@ -452,7 +470,13 @@ internal static class Program
             var image = fullImage.Crop(scaledPaper.LeftMargin, scaledPaper.TopMargin, scaledPaper.Width, scaledPaper.Length);
             Console.WriteLine($"PPM(印字可能領域に切り出し後): {image.Width}x{image.Height}");
 
-            var jobPlanes = JobAssembly.BuildJobPlanes(image, config.Palette, options.InkMode, options.Halftone, options.WhiteMode);
+            // D-029: colourCorrection == "photo" のときだけ photoLutPath /
+            // resolutionEntry.DpiX が参照される。ガンマの既定値は解像度で
+            // 変わる(600 は 0.8、1200 は -0.9)ため、解像度を渡し忘れると色がずれる。
+            string photoLutPath = Path.Combine(FindRepoRoot(), "colour", "photo_colcor.bin");
+            var jobPlanes = JobAssembly.BuildJobPlanes(
+                image, config.Palette, options.InkMode, options.Halftone, options.WhiteMode,
+                options.ColourCorrection, resolutionEntry.DpiX, photoLutPath);
             if (jobPlanes.Count == 0)
             {
                 Console.WriteLine("印刷する内容がありません");
