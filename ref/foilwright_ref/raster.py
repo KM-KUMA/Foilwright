@@ -14,6 +14,28 @@ colour-correction path plus its ``ditherNone`` threshold binarisation
     c -= k; m -= k; y -= k
     bit = 1 if value >= (maxval + 1) // 2 else 0
 
+``to_planes`` and ``to_planes_auto`` also support ppmtomd's other two
+colour-correction modes via ``colour_correction`` (DOMAIN.md §4.2.2,
+D-029, ppmtomd.c:2929-2960):
+
+    "none":  k = 0; c, m, y are left as maxval - r/g/b (no undercolour
+             removal at all -- reproduces ppmtomd's colcorNone, an empty
+             switch case)
+    "plain": the colcorPlain formula shown above (the existing/default
+             behaviour before D-029; kept byte-identical)
+    "photo": ppmtomd's colcorPhoto lookup-table path (non-mono,
+             opt_keepblack-disabled branch only -- see colour.py):
+
+                 c = initgamma[c]; m = initgamma[m]; y = initgamma[y]
+                 idx = ((c&0xFC)<<12) | ((m&0xFC)<<6) | (y&0xFC)
+                 c, m, y, k = colconv[idx .. idx+3]
+
+             ``initgamma`` and ``colconv`` (the trilinear-expanded
+             ``colour/photo_colcor.bin`` table) are built by colour.py;
+             this module only calls colour.default_gamma /
+             build_gamma_table / load_photo_lut / expand_lut and applies
+             the formula above per pixel.
+
 ``to_planes`` also supports ppmtomd's ``Halftone`` and ``CoarseHalftone``
 ordered-dither modes (DOMAIN.md §4.2.1). Both replace the flat 128
 threshold above with a per-pixel threshold read from a small dither
@@ -27,11 +49,43 @@ ppmtomd.c:517-548 is dead code and is not reproduced here):
 Only maxval == 255 (8 bits per sample) input is supported; this is what
 every golden fixture uses and is what ppmtomd normalises everything to
 internally (ppmtomd.c:2063 "let's change everything to 255").
+
+UNCONFIRMED: at 1200dpi with a halftone matrix in play, ppmtomd dithers
+two "subrows" per source row and combines them (see the ``row_factor``
+comments in ``to_planes``/``to_planes_auto`` below). The combination rule
+implemented here (AND) is the best approximation found so far but does
+not reproduce golden g20 byte-for-byte; see ``test_g20_photo_coarse_
+md5000_1200``'s ``xfail`` reason in ref/tests/test_golden.py for the
+measured evidence. This is unrelated to colour_correction -- g18/g19
+(600dpi Photo) and g4 (1200dpi, no halftone) are all byte-exact.
 """
 
 from __future__ import annotations
 
+import functools
+import pathlib
+
+from . import colour
+
 _VALID_HALFTONES = frozenset({"none", "halftone", "coarse_halftone"})
+
+# colour/photo_colcor.bin, resolved relative to the repository root
+# (this file lives at <repo_root>/ref/foilwright_ref/raster.py). Overridable
+# per call via to_planes'/to_planes_auto's ``photo_lut_path`` argument
+# (DOMAIN.md §4.5: the table's location is not hardcoded deeper than this
+# one deliberate default-resolution point).
+_DEFAULT_PHOTO_LUT_PATH = str(
+    pathlib.Path(__file__).resolve().parents[2] / "colour" / "photo_colcor.bin"
+)
+
+
+@functools.cache
+def _expanded_photo_lut(path: str) -> bytes:
+    """Load and trilinearly expand the photo colour-correction table,
+    cached per path (the 64^3x4 expansion is ~1MB and worth reusing
+    across calls; colour.py itself does no caching)."""
+    return colour.expand_lut(colour.load_photo_lut(path))
+
 
 # ppmtomd.c:986 "four" -- the 2x2 quadrant interpolation weights used by
 # build_dith to expand each n x n cell into a 2x2 block of finer values.
@@ -321,6 +375,36 @@ _HALFTONE_MODES = {
     },
 }
 
+# ppmtomd.c:2726-2733 -- at 1200dpi ("photo-realistic" mode; the source
+# itself calls this "still very much in beta"), the dither matrix is built
+# by expanding dithmat10 the same way build_dith expands the 600dpi
+# Halftone tables (ppmtomd.c:2729: build_dith(10, dithmat10, 2, four)), and
+# the resulting 20x20 matrix is shared by *all four* CMYK components. This
+# unconditionally overrides both the 600dpi Halftone (12x12, per-channel
+# line/dot tables) and CoarseHalftone (10x10 dithmat10, used unexpanded)
+# selections above -- the ditherHT vs ditherHTcoarse distinction at 1200dpi
+# survives only in the screen angles (kht.comps[*].x/y/z, still set from
+# ppmtomd.c:1986-1991 regardless of resolution), not in the dither table.
+_DITHMAT_PHOTOREALISTIC20 = _build_dith(10, _DITHMAT10, 2, _BUILD_DITH_FOUR)
+
+
+def _halftone_mode(halftone: str, resolution: int) -> dict | None:
+    """Resolve the (cellsize, dither matrix) per CMYK component plus the
+    screen-angle table to use, given ``halftone`` and ``resolution``
+    (ppmtomd.c:2721-2779). Returns None for halftone == "none"."""
+    base = _HALFTONE_MODES.get(halftone)
+    if base is None:
+        return None
+    if resolution == 1200:
+        return {
+            "C": (20, _DITHMAT_PHOTOREALISTIC20),
+            "M": (20, _DITHMAT_PHOTOREALISTIC20),
+            "Y": (20, _DITHMAT_PHOTOREALISTIC20),
+            "K": (20, _DITHMAT_PHOTOREALISTIC20),
+            "screens": base["screens"],
+        }
+    return base
+
 
 def _cdiv(a: int, b: int) -> int:
     """C-style integer division: truncate toward zero. ``b`` must be > 0
@@ -477,6 +561,9 @@ def to_planes(
     image: tuple[int, int, bytes],
     palette: dict[str, str],
     halftone: str = "none",
+    colour_correction: str = "plain",
+    resolution: int = 600,
+    photo_lut_path: str | None = None,
 ) -> dict[str, bytes]:
     """Convert an image to per-ink 1bit planes.
 
@@ -490,6 +577,17 @@ def to_planes(
         before halftoning was added), "halftone" (ppmtomd's -dither
         Halftone) or "coarse_halftone" (ppmtomd's -dither CoarseHalftone).
         FloydSteinberg and Square are not implemented (DOMAIN.md §4.2.1).
+    colour_correction: one of "none", "plain" (the default -- ppmtomd's
+        colcorPlain, byte-identical to this function's behaviour before
+        D-029) or "photo" (ppmtomd's colcorPhoto). See the module
+        docstring for the formulas.
+    resolution: only consulted when colour_correction == "photo" and
+        halftone != "none" (colour.default_gamma's dpi-dependent default;
+        DOMAIN.md D-029). Ignored otherwise.
+    photo_lut_path: only consulted when colour_correction == "photo".
+        Path to the 16x16x16x4 photo colour-correction table (colour.py's
+        ``load_photo_lut`` format). Defaults to the bundled
+        ``colour/photo_colcor.bin``.
 
     Returns a dict ink name -> bytes: each row is packed MSB-first and
     padded to a byte boundary (row length = ceil(width/8) bytes), rows
@@ -500,26 +598,62 @@ def to_planes(
             f"unknown halftone mode {halftone!r}; expected one of "
             f"{sorted(_VALID_HALFTONES)}"
         )
+    if colour_correction not in colour.VALID_COLOUR_CORRECTIONS:
+        raise ValueError(
+            f"unknown colour correction {colour_correction!r}; expected one "
+            f"of {sorted(colour.VALID_COLOUR_CORRECTIONS)}"
+        )
 
     width, height, pixels = image
     row_bytes = (width + 7) // 8
     planes = {name: bytearray(row_bytes * height) for name in palette}
 
-    mode = _HALFTONE_MODES.get(halftone)
+    mode = _halftone_mode(halftone, resolution)
     channels_needed = set(palette.values()) if mode is not None else ()
+    # ppmtomd.c:2585-2636,3130-3190: at 1200dpi ("highres") ppmtomd dithers
+    # row_factor=2 subrows per source row (using row*row_factor+subrow as
+    # the dither-matrix row position for each), then averages the two
+    # subrows' 0/maxval decisions and re-thresholds at maxval/2 -- which,
+    # since each subrow's outcome is itself a flat 0/maxval decision,
+    # collapses to requiring *both* subrows to hit. This has no effect on
+    # ditherNone (mode is None; both subrows produce the same flat >=128
+    # decision for a fixed value) so it is only applied when a halftone
+    # matrix is in play.
+    #
+    # UNCONFIRMED: the AND combination derived above does not reproduce
+    # golden g20 byte-for-byte (nor does OR -- see test_g20's xfail reason
+    # in ref/tests/test_golden.py for the measured per-column evidence).
+    # This is the best-known approximation, not a validated implementation
+    # of ppmtomd's actual 1200dpi+halftone subrow rule; do not treat this
+    # branch as verified.
+    row_factor = 2 if (mode is not None and resolution == 1200) else 1
+
+    gamma_table = colconv = None
+    if colour_correction == "photo":
+        gamma_table = colour.build_gamma_table(
+            colour.default_gamma(halftone, resolution)
+        )
+        colconv = _expanded_photo_lut(photo_lut_path or _DEFAULT_PHOTO_LUT_PATH)
 
     for y in range(height):
         row_base = y * width * 3
         plane_row_base = y * row_bytes
 
-        # channel -> (positions for this row, dither matrix, cellsize)
-        row_halftone: dict[str, tuple[list[tuple[int, int]], tuple[int, ...], int]] = {}
+        # channel -> (list of subrow position-lists, dither matrix, cellsize)
+        row_halftone: dict[
+            str, tuple[list[list[tuple[int, int]]], tuple[int, ...], int]
+        ] = {}
         if mode is not None:
             for channel in channels_needed:
                 cellsize, matrix = mode[channel]
                 sx, sy, sz, syneg = mode["screens"][channel]
                 row_halftone[channel] = (
-                    _ht_row_positions(sx, sy, sz, syneg, y, cellsize, width),
+                    [
+                        _ht_row_positions(
+                            sx, sy, sz, syneg, y * row_factor + subrow, cellsize, width
+                        )
+                        for subrow in range(row_factor)
+                    ],
                     matrix,
                     cellsize,
                 )
@@ -529,13 +663,28 @@ def to_planes(
             r = pixels[idx]
             g = pixels[idx + 1]
             b = pixels[idx + 2]
-            c = 255 - r
-            m = 255 - g
-            yv = 255 - b
-            k = min(c, m, yv)
-            c -= k
-            m -= k
-            yv -= k
+            if colour_correction == "none":
+                c = 255 - r
+                m = 255 - g
+                yv = 255 - b
+                k = 0
+            elif colour_correction == "photo":
+                c = gamma_table[255 - r]
+                m = gamma_table[255 - g]
+                yv = gamma_table[255 - b]
+                lut_index = ((c & 0xFC) << 12) | ((m & 0xFC) << 6) | (yv & 0xFC)
+                c = colconv[lut_index]
+                m = colconv[lut_index + 1]
+                yv = colconv[lut_index + 2]
+                k = colconv[lut_index + 3]
+            else:
+                c = 255 - r
+                m = 255 - g
+                yv = 255 - b
+                k = min(c, m, yv)
+                c -= k
+                m -= k
+                yv -= k
             values = {"C": c, "M": m, "Y": yv, "K": k}
             byte_index = plane_row_base + (x >> 3)
             bit_mask = 0x80 >> (x & 7)
@@ -544,10 +693,14 @@ def to_planes(
                 if mode is None:
                     hit = value >= 128
                 else:
-                    positions, matrix, cellsize = row_halftone[channel]
-                    hrow, hcol = positions[x]
-                    threshold = matrix[cellsize * hrow + hcol]
-                    hit = value > threshold
+                    subrow_positions, matrix, cellsize = row_halftone[channel]
+                    hit = True
+                    for positions in subrow_positions:
+                        hrow, hcol = positions[x]
+                        threshold = matrix[cellsize * hrow + hcol]
+                        if not (value > threshold):
+                            hit = False
+                            break
                 if hit:
                     planes[name][byte_index] |= bit_mask
 
@@ -657,6 +810,9 @@ def to_planes_auto(
     inks: list[dict],
     cmyk_map: dict[str, str],
     halftone: str = "none",
+    colour_correction: str = "plain",
+    resolution: int = 600,
+    photo_lut_path: str | None = None,
 ) -> dict[str, bytes]:
     """Convert an image to per-ink 1bit planes using the ``auto`` ink
     specification method (DOMAIN.md §6.6): spot colours and CMYK
@@ -674,6 +830,10 @@ def to_planes_auto(
     halftone: forwarded to the CMYK-separation half of the algorithm;
         see to_planes for the meaning of "none"/"halftone"/
         "coarse_halftone".
+    colour_correction, resolution, photo_lut_path: forwarded to the
+        CMYK-separation half of the algorithm; see to_planes for their
+        meaning. Spot-ink matching (step 1 below) is never affected by
+        colour correction.
 
     Per-pixel rule (DOMAIN.md §6.6):
       1. Try to match the pixel against a spot ink using the same rule
@@ -703,6 +863,11 @@ def to_planes_auto(
             f"unknown halftone mode {halftone!r}; expected one of "
             f"{sorted(_VALID_HALFTONES)}"
         )
+    if colour_correction not in colour.VALID_COLOUR_CORRECTIONS:
+        raise ValueError(
+            f"unknown colour correction {colour_correction!r}; expected one "
+            f"of {sorted(colour.VALID_COLOUR_CORRECTIONS)}"
+        )
 
     width, height, pixels = image
     row_bytes = (width + 7) // 8
@@ -722,28 +887,47 @@ def to_planes_auto(
     spot_planes = {ink["name"]: bytearray(row_bytes * height) for ink in inks}
     cmyk_planes = {name: bytearray(row_bytes * height) for name in cmyk_map.values()}
 
-    mode = _HALFTONE_MODES.get(halftone)
+    mode = _halftone_mode(halftone, resolution)
     # cmyk_map keys are already the CMYK channels ("C"/"M"/"Y"/"K"), unlike
     # to_planes's `palette` where the channels are the *values* -- so here
     # channels_needed is simply the key set.
     channels_needed = set(cmyk_map.keys()) if mode is not None else ()
+    # See to_planes's identical comment (ppmtomd.c:2585-2636,3130-3190) for
+    # why this only applies at 1200dpi with a halftone matrix in play, and
+    # for why this AND combination is UNCONFIRMED (does not reproduce
+    # golden g20 byte-for-byte; see test_g20's xfail reason).
+    row_factor = 2 if (mode is not None and resolution == 1200) else 1
+
+    gamma_table = colconv = None
+    if colour_correction == "photo":
+        gamma_table = colour.build_gamma_table(
+            colour.default_gamma(halftone, resolution)
+        )
+        colconv = _expanded_photo_lut(photo_lut_path or _DEFAULT_PHOTO_LUT_PATH)
 
     for y in range(height):
         row_base = y * width * 3
         plane_row_base = y * row_bytes
 
-        # channel -> (positions for this row, dither matrix, cellsize)
-        # -- identical precomputation to to_planes's per-row halftone
-        # setup, duplicated here rather than shared so this function has
-        # no dependency on to_planes's internal state beyond the shared
-        # module-level tables/helpers above.
-        row_halftone: dict[str, tuple[list[tuple[int, int]], tuple[int, ...], int]] = {}
+        # channel -> (list of subrow position-lists, dither matrix,
+        # cellsize) -- identical precomputation to to_planes's per-row
+        # halftone setup, duplicated here rather than shared so this
+        # function has no dependency on to_planes's internal state beyond
+        # the shared module-level tables/helpers above.
+        row_halftone: dict[
+            str, tuple[list[list[tuple[int, int]]], tuple[int, ...], int]
+        ] = {}
         if mode is not None:
             for channel in channels_needed:
                 cellsize, matrix = mode[channel]
                 sx, sy, sz, syneg = mode["screens"][channel]
                 row_halftone[channel] = (
-                    _ht_row_positions(sx, sy, sz, syneg, y, cellsize, width),
+                    [
+                        _ht_row_positions(
+                            sx, sy, sz, syneg, y * row_factor + subrow, cellsize, width
+                        )
+                        for subrow in range(row_factor)
+                    ],
                     matrix,
                     cellsize,
                 )
@@ -792,29 +976,48 @@ def to_planes_auto(
                 continue
 
             # Step 3: no spot match -- fall through to CMYK separation.
-            # This formula is identical to to_planes's colcorPlain +
-            # threshold/halftone logic (duplicated here rather than
-            # shared so to_planes's implementation stays untouched; any
-            # change to one must be mirrored in the other to avoid
-            # divergence -- see to_planes's module docstring for the
-            # ppmtomd.c line references this reproduces).
-            c = 255 - r
-            m = 255 - g
-            yv = 255 - b
-            k = min(c, m, yv)
-            c -= k
-            m -= k
-            yv -= k
+            # This formula is identical to to_planes's colour-correction
+            # branches (duplicated here rather than shared so to_planes's
+            # implementation stays untouched; any change to one must be
+            # mirrored in the other to avoid divergence -- see to_planes's
+            # module docstring for the ppmtomd.c line references this
+            # reproduces).
+            if colour_correction == "none":
+                c = 255 - r
+                m = 255 - g
+                yv = 255 - b
+                k = 0
+            elif colour_correction == "photo":
+                c = gamma_table[255 - r]
+                m = gamma_table[255 - g]
+                yv = gamma_table[255 - b]
+                lut_index = ((c & 0xFC) << 12) | ((m & 0xFC) << 6) | (yv & 0xFC)
+                c = colconv[lut_index]
+                m = colconv[lut_index + 1]
+                yv = colconv[lut_index + 2]
+                k = colconv[lut_index + 3]
+            else:
+                c = 255 - r
+                m = 255 - g
+                yv = 255 - b
+                k = min(c, m, yv)
+                c -= k
+                m -= k
+                yv -= k
             values = {"C": c, "M": m, "Y": yv, "K": k}
             for channel, name in cmyk_map.items():
                 value = values[channel]
                 if mode is None:
                     hit = value >= 128
                 else:
-                    positions, matrix, cellsize = row_halftone[channel]
-                    hrow, hcol = positions[x]
-                    threshold = matrix[cellsize * hrow + hcol]
-                    hit = value > threshold
+                    subrow_positions, matrix, cellsize = row_halftone[channel]
+                    hit = True
+                    for positions in subrow_positions:
+                        hrow, hcol = positions[x]
+                        threshold = matrix[cellsize * hrow + hcol]
+                        if not (value > threshold):
+                            hit = False
+                            break
                 if hit:
                     cmyk_planes[name][byte_index] |= bit_mask
 
