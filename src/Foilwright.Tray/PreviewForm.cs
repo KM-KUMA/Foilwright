@@ -225,13 +225,39 @@ public sealed class PreviewForm : Form
                 _inkGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
             }
         };
-        _inkGrid.CellValueChanged += async (_, e) =>
+        _inkGrid.CellValueChanged += (_, e) =>
         {
             if (e.RowIndex < 0 || e.ColumnIndex != useColumn.Index)
             {
                 return;
             }
-            await OnInkUseChangedAsync(e.RowIndex);
+            // CellValueChanged はまだ DataGridView 自身の編集確定処理
+            // (CurrentCellDirtyStateChanged → CommitEdit → CellValueChanged)
+            // の呼び出しスタックの中で発火している。ここで同期的に
+            // SetBusy(true)(Use 列の ReadOnly 切り替えを含む)や
+            // PopulateInkGrid の Rows.Clear() を行うと、グリッドが
+            // 自分自身のセル編集処理の途中で自分の行・列の状態を
+            // 書き換えられることになり、内部状態が壊れる。
+            // BeginInvoke でいったんメッセージキューに積み直し、
+            // グリッドが今回のセル編集処理を完全に終えてから
+            // OnInkUseChangedAsync を実行する。
+            int rowIndex = e.RowIndex;
+            BeginInvoke(async () =>
+            {
+                try
+                {
+                    await OnInkUseChangedAsync(rowIndex);
+                }
+                catch (Exception ex)
+                {
+                    // async void 相当のハンドラで例外を握り潰すと、利用者には
+                    // 何も表示されないまま UI が固まったように見える
+                    // (今回の不具合調査で「何が起きているか分からない」原因の一つ)。
+                    // 必ず捕まえて見せる。
+                    MessageBox.Show(this, $"インクの使用可否の切り替えに失敗しました: {ex.Message}", "Foilwright",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            });
         };
         jobGroup.Controls.Add(_inkGrid);
         jobGroup.Controls.Add(_jobSummaryLabel);
@@ -430,6 +456,17 @@ public sealed class PreviewForm : Form
 
             ApplyPreviewResult(result);
         }
+        catch (Exception ex) when (ex is ConfigException or PpmFormatException)
+        {
+            // async void 相当の呼び出し元(CellValueChanged)まで例外を伝播させると
+            // 握り潰されて何も表示されないまま UI が固まって見える(今回の不具合調査
+            // で「何が起きているか分からない」原因の一つだった)。RefreshPreviewAsync
+            // と同じ流儀でここでも捕まえて見せる。_usedInks は変更済みのままにする
+            // (グリッドの再構成に失敗しても、利用者が付けた/外したチェックの意思は
+            // 次回の操作までそのまま保持する)。
+            MessageBox.Show(this, $"ジョブの再構成に失敗しました: {ex.Message}", "Foilwright",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
         finally
         {
             SetBusy(false, string.Empty);
@@ -463,6 +500,12 @@ public sealed class PreviewForm : Form
     /// インクのチェックを外すことも、再ラスタライズ無しで自由に行き来できる。</summary>
     private void PopulateInkGrid(PreviewResult result)
     {
+        // チェックボックスのセルが編集中(コミット直後で IsCurrentCellInEditMode
+        // が残っている場合がある)のまま Rows.Clear() で行を消すと、
+        // DataGridView の内部状態(現在セル・編集コントロール)が不正になる。
+        // 行を作り直す前に必ず編集を終了させておく。
+        _inkGrid.EndEdit();
+
         // Rows.Add/Clear は CellValueChanged を発火させうるが、この呼び出しは
         // 常に SetBusy(true) の内側(RefreshPreviewAsync / OnInkUseChangedAsync)
         // で行われるため、OnInkUseChangedAsync 先頭の _busy ガードで再入を防げる。
