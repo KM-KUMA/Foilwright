@@ -109,6 +109,9 @@ internal static class Program
             // 引く(両方指定時は --use-inks を先に適用してから --exclude-inks を引く)。
             HashSet<string>? useInksArg = null;
             HashSet<string>? excludeInksArg = null;
+            // D-031: UI 無しでパス数の上書きを検証するための隠しオプション
+            // (カンマ区切りの ink=n。src/Foilwright.Tray/PreviewForm.cs の「パス数」列と同義)。
+            Dictionary<string, int>? passesArg = null;
             for (int i = 0; i < extraArgs.Length - 1; i++)
             {
                 switch (extraArgs[i])
@@ -131,6 +134,10 @@ internal static class Program
                             .ToHashSet();
                         i++;
                         break;
+                    case "--passes":
+                        passesArg = ParsePassesArg(extraArgs[i + 1]);
+                        i++;
+                        break;
                 }
             }
             if (Array.IndexOf(extraArgs, "--no-curl-correction") >= 0)
@@ -150,12 +157,18 @@ internal static class Program
                 usedInks = new HashSet<string>(usedInks.Where(name => !excludeInksArg.Contains(name)));
             }
 
+            // D-031: --passes が指定されていればそれを上書きの起点にし、
+            // 無ければ TraySettings の既定(保存済みの上書き)を使う。
+            var passesOverride = passesArg ?? settings.PassesOverride ?? new Dictionary<string, int>();
+
             Console.WriteLine($"使うインク(D-030): {string.Join(", ", usedInks.OrderBy(n => n, StringComparer.Ordinal))}");
             Console.WriteLine($"色補正(D-029): {colourCorrection}");
+            Console.WriteLine(
+                $"パス数の上書き(D-031): {(passesOverride.Count == 0 ? "(なし。パレットの既定値を使用)" : string.Join(", ", passesOverride.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value}")))}");
 
             var result = JobPipeline.BuildPreview(
                 psPath, repoRoot, route, settings.InkMode, settings.PaperName, mediaName,
-                resolutionKey, halftone, whiteMode, usedInks, colourCorrection);
+                resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection);
             var job = new PrintJob
             {
                 // Emitter.EmitJob は Paper を常に 600dpi 基準で受け取り、
@@ -212,6 +225,7 @@ internal static class Program
             // 引く(両方指定時は --use-inks を先に適用してから --exclude-inks を引く)。
             HashSet<string>? useInksArg = null;
             HashSet<string>? excludeInksArg = null;
+            Dictionary<string, int>? passesArg = null;
             for (int i = 0; i < extraArgs.Length - 1; i++)
             {
                 switch (extraArgs[i])
@@ -233,6 +247,10 @@ internal static class Program
                             .ToHashSet();
                         i++;
                         break;
+                    case "--passes":
+                        passesArg = ParsePassesArg(extraArgs[i + 1]);
+                        i++;
+                        break;
                 }
             }
 
@@ -242,13 +260,16 @@ internal static class Program
             {
                 usedInks = new HashSet<string>(usedInks.Where(name => !excludeInksArg.Contains(name)));
             }
+            var passesOverride = passesArg ?? settings.PassesOverride ?? new Dictionary<string, int>();
 
             Console.WriteLine($"使うインク(D-030): {string.Join(", ", usedInks.OrderBy(n => n, StringComparer.Ordinal))}");
             Console.WriteLine($"色補正(D-029): {colourCorrection}");
+            Console.WriteLine(
+                $"パス数の上書き(D-031): {(passesOverride.Count == 0 ? "(なし。パレットの既定値を使用)" : string.Join(", ", passesOverride.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value}")))}");
 
             var result = JobPipeline.BuildPreview(
                 psPath, repoRoot, route, settings.InkMode, settings.PaperName, mediaName,
-                resolutionKey, halftone, whiteMode, usedInks, colourCorrection);
+                resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection);
 
             result.Preview.Save(outputPngPath, System.Drawing.Imaging.ImageFormat.Png);
 
@@ -267,5 +288,32 @@ internal static class Program
             Console.Error.WriteLine($"エラー: {ex.Message}");
             Environment.ExitCode = 1;
         }
+    }
+
+    /// <summary>D-031: `--passes white=4,black=2` の形式を解析する。範囲外
+    /// (1〜8。TraySettings.MinPasses/MaxPasses)や非整数は黙って丸めず、その場で
+    /// 拒否する(打ち間違いで生産終了品のリボンを失わないため。PreviewForm の
+    /// CellValidating と同じ方針)。呼び出し元の catch (ConfigException) に
+    /// 拾わせることで、UI 版と同様に「その場で拒否する」を CLI でも再現する。</summary>
+    private static Dictionary<string, int> ParsePassesArg(string arg)
+    {
+        var result = new Dictionary<string, int>();
+        foreach (string entry in arg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string[] parts = entry.Split('=', 2);
+            if (parts.Length != 2 || parts[0].Length == 0)
+            {
+                throw new ConfigException($"--passes の形式が不正です(ink=n の形式にしてください): '{entry}'");
+            }
+            string inkName = parts[0];
+            if (!int.TryParse(parts[1], out int passes)
+                || passes < TraySettings.MinPasses || passes > TraySettings.MaxPasses)
+            {
+                throw new ConfigException(
+                    $"--passes '{inkName}' の値が不正です。整数で {TraySettings.MinPasses}〜{TraySettings.MaxPasses} の範囲で指定してください(D-031): '{parts[1]}'");
+            }
+            result[inkName] = passes;
+        }
+        return result;
     }
 }

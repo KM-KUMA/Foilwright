@@ -71,6 +71,35 @@ public sealed class TraySettings
     public HashSet<string> ResolveUsedInks(IReadOnlyList<InkDefinition> palette) =>
         UsedInks is { } used ? new HashSet<string>(used) : DefaultUsedInks(palette);
 
+    /// <summary>D-031: 重ね塗り回数(パス数)のジョブごとの上書き(ink 名 → 回数)。
+    /// D-024 の下層(既定値)であり、プレビューの「パス数」列(D-030 のチェック列と
+    /// 同じ形)がジョブごとの上書きを持つ。
+    ///
+    /// null と空辞書を区別する: null は「利用者が一度も触っていない(または旧
+    /// settings.json に項目が無い)」を表し、<see cref="ResolvePasses"/> がパレットの
+    /// `passes`(インクと媒体の組み合わせに対する妥当な初期値。DOMAIN §6.2)を
+    /// そのまま使う。空辞書は「利用者が一度は編集したが、結局どのインクも上書き
+    /// しなかった」状態であり、そのまま尊重する(全インクがパレットの値に戻る点は
+    /// 結果として null と同じだが、意味としては明示的な「上書き無し」)。
+    ///
+    /// 範囲は 1〜8(D-031)。この辞書に範囲外の値を入れてはならない — 検証は
+    /// 呼び出し側(PreviewForm の CellValidating)が担う。</summary>
+    public Dictionary<string, int>? PassesOverride { get; set; }
+
+    /// <summary>D-031: パス数として受け付ける範囲(下限)。範囲外は打ち間違いとみなし
+    /// その場で拒否する — 生産終了品のリボンを黙って消費させないため。</summary>
+    public const int MinPasses = 1;
+
+    /// <summary>D-031: パス数として受け付ける範囲(上限)。§10.7 の実運用値は 4 で、
+    /// 8 はそれを超える余裕を持たせた値(それを超える指定はほぼ打ち間違い)。</summary>
+    public const int MaxPasses = 8;
+
+    /// <summary>指定したインクについて、このジョブで実際に使うパス数を解決する。
+    /// PassesOverride にそのインクの上書きがあればそれを使い、無ければ
+    /// パレットの <see cref="InkDefinition.Passes"/>(既定値)をそのまま使う。</summary>
+    public int ResolvePasses(InkDefinition ink) =>
+        PassesOverride is { } overrides && overrides.TryGetValue(ink.Name, out int passes) ? passes : ink.Passes;
+
     private static string SettingsPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "Foilwright",

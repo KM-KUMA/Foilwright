@@ -53,6 +53,13 @@ public sealed class PreviewForm : Form
     /// には反映しない。</summary>
     private readonly HashSet<string> _usedInks;
 
+    /// <summary>D-031: パス数(重ね塗り回数)のジョブごとの上書き(ink 名 → 回数)。
+    /// TraySettings.PassesOverride を初期状態とし(null なら空辞書、= 上書き無し)、
+    /// 以後はプレビューの「パス数」列がジョブごとの上書きとして書き換える。
+    /// SaveAsDefaults を押さない限り TraySettings には反映しない。ここに無い
+    /// インクは JobPipeline がパレットの既定値(InkDefinition.Passes)を使う。</summary>
+    private readonly Dictionary<string, int> _passesOverride;
+
     /// <summary>_usedInks の既定値を解決するために先読みしたパレット
     /// (palette/default.yaml)。機種・メディア・用紙を変えても不変
     /// (パレットはこれらに依存しない)。</summary>
@@ -74,6 +81,11 @@ public sealed class PreviewForm : Form
         // 一度だけ読み、許可リストの既定値解決に使う。
         _palette = ConfigLoader.LoadPalette(Path.Combine(_repoRoot, "palette", "default.yaml"));
         _usedInks = settings.ResolveUsedInks(_palette);
+        // D-031: null(一度も触っていない)は空辞書として扱う — 空辞書は
+        // 「このジョブでは上書き無し」を意味し、パレットの既定値がそのまま使われる。
+        _passesOverride = settings.PassesOverride is { } passesOverride
+            ? new Dictionary<string, int>(passesOverride)
+            : new Dictionary<string, int>();
 
         Text = "Foilwright — 印刷プレビュー";
         Width = 1200;
@@ -215,7 +227,10 @@ public sealed class PreviewForm : Form
         _inkGrid.Columns["Order"]!.ReadOnly = true;
         _inkGrid.Columns["Color"]!.ReadOnly = true;
         _inkGrid.Columns["Label"]!.ReadOnly = true;
-        _inkGrid.Columns["Passes"]!.ReadOnly = true;
+        // D-031: パス数(重ね塗り回数)を編集可能にする。範囲は 1〜8
+        // (TraySettings.MinPasses/MaxPasses)で、CellValidating がその場で拒否する。
+        var passesColumn = _inkGrid.Columns["Passes"]!;
+        passesColumn.ReadOnly = false;
         // チェックボックス列は確定(コミット)が 1 セル遅れる既知の挙動があるため、
         // CurrentCellDirtyStateChanged で即座にコミットしてから CellValueChanged を拾う。
         _inkGrid.CurrentCellDirtyStateChanged += (_, _) =>
@@ -225,39 +240,77 @@ public sealed class PreviewForm : Form
                 _inkGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
             }
         };
+        // D-031: パス数は整数で 1〜8(TraySettings.MinPasses/MaxPasses)。範囲外・
+        // 非整数はその場で拒否する(黙って丸めない。打ち間違いで生産終了品の
+        // リボンを失わないため)。CellValidating はセルが編集を終えて確定しようと
+        // した時点で、まだセルの値が書き換わる前に呼ばれる — ここで弾けば
+        // CellValueChanged は発火しない。
+        _inkGrid.CellValidating += (_, e) =>
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex != passesColumn.Index)
+            {
+                return;
+            }
+            var cell = _inkGrid.Rows[e.RowIndex].Cells[e.ColumnIndex];
+            if (!int.TryParse(e.FormattedValue?.ToString(), out int value)
+                || value < TraySettings.MinPasses || value > TraySettings.MaxPasses)
+            {
+                e.Cancel = true;
+                cell.ErrorText =
+                    $"パス数は整数で {TraySettings.MinPasses}〜{TraySettings.MaxPasses} の範囲で指定してください(D-031)。";
+                return;
+            }
+            cell.ErrorText = string.Empty;
+        };
         _inkGrid.CellValueChanged += (_, e) =>
         {
-            if (e.RowIndex < 0 || e.ColumnIndex != useColumn.Index)
+            if (e.RowIndex < 0)
             {
                 return;
             }
             // CellValueChanged はまだ DataGridView 自身の編集確定処理
-            // (CurrentCellDirtyStateChanged → CommitEdit → CellValueChanged)
-            // の呼び出しスタックの中で発火している。ここで同期的に
-            // SetBusy(true)(Use 列の ReadOnly 切り替えを含む)や
-            // PopulateInkGrid の Rows.Clear() を行うと、グリッドが
-            // 自分自身のセル編集処理の途中で自分の行・列の状態を
-            // 書き換えられることになり、内部状態が壊れる。
-            // BeginInvoke でいったんメッセージキューに積み直し、
-            // グリッドが今回のセル編集処理を完全に終えてから
-            // OnInkUseChangedAsync を実行する。
+            // (CurrentCellDirtyStateChanged → CommitEdit → CellValueChanged、
+            // またはテキスト列の EndEdit)の呼び出しスタックの中で発火している。
+            // ここで同期的に SetBusy(true)(列の ReadOnly 切り替えを含む)や
+            // PopulateInkGrid の Rows.Clear() を行うと、グリッドが自分自身の
+            // セル編集処理の途中で自分の行・列の状態を書き換えられることになり、
+            // 内部状態が壊れる。BeginInvoke でいったんメッセージキューに積み直し、
+            // グリッドが今回のセル編集処理を完全に終えてから非同期処理を実行する。
             int rowIndex = e.RowIndex;
-            BeginInvoke(async () =>
+            if (e.ColumnIndex == useColumn.Index)
             {
-                try
+                BeginInvoke(async () =>
                 {
-                    await OnInkUseChangedAsync(rowIndex);
-                }
-                catch (Exception ex)
+                    try
+                    {
+                        await OnInkUseChangedAsync(rowIndex);
+                    }
+                    catch (Exception ex)
+                    {
+                        // async void 相当のハンドラで例外を握り潰すと、利用者には
+                        // 何も表示されないまま UI が固まったように見える
+                        // (今回の不具合調査で「何が起きているか分からない」原因の一つ)。
+                        // 必ず捕まえて見せる。
+                        MessageBox.Show(this, $"インクの使用可否の切り替えに失敗しました: {ex.Message}", "Foilwright",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                });
+            }
+            else if (e.ColumnIndex == passesColumn.Index)
+            {
+                BeginInvoke(async () =>
                 {
-                    // async void 相当のハンドラで例外を握り潰すと、利用者には
-                    // 何も表示されないまま UI が固まったように見える
-                    // (今回の不具合調査で「何が起きているか分からない」原因の一つ)。
-                    // 必ず捕まえて見せる。
-                    MessageBox.Show(this, $"インクの使用可否の切り替えに失敗しました: {ex.Message}", "Foilwright",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-            });
+                    try
+                    {
+                        await OnPassesChangedAsync(rowIndex);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this, $"パス数の変更に失敗しました: {ex.Message}", "Foilwright",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                });
+            }
         };
         jobGroup.Controls.Add(_inkGrid);
         jobGroup.Controls.Add(_jobSummaryLabel);
@@ -367,6 +420,8 @@ public sealed class PreviewForm : Form
         // D-030: このジョブの許可リストをそのまま既定値へ保存する
         // (他の設定項目と同じ「今の状態を既定にする」挙動)。
         _settings.UsedInks = new HashSet<string>(_usedInks);
+        // D-031: パス数の上書きも同様に、このジョブの状態をそのまま既定値へ保存する。
+        _settings.PassesOverride = new Dictionary<string, int>(_passesOverride);
         _settings.Save();
         MessageBox.Show(this, "既定値として保存しました。", "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
@@ -396,7 +451,7 @@ public sealed class PreviewForm : Form
             // そのまま持ち越す(許可されていないインクがもう現れなければ自然に消える)。
             var result = await Task.Run(() => JobPipeline.BuildPreview(
                 _psPath, _repoRoot, route, inkMode, _settings.PaperName, mediaName, resolutionKey, halftone, whiteMode,
-                _usedInks, colourCorrection));
+                _usedInks, _passesOverride, colourCorrection));
 
             ApplyPreviewResult(result);
         }
@@ -452,7 +507,7 @@ public sealed class PreviewForm : Form
 
             var result = await Task.Run(() => JobPipeline.RebuildFromImage(
                 previous.Image, previous.Config, previous.Resolution, inkMode, halftone, whiteMode, _usedInks,
-                colourCorrection));
+                _passesOverride, colourCorrection));
 
             ApplyPreviewResult(result);
         }
@@ -463,6 +518,72 @@ public sealed class PreviewForm : Form
             // で「何が起きているか分からない」原因の一つだった)。RefreshPreviewAsync
             // と同じ流儀でここでも捕まえて見せる。_usedInks は変更済みのままにする
             // (グリッドの再構成に失敗しても、利用者が付けた/外したチェックの意思は
+            // 次回の操作までそのまま保持する)。
+            MessageBox.Show(this, $"ジョブの再構成に失敗しました: {ex.Message}", "Foilwright",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            SetBusy(false, string.Empty);
+        }
+    }
+
+    /// <summary>D-031: パス数(重ね塗り回数)列を編集したときのハンドラ。値は
+    /// CellValidating で 1〜8 の整数であることを確認済み。Ghostscript を再実行せず、
+    /// 切り出し済みの画像を保持したまま JobPipeline.RebuildFromImage でジョブ
+    /// 組み立てだけをやり直す(D-028 補足と同じ扱い)。
+    ///
+    /// 「使わない」(チェックが外れている)インクのパス数編集について: D-030 の
+    /// グリッドはパレット全体を常に表示し、いま使っていないインクのチェックも
+    /// 自由に切り替えられる(PopulateInkGrid のコメント参照)。パス数もこれに
+    /// 揃え、チェックの有無に関わらず編集を受け付け、_passesOverride へ記録する。
+    /// そのジョブで実際に使われるかどうか(JobInk / RGL に反映されるか)は
+    /// あくまで「使う」チェックが決める — 使っていないインクの上書きは、
+    /// そのインクを後で有効にしたとき、またはこの設定を既定値として保存し
+    /// 次回別のジョブで使ったときに効いてくる。</summary>
+    private async Task OnPassesChangedAsync(int rowIndex)
+    {
+        if (_busy || _current is null)
+        {
+            return;
+        }
+        if (rowIndex < 0 || rowIndex >= _inkGrid.Rows.Count)
+        {
+            return;
+        }
+        var row = _inkGrid.Rows[rowIndex];
+        if (row.Tag is not string inkName)
+        {
+            return;
+        }
+        // CellValidating がここに到達する前に範囲を確認済みだが、念のため
+        // もう一度検証する(黙って丸めない。D-031)。
+        if (!int.TryParse(row.Cells["Passes"].Value?.ToString(), out int passes)
+            || passes < TraySettings.MinPasses || passes > TraySettings.MaxPasses)
+        {
+            return;
+        }
+        _passesOverride[inkName] = passes;
+
+        SetBusy(true, "ジョブを再構成中...");
+        try
+        {
+            string inkMode = (string)_inkModeCombo.SelectedItem!;
+            string halftone = (string)_halftoneCombo.SelectedItem!;
+            string whiteMode = (string)_whiteModeCombo.SelectedItem!;
+            string colourCorrection = (string)_colourCorrectionCombo.SelectedItem!;
+            var previous = _current;
+
+            var result = await Task.Run(() => JobPipeline.RebuildFromImage(
+                previous.Image, previous.Config, previous.Resolution, inkMode, halftone, whiteMode, _usedInks,
+                _passesOverride, colourCorrection));
+
+            ApplyPreviewResult(result);
+        }
+        catch (Exception ex) when (ex is ConfigException or PpmFormatException)
+        {
+            // OnInkUseChangedAsync と同じ流儀。_passesOverride は変更済みのまま
+            // にする(グリッドの再構成に失敗しても、利用者が入力した値は
             // 次回の操作までそのまま保持する)。
             MessageBox.Show(this, $"ジョブの再構成に失敗しました: {ex.Message}", "Foilwright",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -691,6 +812,8 @@ public sealed class PreviewForm : Form
         _statusRefreshButton.Enabled = !busy;
         // D-028: 再構成中はチェック列(除外の切り替え)を編集不可にする。
         _inkGrid.Columns["Use"]!.ReadOnly = busy;
+        // D-031: 再構成中はパス数列も編集不可にする(Use 列と同じ扱い)。
+        _inkGrid.Columns["Passes"]!.ReadOnly = busy;
         _cancelButton.Enabled = !busy;
         _printButton.Enabled = !busy && _current is { Inks.Count: > 0 };
         Text = busy && statusMessage.Length > 0
