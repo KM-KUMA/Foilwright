@@ -95,13 +95,13 @@ public class ConfigResolutionMediaTests
     }
 
     [Fact]
-    public void LoadMediaTable_ReturnsAllFiveEntriesWithDistinctLabelsAndBytes()
+    public void LoadMediaTable_ReturnsAllTwentyFourEntriesWithDistinctLabelsAndBytes()
     {
         var table = ConfigLoader.LoadMediaTable(MediaYaml);
 
-        // 5 種類(DOMAIN §5.5.2)。名前をコードに埋め込まず、ファイル由来の
-        // キー集合をそのまま検証する。
-        Assert.Equal(5, table.Count);
+        // ppmtomd の media_table[] 全 24 種(DOMAIN §5.5.2)。名前をコードに
+        // 埋め込まず、ファイル由来のキー集合をそのまま検証する。
+        Assert.Equal(24, table.Count);
         Assert.Contains("plain_paper", table.Keys);
         Assert.Contains("cardboard", table.Keys);
         Assert.Contains("fine_plain_paper", table.Keys);

@@ -7,7 +7,10 @@
 # コマンドは ESC & l {byte1} {byte2} M。
 #
 # 出典: ppmtomd 1.6 の media_byte1[] / media_byte2[](mddata.c:191-)。
-# 主要な値は golden のバイト列から実測して裏付け済み。
+# 主要な値は golden のバイト列から実測して裏付け済み(10 件: plain_paper /
+# cardboard / laser_paper / back_print / fine_back_print / dye_sub_paper /
+# glossy_paper / vphoto_card / special_ohp / iron_sheet)。残りは media_table[]
+# の並び順(mddata.c)から機械的に対応付けたもので、個別の実測はまだない。
 # 機種による分岐はない(ppmtomd も共通の配列を使う)。
 #
 # 注意: 名前に fine が付くものは「すべてを 2 回印刷する」を意味する
@@ -20,17 +23,56 @@ media:
     byte1: 0x00
     byte2: 0x00
 
+  - name: fine_plain_paper
+    label: 普通紙(2 回刷り)
+    byte1: 0x00
+    byte2: 0x02
+
+  - name: fine_special_ohp
+    label: OHP フィルム・特殊(2 回刷り)
+    byte1: 0x01
+    byte2: 0x00
+
+  - name: special_ohp
+    label: OHP フィルム・特殊
+    byte1: 0x01
+    byte2: 0x01
+
+  - name: special_iron
+    label: アイロンプリントシート・特殊
+    byte1: 0x02
+    byte2: 0x01
+
+  - name: iron_sheet
+    label: アイロンプリントシート
+    byte1: 0x02
+    byte2: 0x02
+
+  # ppmtomd 上の名称は LabecaSheet。「ラベッカ」が何を指すかは未確認で、
+  # 用途の詳細は不明(名称のみ判明)。推測で用途を書かない。
+  - name: labeca_sheet
+    label: ラベッカシート(用途不明)
+    byte1: 0x03
+    byte2: 0x00
+
+  - name: thermal_paper
+    label: 感熱紙
+    byte1: 0x04
+    byte2: 0x00
+
+  # ppmtomd 上の名称は CDMaster。CD 関連の用紙とみられるが用途の詳細は
+  # 未確認。推測で用途を書かない。
+  - name: cd_master
+    label: CD マスター(用途不明)
+    byte1: 0x04
+    byte2: 0x01
+
   # 厚紙。アンダーコート使用時のインクリボン切れを防ぐ(DOMAIN §10.8.2)。
   # 品質設定ではなく消耗品の破損を防ぐ安全設定として扱う
   - name: cardboard
     label: 厚紙
     byte1: 0x05
     byte2: 0x00
-
-  - name: fine_plain_paper
-    label: 普通紙(2 回刷り)
-    byte1: 0x00
-    byte2: 0x02
 
   - name: post_card
     label: はがき
@@ -42,5 +84,79 @@ media:
     byte1: 0x07
     byte2: 0x00
 
-# 未収録: OHP・アイロン転写・裏面印刷・昇華・光沢・VPhoto 系など全 24 種。
-# 必要になった時点で mddata.c の配列から追加する。実測で裏を取ること。
+  - name: fine_ohp
+    label: OHP フィルム(2 回刷り)
+    byte1: 0x08
+    byte2: 0x00
+
+  - name: ohp
+    label: OHP フィルム
+    byte1: 0x08
+    byte2: 0x01
+
+  # 【未解決の食い違い】DOMAIN §10.10.4 は「デカールシートや MD 用ビューカル
+  # への印刷時は裏面印刷にチェックを入れてカール矯正を止める」としているが、
+  # これはカール補正コマンド(ESC SUB {curl} 00 43)の話であり、ここで言う
+  # メディア種別の Back Print(裏面印刷フィルム)とは別のコマンドである。
+  # 一方 DOMAIN §4.7 は「Back Print Film(裏面印刷フィルム)は透かして見る
+  # 前提の媒体であり、ウォータースライドデカールとは別物、混同しないこと」
+  # と明記している。どちらの「裏面印刷」がデカール制作に適切かは未検証。
+  # このメディア種別(BackPrint)自体をデカール用途に使うべきかどうかは
+  # 断定しない。
+  - name: back_print
+    label: 裏面印刷フィルム
+    byte1: 0x09
+    byte2: 0x00
+
+  # fine_back_print も back_print と同じ未解決の食い違いを持つ(上記参照)。
+  # さらに fine は「2 回印刷」を意味し、passes とは別の機構(冒頭の注意書き)。
+  - name: fine_back_print
+    label: 裏面印刷フィルム(2 回刷り)
+    byte1: 0x09
+    byte2: 0x02
+
+  - name: dye_sub_paper
+    label: 昇華紙
+    byte1: 0x0A
+    byte2: 0x00
+
+  # ppmtomd 上の名称は Reserved0B00。予約枠とみられ、用途不明。
+  # 推測で用途を書かない。
+  - name: reserved_type_b
+    label: 予約(用途不明)
+    byte1: 0x0B
+    byte2: 0x00
+
+  - name: dye_sub_label
+    label: 昇華ラベル
+    byte1: 0x0C
+    byte2: 0x00
+
+  # ppmtomd 上の名称は Reserved0D00。予約枠とみられ、用途不明。
+  # 推測で用途を書かない。
+  - name: reserved_type_d
+    label: 予約(用途不明)
+    byte1: 0x0D
+    byte2: 0x00
+
+  - name: glossy_label
+    label: 光沢ラベル
+    byte1: 0x0E
+    byte2: 0x00
+
+  - name: glossy_paper
+    label: 光沢紙
+    byte1: 0x0F
+    byte2: 0x00
+
+  - name: vphoto_film
+    label: VPhoto フィルム
+    byte1: 0x10
+    byte2: 0x00
+
+  - name: vphoto_card
+    label: VPhoto カード
+    byte1: 0x11
+    byte2: 0x00
+
+# ppmtomd の media_table[] にある全 24 種を収録済み。
