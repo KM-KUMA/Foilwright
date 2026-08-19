@@ -100,8 +100,20 @@ public static class CassetteCatalog
         [0x22] = "ポップ用青",
     };
 
+    /// <summary>上位ビットが立っているとき、そのカセットは使えない状態にある
+    /// (2026-08-19 実測)。シアンのリボンが終端まで来た機体が `0x83` を返し、
+    /// 利用者が現物を見てシアンが切れていることを確認した。
+    /// `0x83 = 0x80 | 0x03` で、下位 7 ビットは紙用シアンのバーコードである。
+    ///
+    /// **理由までは断定しない。** §11.4 の教訓のとおり、1 例では「その値が
+    /// その意味を持つ」ことしか示せず「その意味だけを表す」ことは示せない。
+    /// リボン切れ以外(異常検出など)でも立つ可能性が残る。したがって
+    /// 「使い切り」ではなく「使用不可」と表示する。</summary>
+    public const byte UnusableFlag = 0x80;
+
     /// <summary>バーコード番号を日本語名に変換する。未装着(0xff)は「未装着」、
-    /// 対応表に無い値は「不明なカセット(0xNN)」と正直に表示する。</summary>
+    /// 上位ビットが立っていればインク名 + 「使用不可」、対応表に無い値は
+    /// 「不明なカセット(0xNN)」と正直に表示する。</summary>
     public static string GetName(byte barcode)
     {
         if (barcode == CassetteStatus.NotLoaded)
@@ -109,9 +121,20 @@ public static class CassetteCatalog
             return "未装着";
         }
 
-        return Names.TryGetValue(barcode, out var name)
-            ? name
-            : $"不明なカセット(0x{barcode:x2})";
+        if (Names.TryGetValue(barcode, out var name))
+        {
+            return name;
+        }
+
+        // 上位ビットを外すと既知のインクになるなら、名指ししたうえで
+        // 使用不可であることを添える。「不明なカセット」よりも役に立つ。
+        byte cleared = (byte)(barcode & ~UnusableFlag);
+        if ((barcode & UnusableFlag) != 0 && Names.TryGetValue(cleared, out var baseName))
+        {
+            return $"{baseName}(使用不可。リボン切れの可能性)";
+        }
+
+        return $"不明なカセット(0x{barcode:x2})";
     }
 }
 

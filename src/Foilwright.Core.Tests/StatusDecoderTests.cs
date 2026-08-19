@@ -194,9 +194,32 @@ public class StatusDecoderTests
     [Fact]
     public void CassetteCatalog_UnknownBarcode_ShowsRawValue()
     {
-        string name = CassetteCatalog.GetName(0x99);
+        // 上位ビット(使用不可フラグ)を外しても対応表に無い値を選ぶこと。
+        // 0x99 は 0x80 | 0x19 = フォト用イエローの使用不可を意味するように
+        // なったため、ここでは使えない。
+        string name = CassetteCatalog.GetName(0x7e);
         Assert.Contains("不明なカセット", name);
-        Assert.Contains("0x99", name);
+        Assert.Contains("0x7e", name);
+    }
+
+    [Fact]
+    public void CassetteCatalog_UnusableFlag_NamesTheInk()
+    {
+        // 2026-08-19 実測: シアンのリボンが終端まで来た機体が 0x83 を返し、
+        // 利用者が現物でシアン切れを確認した。0x83 = 0x80 | 0x03(紙用シアン)。
+        // どのインクかは名指しできるが、理由は断定しない(§11.4 の教訓)。
+        string name = CassetteCatalog.GetName(0x83);
+        Assert.Contains("シアン", name);
+        Assert.Contains("使用不可", name);
+        Assert.DoesNotContain("不明なカセット", name);
+    }
+
+    [Fact]
+    public void CassetteCatalog_UnusableFlag_DoesNotAffectKnownBarcodes()
+    {
+        // 上位ビットが立っていない既知の値は、今までどおり素の名前を返す。
+        Assert.Equal("紙用シアン", CassetteCatalog.GetName(0x03));
+        Assert.DoesNotContain("使用不可", CassetteCatalog.GetName(0x03));
     }
 
     [Fact]
