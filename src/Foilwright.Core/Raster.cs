@@ -324,10 +324,26 @@ public static class Raster
     /// ppmtomd は行ごとに ht_init を 1 回、列ごとに ht_inc を 1 回呼び、
     /// ht_inc の直前に ht_elt(行列参照)を読む(ppmtomd.c:2851-2864,
     /// 3069-3092)。この関数はその「インクリメント前」の位置列をそのまま
-    /// 返す。</summary>
-    private static (int Row, int Col)[] HtRowPositions(int x, int y, int z, bool yneg, int row, int cellSize, int width)
+    /// 返す。
+    ///
+    /// rowBase と subrow を別々に受け取る理由: ppmtomd の ht_init は関数では
+    /// なく C マクロ(ppmtomd.c:555)で、常に
+    /// ht_init(&amp;kht, compM, row*row_factor+subrow) の形で呼ばれる
+    /// (ppmtomd.c:2859-2862)。マクロ引数は評価前に「そのままの文字列」で
+    /// 置換されるため、マクロ本体の (h)-&gt;comps[c].yneg ? 10000 - row : row は
+    /// この呼び出しに対して 10000 - row*row_factor+subrow : row*row_factor+subrow
+    /// に展開される。C の - と + は同じ優先順位で左から右に結合するため、
+    /// これは (10000 - row*row_factor) + subrow と評価される —
+    /// 「意図どおり」の 10000 - (row*row_factor+subrow) ではない。
+    /// これは ppmtomd 自体に潜在するバグ(600dpi では subrow が常に 0 なので
+    /// 顕在化しない)だが、Foilwright は 1200dpi(subrow が 1 になりうる)で
+    /// これをバイト単位で再現しなければならない(docs/DOMAIN.md §11.6.1 /
+    /// §11.6)。数学的に「正しい」形へ書き直さないこと —
+    /// 一度それを試して golden g20 に一致しないことを確認済み。</summary>
+    private static (int Row, int Col)[] HtRowPositions(int x, int y, int z, bool yneg, int rowBase, int subrow, int cellSize, int width)
     {
         var positions = new (int Row, int Col)[width];
+        int row = rowBase + subrow;
 
         if (y == 0)
         {
@@ -341,8 +357,11 @@ public static class Raster
             return positions;
         }
 
-        // ht_init (ppmtomd.c:557-576)
-        int rowEff = yneg ? 10000 - row : row;
+        // ht_init (ppmtomd.c:557-576)。rowEff は上記のマクロ展開バグを再現する:
+        // yneg のときは (10000 - rowBase) + subrow であって、
+        // 10000 - (rowBase + subrow) ではない。両者は subrow != 0 のとき
+        // (= 1200dpi・row_factor==2 のときのみ)差が出る。
+        int rowEff = yneg ? (10000 - rowBase + subrow) : row;
         int s1xf = 2 * rowEff * (x - z);
         int s1xi = CDiv(s1xf - y + 1, 2 * y);
         int s1yi = rowEff;
@@ -498,7 +517,7 @@ public static class Raster
                     for (int subrow = 0; subrow < rowFactor; subrow++)
                     {
                         subrowPositions[subrow] = HtRowPositions(
-                            screen.X, screen.Y, screen.Z, screen.YNeg, y * rowFactor + subrow, cellSize, width);
+                            screen.X, screen.Y, screen.Z, screen.YNeg, y * rowFactor, subrow, cellSize, width);
                     }
                     rowHalftone[channel] = (subrowPositions, matrix, cellSize);
                 }
@@ -740,7 +759,7 @@ public static class Raster
                     for (int subrow = 0; subrow < rowFactor; subrow++)
                     {
                         subrowPositions[subrow] = HtRowPositions(
-                            screen.X, screen.Y, screen.Z, screen.YNeg, y * rowFactor + subrow, cellSize, width);
+                            screen.X, screen.Y, screen.Z, screen.YNeg, y * rowFactor, subrow, cellSize, width);
                     }
                     rowHalftone[channel] = (subrowPositions, matrix, cellSize);
                 }

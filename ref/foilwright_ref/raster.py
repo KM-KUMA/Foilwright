@@ -50,14 +50,12 @@ Only maxval == 255 (8 bits per sample) input is supported; this is what
 every golden fixture uses and is what ppmtomd normalises everything to
 internally (ppmtomd.c:2063 "let's change everything to 255").
 
-UNCONFIRMED: at 1200dpi with a halftone matrix in play, ppmtomd dithers
-two "subrows" per source row and combines them (see the ``row_factor``
-comments in ``to_planes``/``to_planes_auto`` below). The combination rule
-implemented here (AND) is the best approximation found so far but does
-not reproduce golden g20 byte-for-byte; see ``test_g20_photo_coarse_
-md5000_1200``'s ``xfail`` reason in ref/tests/test_golden.py for the
-measured evidence. This is unrelated to colour_correction -- g18/g19
-(600dpi Photo) and g4 (1200dpi, no halftone) are all byte-exact.
+At 1200dpi with a halftone matrix in play, ppmtomd dithers two "subrows"
+per source row and combines them with AND (see the ``row_factor``
+comments in ``to_planes``/``to_planes_auto`` below). Getting this
+byte-exact (golden g20) additionally requires reproducing a ppmtomd
+macro-expansion bug in how the two subrows' screen phase is computed;
+see ``_ht_row_positions``'s docstring and docs/DOMAIN.md §11.6.1.
 """
 
 from __future__ import annotations
@@ -414,7 +412,14 @@ def _cdiv(a: int, b: int) -> int:
 
 
 def _ht_row_positions(
-    x: int, y: int, z: int, yneg: bool, row: int, cellsize: int, width: int
+    x: int,
+    y: int,
+    z: int,
+    yneg: bool,
+    row_base: int,
+    subrow: int,
+    cellsize: int,
+    width: int,
 ) -> list[tuple[int, int]]:
     """Reproduce ppmtomd's ht_init/ht_inc macros for one image row.
 
@@ -428,6 +433,23 @@ def _ht_row_positions(
     (ppmtomd.c:2851-2864, 3069-3092); this returns that same
     before-increment sequence of positions directly.
 
+    ``row_base`` and ``subrow`` are passed *separately* rather than as a
+    single pre-added ``row`` value because ``ht_init`` is a C **macro**,
+    not a function (ppmtomd.c:555), and it is always invoked as
+    ``ht_init(&kht, compM, row*row_factor+subrow)`` (ppmtomd.c:2859-2862).
+    Macro arguments are substituted *textually* before evaluation, so the
+    macro body's ``(h)->comps[c].yneg ? 10000 - row : row`` becomes, for
+    this call site, ``10000 - row*row_factor+subrow : row*row_factor+subrow``.
+    C's ``-`` and ``+`` share precedence and associate left-to-right, so
+    that evaluates as ``(10000 - row*row_factor) + subrow`` -- NOT the
+    "intended" ``10000 - (row*row_factor+subrow)``. This is a latent bug
+    in ppmtomd itself (it only ever calls the macro with ``subrow == 0``
+    at 600dpi, where the two forms coincide), but Foilwright must
+    reproduce it byte-for-byte at 1200dpi where ``subrow`` can be 1
+    (docs/DOMAIN.md §11.6.1 / §11.6). Do NOT "fix" this to the
+    mathematically-intended form -- that was tried and does not match
+    ppmtomd's measured output (golden g20).
+
     Every value here is a plain Python int; C's truncating ``/`` is
     replicated via ``_cdiv``, while C's ``%=`` followed by a manual
     "+= cellsize if negative" correction is mathematically identical to
@@ -436,6 +458,7 @@ def _ht_row_positions(
     always suffices) -- so the final normalisations below just use ``%``.
     """
     positions: list[tuple[int, int]] = []
+    row = row_base + subrow
 
     if y == 0:
         # ppmtomd.c:556 -- no rotation: hrow is fixed for the row, hcol
@@ -443,8 +466,11 @@ def _ht_row_positions(
         hrow = row % cellsize
         return [(hrow, col % cellsize) for col in range(width)]
 
-    # ht_init (ppmtomd.c:557-576)
-    row_eff = (10000 - row) if yneg else row
+    # ht_init (ppmtomd.c:557-576). row_eff reproduces the macro-expansion
+    # bug documented above: for yneg it is (10000 - row_base) + subrow,
+    # not 10000 - (row_base + subrow). They differ whenever subrow != 0,
+    # i.e. only at 1200dpi (row_factor == 2). See the docstring above.
+    row_eff = (10000 - row_base + subrow) if yneg else row
     s1xf = 2 * row_eff * (x - z)
     s1xi = _cdiv(s1xf - y + 1, 2 * y)
     s1yi = row_eff
@@ -618,14 +644,9 @@ def to_planes(
     # collapses to requiring *both* subrows to hit. This has no effect on
     # ditherNone (mode is None; both subrows produce the same flat >=128
     # decision for a fixed value) so it is only applied when a halftone
-    # matrix is in play.
-    #
-    # UNCONFIRMED: the AND combination derived above does not reproduce
-    # golden g20 byte-for-byte (nor does OR -- see test_g20's xfail reason
-    # in ref/tests/test_golden.py for the measured per-column evidence).
-    # This is the best-known approximation, not a validated implementation
-    # of ppmtomd's actual 1200dpi+halftone subrow rule; do not treat this
-    # branch as verified.
+    # matrix is in play. The screen phase used for each subrow reproduces
+    # a ppmtomd macro-expansion quirk -- see _ht_row_positions's docstring
+    # and docs/DOMAIN.md §11.6.1 (confirmed byte-exact via golden g20).
     row_factor = 2 if (mode is not None and resolution == 1200) else 1
 
     gamma_table = colconv = None
@@ -650,7 +671,7 @@ def to_planes(
                 row_halftone[channel] = (
                     [
                         _ht_row_positions(
-                            sx, sy, sz, syneg, y * row_factor + subrow, cellsize, width
+                            sx, sy, sz, syneg, y * row_factor, subrow, cellsize, width
                         )
                         for subrow in range(row_factor)
                     ],
@@ -894,8 +915,8 @@ def to_planes_auto(
     channels_needed = set(cmyk_map.keys()) if mode is not None else ()
     # See to_planes's identical comment (ppmtomd.c:2585-2636,3130-3190) for
     # why this only applies at 1200dpi with a halftone matrix in play, and
-    # for why this AND combination is UNCONFIRMED (does not reproduce
-    # golden g20 byte-for-byte; see test_g20's xfail reason).
+    # for the ppmtomd macro-expansion quirk _ht_row_positions reproduces
+    # for the subrow phase (docs/DOMAIN.md §11.6.1; confirmed via g20).
     row_factor = 2 if (mode is not None and resolution == 1200) else 1
 
     gamma_table = colconv = None
@@ -924,7 +945,7 @@ def to_planes_auto(
                 row_halftone[channel] = (
                     [
                         _ht_row_positions(
-                            sx, sy, sz, syneg, y * row_factor + subrow, cellsize, width
+                            sx, sy, sz, syneg, y * row_factor, subrow, cellsize, width
                         )
                         for subrow in range(row_factor)
                     ],

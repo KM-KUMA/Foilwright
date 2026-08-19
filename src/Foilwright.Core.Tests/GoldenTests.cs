@@ -343,12 +343,29 @@ public class GoldenTests
     }
 
     [Fact]
+    public void G20PhotoCoarseMd5000_1200()
+    {
+        // -colourcorrection Photo, -dither CoarseHalftone, 1200dpi (D-029)。
+        // g18 の 1200dpi 版。1200dpi + Photo + CoarseHalftone は、
+        // ht_init マクロ展開バグ(docs/DOMAIN.md §11.6.1、Raster.cs の
+        // HtRowPositions のコメント参照)が subrow==1 のときだけ効く
+        // 組み合わせで、g23/g24(Plain)では消えていたずれがここで
+        // 顕在化する(Plain は下色除去でドットが少なく、AND 合成後に
+        // 残らないため差が出ない)。ref/ 側は元 xfail(理由は同ファイルの
+        // test_g20_photo_coarse_md5000_1200 の docstring 参照)。
+        var actual = Render(
+            "c6_fullcolour_240x120.ppm", 1200, "md-5000", DefaultInks, DefaultPalette,
+            halftone: "coarse_halftone", colourCorrection: "photo");
+        AssertGoldenMatch(actual, "g20_c6_photo_coarse_md5000_1200.bin");
+    }
+
+    [Fact]
     public void G23PlainCoarseHalftoneMd5000_1200()
     {
         // -colourcorrection Plain, -dither CoarseHalftone, 1200dpi。
         // g14 の 1200dpi 版。1200dpi ではサブロー2本を AND で合成する
-        // (ppmtomd.c:3174-3187。詳細は ref/tests/test_golden.py の
-        // g20 xfail 理由を参照)。
+        // (ppmtomd.c:3174-3187。詳細は G20PhotoCoarseMd5000_1200 の
+        // コメントおよび docs/DOMAIN.md §11.6.1 を参照)。
         var actual = Render(
             "c6_fullcolour_240x120.ppm", 1200, "md-5000", DefaultInks, DefaultPalette,
             halftone: "coarse_halftone", colourCorrection: "plain");
