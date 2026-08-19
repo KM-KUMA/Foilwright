@@ -44,14 +44,22 @@ Foilwright は、任意のアプリケーションの印刷ダイアログから
 
 ## ライセンス
 
-GPL-3.0。
+GPL-3.0-or-later。
 
-以下は同梱せず、別途入手が必要:
+### 同梱している第三者の成果物
 
-- mfilemon(GPL-3.0・ポートモニタ)
-- Ghostscript(AGPL-3.0)
-- Microsoft PostScript Printer Driver V3(Windows 同梱品)
-- ppmtomd(GPL・golden バイト列の生成に使用)
+- **`colour/photo_colcor.bin`** — ppmtomd 1.6(J. C. Bradfield 作、GPL-2.0-or-later)の
+  `photocolcor.c` に含まれる色補正テーブル。純正ドライバに近い色を出すために使う。
+  出典と取り込みの根拠は [colour/README.md](colour/README.md) と DECISIONS の D-029 に記載
+
+- **`tests/golden/*.bin`** — ppmtomd 1.6 の出力。実装の正しさをバイト単位で検証する基準。
+  詳細は [tests/golden/README.md](tests/golden/README.md)
+
+### 同梱せず、別途入手が必要
+
+- **Ghostscript**(AGPL-3.0)— PostScript のラスタライズに使う。実行時に必要
+- **Microsoft PostScript Printer Driver V3**(Windows 同梱品)— 仮想プリンタの土台
+- **ppmtomd**(GPL-2.0-or-later)— golden の再生成に使う。利用するだけなら不要
 
 ## 作者
 
