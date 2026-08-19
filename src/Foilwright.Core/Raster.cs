@@ -211,6 +211,17 @@ public static class Raster
     private static readonly int[] DithMatLine12 = BuildDith(6, DithMat6Line, 2, BuildDithFour);
     private static readonly int[] DithMatDot12 = BuildDith(6, DithMat6Dot, 2, BuildDithFour);
 
+    // ppmtomd.c:2726-2733 -- 1200dpi("photo-realistic" モード。原文コメント曰く
+    // "still very much in beta")では、dithmat10 を build_dith で展開した
+    // (ppmtomd.c:2729: build_dith(10, dithmat10, 2, four))この 20x20 行列を
+    // CMYK 4 成分すべてで共有する。これは 600dpi の Halftone(12x12、
+    // チャンネルごとの line/dot 行列)と CoarseHalftone(10x10 dithmat10、
+    // 展開なしで使用)の選択を無条件に上書きする -- ditherHT と ditherHTcoarse
+    // の区別は 1200dpi ではスクリーン角(kht.comps[*].x/y/z、解像度に関係なく
+    // ppmtomd.c:1986-1991 のまま)にのみ残り、ディザ行列には残らない
+    // (ResolveHalftoneMode 参照)。
+    private static readonly int[] DithMatPhotorealistic20 = BuildDith(10, DithMat10, 2, BuildDithFour);
+
     private readonly record struct ScreenAngle(int X, int Y, int Z, bool YNeg);
 
     // ppmtomd.c:1978-1992 -- CMYK 各成分のデフォルトハーフトーンスクリーン角
@@ -240,8 +251,8 @@ public static class Raster
 
     // ハーフトーンモードごとの、CMYK 各チャンネルの (セルサイズ, ディザ行列) と
     // 使用するスクリーン角テーブル(ppmtomd.c:2761-2779 の「通常 600dpi
-    // モード」分岐 -- 本プロジェクトは 1200dpi の photo-realistic / vphoto
-    // 経路を駆動しないので、それらの分岐は再現しない)。
+    // モード」分岐)。1200dpi での上書き(DithMatPhotorealistic20 コメント参照)は
+    // ResolveHalftoneMode が別途行う。
     private static readonly Dictionary<string, HalftoneMode> HalftoneModes = new()
     {
         ["halftone"] = new HalftoneMode
@@ -267,6 +278,36 @@ public static class Raster
             Screens = ScreenCoarseHalftone,
         },
     };
+
+    /// <summary>halftone と resolution から実際に使うハーフトーンモードを解決する
+    /// (ppmtomd.c:2721-2779。ref/raster.py の _halftone_mode と同一)。
+    /// halftone == "none" なら null。resolution == 1200 のときは、
+    /// DithMatPhotorealistic20 のコメントにある通り CMYK 4 成分すべてが
+    /// (20, DithMatPhotorealistic20) へ無条件に上書きされる -- halftone /
+    /// coarse_halftone のどちらでも同じ行列になる。スクリーン角テーブルだけは
+    /// HalftoneModes のまま(解像度で変わらない)。</summary>
+    private static HalftoneMode? ResolveHalftoneMode(string halftone, int resolution)
+    {
+        if (!HalftoneModes.TryGetValue(halftone, out var baseMode))
+        {
+            return null;
+        }
+        if (resolution != 1200)
+        {
+            return baseMode;
+        }
+        return new HalftoneMode
+        {
+            Channels = new Dictionary<string, (int, int[])>
+            {
+                ["C"] = (20, DithMatPhotorealistic20),
+                ["M"] = (20, DithMatPhotorealistic20),
+                ["Y"] = (20, DithMatPhotorealistic20),
+                ["K"] = (20, DithMatPhotorealistic20),
+            },
+            Screens = baseMode.Screens,
+        };
+    }
 
     /// <summary>C 言語式の整数除算(0 方向への切り捨て)。b は常に正
     /// (呼び出し元は常に 2*y または 2*z(y, z > 0)しか渡さない)。</summary>
@@ -415,8 +456,22 @@ public static class Raster
         int rowBytes = (width + 7) / 8;
         var planes = palette.Keys.ToDictionary(name => name, _ => new byte[rowBytes * height]);
 
-        HalftoneMode? mode = HalftoneModes.GetValueOrDefault(halftone);
+        HalftoneMode? mode = ResolveHalftoneMode(halftone, resolution);
         var channelsNeeded = mode is not null ? palette.Values.Distinct().ToArray() : Array.Empty<string>();
+
+        // ppmtomd.c:2585-2636,3130-3190 -- 1200dpi("highres")では 1 出力行あたり
+        // row_factor=2 本のサブローを別々にディザ判定し(スクリーンの位相は
+        // 絶対サブロー番号 y*row_factor+subrow で初期化する。ppmtomd.c:2854-2862
+        // の ht_init(&kht, comp, row*row_factor+subrow) に対応)、その 2 つの
+        // 0/maxval 判定結果を合成する。合成方法は ppmtomd.c:3174-3187 の
+        // 「サブローの値(0 か maxval)を足して row_factor*col_factor で整数除算し、
+        // (maxval+1)/2 で再閾値化する」を素直に読むと、(255+0)/2 = 127 < 128 に
+        // なるため、結果として両方のサブローが立ったときだけ 1 になる(AND)。
+        // ハーフトーン無し(mode is null)では影響しない -- 固定値に対しては
+        // どちらのサブローも同じ >=128 判定になるため。col_factor は常に 1
+        // (-inresolution 600 を明示したときのみ意味を持ち、本プロジェクトの
+        // golden では効かない)。
+        int rowFactor = (mode is not null && resolution == 1200) ? 2 : 1;
 
         int[]? gammaTable = null;
         byte[]? colConv = null;
@@ -431,7 +486,7 @@ public static class Raster
             int rowBase = y * width * 3;
             int planeRowBase = y * rowBytes;
 
-            Dictionary<string, ((int Row, int Col)[] Positions, int[] Matrix, int CellSize)>? rowHalftone = null;
+            Dictionary<string, ((int Row, int Col)[][] SubrowPositions, int[] Matrix, int CellSize)>? rowHalftone = null;
             if (mode is not null)
             {
                 rowHalftone = new();
@@ -439,9 +494,13 @@ public static class Raster
                 {
                     var (cellSize, matrix) = mode.Channels[channel];
                     var screen = mode.Screens[channel];
-                    rowHalftone[channel] = (
-                        HtRowPositions(screen.X, screen.Y, screen.Z, screen.YNeg, y, cellSize, width),
-                        matrix, cellSize);
+                    var subrowPositions = new (int Row, int Col)[rowFactor][];
+                    for (int subrow = 0; subrow < rowFactor; subrow++)
+                    {
+                        subrowPositions[subrow] = HtRowPositions(
+                            screen.X, screen.Y, screen.Z, screen.YNeg, y * rowFactor + subrow, cellSize, width);
+                    }
+                    rowHalftone[channel] = (subrowPositions, matrix, cellSize);
                 }
             }
 
@@ -465,10 +524,18 @@ public static class Raster
                     }
                     else
                     {
-                        var (positions, matrix, cellSize) = rowHalftone![channel];
-                        var (hrow, hcol) = positions[x];
-                        int threshold = matrix[cellSize * hrow + hcol];
-                        hit = value > threshold;
+                        var (subrowPositions, matrix, cellSize) = rowHalftone![channel];
+                        hit = true;
+                        foreach (var positions in subrowPositions)
+                        {
+                            var (hrow, hcol) = positions[x];
+                            int threshold = matrix[cellSize * hrow + hcol];
+                            if (!(value > threshold))
+                            {
+                                hit = false;
+                                break;
+                            }
+                        }
                     }
                     if (hit)
                     {
@@ -640,8 +707,13 @@ public static class Raster
         var spotPlanes = spotInks.ToDictionary(ink => ink.Name, _ => new byte[rowBytes * height]);
         var cmykPlanes = cmykMap.Values.Distinct().ToDictionary(name => name, _ => new byte[rowBytes * height]);
 
-        HalftoneMode? mode = HalftoneModes.GetValueOrDefault(halftone);
+        HalftoneMode? mode = ResolveHalftoneMode(halftone, resolution);
         var channelsNeeded = mode is not null ? cmykMap.Keys.ToArray() : Array.Empty<string>();
+
+        // ToPlanes の同一コメント(ppmtomd.c:2585-2636,3130-3190)を参照。
+        // 1200dpi + ハーフトーンのときだけ row_factor=2 になり、AND 合成
+        // (整数除算 (255+0)/2=127<128 による再閾値化)になる理由も同じ。
+        int rowFactor = (mode is not null && resolution == 1200) ? 2 : 1;
 
         int[]? gammaTable = null;
         byte[]? colConv = null;
@@ -656,7 +728,7 @@ public static class Raster
             int rowBase = y * width * 3;
             int planeRowBase = y * rowBytes;
 
-            Dictionary<string, ((int Row, int Col)[] Positions, int[] Matrix, int CellSize)>? rowHalftone = null;
+            Dictionary<string, ((int Row, int Col)[][] SubrowPositions, int[] Matrix, int CellSize)>? rowHalftone = null;
             if (mode is not null)
             {
                 rowHalftone = new();
@@ -664,9 +736,13 @@ public static class Raster
                 {
                     var (cellSize, matrix) = mode.Channels[channel];
                     var screen = mode.Screens[channel];
-                    rowHalftone[channel] = (
-                        HtRowPositions(screen.X, screen.Y, screen.Z, screen.YNeg, y, cellSize, width),
-                        matrix, cellSize);
+                    var subrowPositions = new (int Row, int Col)[rowFactor][];
+                    for (int subrow = 0; subrow < rowFactor; subrow++)
+                    {
+                        subrowPositions[subrow] = HtRowPositions(
+                            screen.X, screen.Y, screen.Z, screen.YNeg, y * rowFactor + subrow, cellSize, width);
+                    }
+                    rowHalftone[channel] = (subrowPositions, matrix, cellSize);
                 }
             }
 
@@ -727,10 +803,18 @@ public static class Raster
                     }
                     else
                     {
-                        var (positions, matrix, cellSize) = rowHalftone![channel];
-                        var (hrow, hcol) = positions[x];
-                        int threshold = matrix[cellSize * hrow + hcol];
-                        hit = value > threshold;
+                        var (subrowPositions, matrix, cellSize) = rowHalftone![channel];
+                        hit = true;
+                        foreach (var positions in subrowPositions)
+                        {
+                            var (hrow, hcol) = positions[x];
+                            int threshold = matrix[cellSize * hrow + hcol];
+                            if (!(value > threshold))
+                            {
+                                hit = false;
+                                break;
+                            }
+                        }
                     }
                     if (hit)
                     {

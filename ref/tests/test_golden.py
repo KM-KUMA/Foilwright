@@ -440,30 +440,35 @@ def test_g19_photo_halftone_md5000_600():
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "1200dpi + halftone subrow combination rule is unconfirmed, not a "
-        "Photo colour-correction defect (g18/g19 at 600dpi are byte-exact, "
-        "so the gamma table / expand_lut / LUT lookup are all correct; g4 "
-        "at 1200dpi with halftone=none also passes, so the break is "
-        "specific to 1200dpi combined with dithering). ppmtomd.c dithers "
-        "row_factor=2 subrows per source row and averages their 0/maxval "
-        "decisions, re-thresholding at maxval/2 -- mathematically this "
-        "reduces to AND, but neither AND nor OR matches the golden byte "
-        "for byte: measured on magenta row0 (c6_fullcolour_240x120.ppm, "
-        "constant pixel value across the row), AND fails at col 9 and "
-        "col 13 (both subrows predict hit=1 but golden expects 0), while "
-        "OR only fixes those but then wrongly turns on col 1-4/15/16 "
-        "(golden expects 1 there but subrow1 alone would predict 0, so "
-        "OR overshoots elsewhere -- neither rule is globally consistent). "
-        "Using subrow0 alone (ignoring subrow1 entirely) matches 18/20 "
-        "columns on this row, but forcing row_factor=1 unconditionally "
-        "was tried and made the full g20 comparison worse elsewhere "
-        "(mismatch moved from offset 2953/26 bytes to offset 63 with a "
-        "different total length), so it breaks other rows. No further "
-        "hypothesis has been tested; investigation was stopped after two "
-        "failed attempts (OR combination, and row_factor=1) per the "
-        "escalation rule, and the coordinator ruled 1200dpi+dither subrow "
-        "combination out of scope for the Photo colour-correction task "
-        "(D-029)."
+        "Root cause narrowed but not yet identified (2026-08-19 follow-up "
+        "investigation). What is now confirmed: "
+        "(1) the subrow combination rule for 1200dpi dithering is AND, "
+        "settled by reading ppmtomd.c:3174-3187 directly -- the two "
+        "subrow decisions are summed and divided by "
+        "row_factor*col_factor, then re-thresholded at "
+        "(maxval+1)/2; for maxval=255 a 255/0 split gives "
+        "(255+0)/2 = 127 < 128, which resolves to 0, i.e. AND. "
+        "(2) the subrow implementation itself is correct -- g23/g24 "
+        "(1200dpi + Plain colour-correction, CoarseHalftone vs Halftone) "
+        "are byte-exact against golden, and note g23 and g24 are also "
+        "byte-identical to *each other* (the AND-combine collapses the "
+        "dither-pattern difference on this fixture at 1200dpi). "
+        "(3) Photo colour-correction at 600dpi is correct (g18/g19 are "
+        "byte-exact). (4) the negative-gamma branch (-0.9) is correct -- "
+        "output built with -gamma -0.9 explicitly at 600dpi (14,759 "
+        "bytes) is byte-exact against the golden produced without that "
+        "flag, confirming build_gamma_table's negative-gamma formula. "
+        "(5) the negative gamma is confirmed to actually be selected at "
+        "1200dpi in the real run (not silently falling back to the "
+        "positive-gamma branch). Despite every individual mechanism "
+        "checking out, the Photo + 1200dpi combination alone still does "
+        "not match: the mismatch is confined to the first magenta raster "
+        "row (golden offset 2953 onward; cyan is byte-exact throughout), "
+        "expected 11,412 bytes vs actual 11,386 bytes. The remaining "
+        "cause is an interaction between two already-verified-correct "
+        "mechanisms that has not yet been isolated -- not an "
+        "unconfirmed subrow rule, and not a defect in Photo "
+        "colour-correction on its own (see g18/g19)."
     ),
 )
 def test_g20_photo_coarse_md5000_1200():
@@ -473,10 +478,11 @@ def test_g20_photo_coarse_md5000_1200():
     exercises colour.default_gamma's resolution branch and
     build_gamma_table's negative-gamma formula.
 
-    XFAIL (strict): the 1200dpi + halftone subrow combination rule is not
-    yet confirmed correct -- see the xfail reason above. This is a
-    pre-existing, unconfirmed 1200dpi-dither-only mechanism, not a defect
-    in this fixture's Photo colour correction (see g18/g19)."""
+    XFAIL (strict): still unresolved -- see the xfail reason above for
+    the 2026-08-19 narrowing (subrow AND rule confirmed correct via
+    g23/g24, gamma confirmed correct via g18/g19 and a direct -gamma -0.9
+    comparison; the remaining mismatch is an unidentified interaction
+    specific to Photo + 1200dpi)."""
     job = _job(1200, "md-5000", _DEFAULT_INKS)
     actual = _render(
         CASES_DIR / "c6_fullcolour_240x120.ppm",
@@ -486,6 +492,64 @@ def test_g20_photo_coarse_md5000_1200():
         colour_correction="photo",
     )
     _assert_golden_match(actual, GOLDEN_DIR / "g20_c6_photo_coarse_md5000_1200.bin")
+
+
+def test_g23_plain_coarsehalftone_md5000_1200():
+    """-colourcorrection Plain, -dither CoarseHalftone, 1200dpi.
+    Companion to g14 (same options at 600dpi) but at 1200dpi, where
+    ppmtomd dithers two subrows per source row and combines them with
+    AND (ppmtomd.c:3174-3187; see the g20 xfail reason for the derivation).
+    Byte-exact against golden, confirming the subrow implementation is
+    correct at 1200dpi for the Plain colour-correction path."""
+    job = _job(1200, "md-5000", _DEFAULT_INKS)
+    actual = _render(
+        CASES_DIR / "c6_fullcolour_240x120.ppm",
+        job,
+        _DEFAULT_PALETTE,
+        halftone="coarse_halftone",
+        colour_correction="plain",
+    )
+    _assert_golden_match(actual, GOLDEN_DIR / "g23_c6_plain_coarse_md5000_1200.bin")
+
+
+def test_g24_plain_halftone_md5000_1200():
+    """-colourcorrection Plain, -dither Halftone, 1200dpi.
+    Companion to g13 (same options at 600dpi) but at 1200dpi."""
+    job = _job(1200, "md-5000", _DEFAULT_INKS)
+    actual = _render(
+        CASES_DIR / "c6_fullcolour_240x120.ppm",
+        job,
+        _DEFAULT_PALETTE,
+        halftone="halftone",
+        colour_correction="plain",
+    )
+    _assert_golden_match(actual, GOLDEN_DIR / "g24_c6_plain_halftone_md5000_1200.bin")
+
+
+def test_g23_and_g24_are_byte_identical():
+    """At 1200dpi the two subrows are combined with AND (see g20 xfail
+    reason), which collapses the CoarseHalftone/Halftone dither-pattern
+    difference on this fixture: g23 and g24 render to the exact same
+    bytes even though their dither options differ. This test pins that
+    fact down directly so a change that breaks only one dither path
+    while leaving the golden-file comparison "coincidentally" passing
+    would still be caught."""
+    job = _job(1200, "md-5000", _DEFAULT_INKS)
+    actual_coarse = _render(
+        CASES_DIR / "c6_fullcolour_240x120.ppm",
+        job,
+        _DEFAULT_PALETTE,
+        halftone="coarse_halftone",
+        colour_correction="plain",
+    )
+    actual_halftone = _render(
+        CASES_DIR / "c6_fullcolour_240x120.ppm",
+        job,
+        _DEFAULT_PALETTE,
+        halftone="halftone",
+        colour_correction="plain",
+    )
+    assert actual_coarse == actual_halftone
 
 
 def test_g16_blackraster_md5000_600():

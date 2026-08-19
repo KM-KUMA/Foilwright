@@ -343,6 +343,46 @@ public class GoldenTests
     }
 
     [Fact]
+    public void G23PlainCoarseHalftoneMd5000_1200()
+    {
+        // -colourcorrection Plain, -dither CoarseHalftone, 1200dpi。
+        // g14 の 1200dpi 版。1200dpi ではサブロー2本を AND で合成する
+        // (ppmtomd.c:3174-3187。詳細は ref/tests/test_golden.py の
+        // g20 xfail 理由を参照)。
+        var actual = Render(
+            "c6_fullcolour_240x120.ppm", 1200, "md-5000", DefaultInks, DefaultPalette,
+            halftone: "coarse_halftone", colourCorrection: "plain");
+        AssertGoldenMatch(actual, "g23_c6_plain_coarse_md5000_1200.bin");
+    }
+
+    [Fact]
+    public void G24PlainHalftoneMd5000_1200()
+    {
+        // -colourcorrection Plain, -dither Halftone, 1200dpi。g13 の
+        // 1200dpi 版。
+        var actual = Render(
+            "c6_fullcolour_240x120.ppm", 1200, "md-5000", DefaultInks, DefaultPalette,
+            halftone: "halftone", colourCorrection: "plain");
+        AssertGoldenMatch(actual, "g24_c6_plain_halftone_md5000_1200.bin");
+    }
+
+    [Fact]
+    public void G23AndG24AreByteIdentical()
+    {
+        // 1200dpi ではサブロー合成が AND のため、この画像では
+        // CoarseHalftone / Halftone の差が消える。g23/g24 golden が
+        // 同一であることを直接表明しておく(片方だけ壊れても golden
+        // 比較だけでは見逃しうるため)。
+        var coarse = Render(
+            "c6_fullcolour_240x120.ppm", 1200, "md-5000", DefaultInks, DefaultPalette,
+            halftone: "coarse_halftone", colourCorrection: "plain");
+        var halftone = Render(
+            "c6_fullcolour_240x120.ppm", 1200, "md-5000", DefaultInks, DefaultPalette,
+            halftone: "halftone", colourCorrection: "plain");
+        Assert.Equal(coarse, halftone);
+    }
+
+    [Fact]
     public void G7Metallic4Md5000_600()
     {
         // メタリック 4 色はすべて order が同値。パス順はインク一覧そのものの

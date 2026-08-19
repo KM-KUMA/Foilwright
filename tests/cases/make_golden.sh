@@ -75,6 +75,14 @@ gen g21_c1_white_twice_md5000_600.bin -model MD-5000 -resolution 600 \
 gen g22_c1_white_thrice_md5000_600.bin -model MD-5000 -resolution 600 \
     -colourcorrection None -colours C=White,M=White,Y=White tests/cases/c1_black_120x120.ppm
 
+# 1200dpi + ディザ + Plain。サブロー2本を AND で合成する経路の
+# byte-exact 検証(g20 xfail 理由の切り分けで採取)。この画像では
+# g23/g24 は中身が同一になる(AND 合成が dither の差を消すため)
+gen g23_c6_plain_coarse_md5000_1200.bin -model MD-5000 -resolution 1200 \
+    -colourcorrection Plain -dither CoarseHalftone tests/cases/c6_fullcolour_240x120.ppm
+gen g24_c6_plain_halftone_md5000_1200.bin -model MD-5000 -resolution 1200 \
+    -colourcorrection Plain -dither Halftone tests/cases/c6_fullcolour_240x120.ppm
+
 if cmp -s tests/golden/g1_c1_black_md5000_600.bin tests/golden/g5_c1_black_md5500_600.bin; then
   echo "MODEL_DIFF_ZERO (MD-5000 == MD-5500)"
 else
