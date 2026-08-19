@@ -39,6 +39,38 @@ public sealed class TraySettings
     // 裏面印刷でカール矯正を止めたい用途向け。既定は false(矯正する)。
     public bool NoCurlCorrection { get; set; }
 
+    /// <summary>D-030: 「そのジョブで使うインク」の許可リスト(ink 名の集合)。
+    /// D-024 の下層(既定値)であり、プレビューのチェック列(D-028 の UI を
+    /// 一般化したもの)がジョブごとの上書きを持つ。
+    ///
+    /// null と空集合を区別する: null は「利用者が一度も触っていない(または
+    /// 旧 settings.json に項目が無い)」を表し、<see cref="ResolveUsedInks"/> が
+    /// パレットから既定(メタリック無効・それ以外有効)を都度導出する。
+    /// 空集合は「利用者が明示的に全インクを無効にした」状態であり、そのまま
+    /// 尊重する(既定へフォールバックしない)。</summary>
+    public HashSet<string>? UsedInks { get; set; }
+
+    /// <summary>メタリック系インクかどうかをデータから判定する(DOMAIN §4.5:
+    /// インク名をコードに列挙しない)。palette/default.yaml のスキーマでは、
+    /// メタリック 4 色だけが「magic_rgb を持ち、かつプロセスインクでも
+    /// (channel が null)、白版の下地にもならない(auto_undercoat が false)」
+    /// という組み合わせになる — 白は auto_undercoat=true、黒とプロセス
+    /// インクは channel が非 null で区別できるため、名前を挙げずに導ける。</summary>
+    public static bool IsMetallic(InkDefinition ink) =>
+        ink.MagicRgb is not null && ink.Channel is null && !ink.AutoUndercoat;
+
+    /// <summary>UsedInks が null のときの既定値(D-030: メタリックだけ無効)。
+    /// パレット全体から動的に導出するため、パレットにインクが増減しても
+    /// コード変更なしで追従する。</summary>
+    public static HashSet<string> DefaultUsedInks(IReadOnlyList<InkDefinition> palette) =>
+        palette.Where(ink => !IsMetallic(ink)).Select(ink => ink.Name).ToHashSet();
+
+    /// <summary>このジョブで実際に使えるインク名の集合を解決する。UsedInks が
+    /// 設定済みならそれをそのまま使い(空集合も含めて尊重する)、null なら
+    /// パレットから既定値を導出する。</summary>
+    public HashSet<string> ResolveUsedInks(IReadOnlyList<InkDefinition> palette) =>
+        UsedInks is { } used ? new HashSet<string>(used) : DefaultUsedInks(palette);
+
     private static string SettingsPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "Foilwright",

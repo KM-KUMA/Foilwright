@@ -46,10 +46,17 @@ public sealed class PreviewForm : Form
     private PreviewResult? _current;
     private bool _busy;
 
-    /// <summary>D-028: プレビューでチェックを外したインクの名前(name)。
-    /// 「そのジョブのパレットからそのインクを外す」の上書き集合であり、
-    /// ジョブごとの上書きに留まる(TraySettings には保存しない)。</summary>
-    private readonly HashSet<string> _excludedInks = new();
+    /// <summary>D-030: このジョブで使うインクの許可リスト(name の集合)。
+    /// TraySettings.ResolveUsedInks で解決した既定値を初期状態とし、以後は
+    /// プレビューのチェック列(D-028 の UI をそのまま使う)がジョブごとの
+    /// 上書きとして書き換える。SaveAsDefaults を押さない限り TraySettings
+    /// には反映しない。</summary>
+    private readonly HashSet<string> _usedInks;
+
+    /// <summary>_usedInks の既定値を解決するために先読みしたパレット
+    /// (palette/default.yaml)。機種・メディア・用紙を変えても不変
+    /// (パレットはこれらに依存しない)。</summary>
+    private readonly List<InkDefinition> _palette;
 
     /// <summary>メディア種別コンボの 1 項目。表示は label(§5.5.2)、実体は name。</summary>
     private sealed record MediaItem(string Name, string Label)
@@ -62,6 +69,11 @@ public sealed class PreviewForm : Form
         _psPath = psPath;
         _settings = settings;
         _repoRoot = JobPipeline.FindRepoRoot();
+
+        // D-030: パレットは機種・メディア・用紙に依存しないため、ここで
+        // 一度だけ読み、許可リストの既定値解決に使う。
+        _palette = ConfigLoader.LoadPalette(Path.Combine(_repoRoot, "palette", "default.yaml"));
+        _usedInks = settings.ResolveUsedInks(_palette);
 
         Text = "Foilwright — 印刷プレビュー";
         Width = 1200;
@@ -326,6 +338,9 @@ public sealed class PreviewForm : Form
         _settings.WhiteMode = (string)_whiteModeCombo.SelectedItem!;
         _settings.ColourCorrection = (string)_colourCorrectionCombo.SelectedItem!;
         _settings.NoCurlCorrection = _noCurlCheck.Checked;
+        // D-030: このジョブの許可リストをそのまま既定値へ保存する
+        // (他の設定項目と同じ「今の状態を既定にする」挙動)。
+        _settings.UsedInks = new HashSet<string>(_usedInks);
         _settings.Save();
         MessageBox.Show(this, "既定値として保存しました。", "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
@@ -351,11 +366,11 @@ public sealed class PreviewForm : Form
             string colourCorrection = (string)_colourCorrectionCombo.SelectedItem!;
             var route = MachineRoute.Resolve(machine);
 
-            // D-028: 除外集合は解像度・メディア・機種などを変えて再プレビューしても
-            // そのまま持ち越す(除外したインクがもう現れなければ自然に消える)。
+            // D-030: 許可リストは解像度・メディア・機種などを変えて再プレビューしても
+            // そのまま持ち越す(許可されていないインクがもう現れなければ自然に消える)。
             var result = await Task.Run(() => JobPipeline.BuildPreview(
                 _psPath, _repoRoot, route, inkMode, _settings.PaperName, mediaName, resolutionKey, halftone, whiteMode,
-                _excludedInks, colourCorrection));
+                _usedInks, colourCorrection));
 
             ApplyPreviewResult(result);
         }
@@ -393,11 +408,11 @@ public sealed class PreviewForm : Form
         bool use = row.Cells["Use"].Value is bool b && b;
         if (use)
         {
-            _excludedInks.Remove(inkName);
+            _usedInks.Add(inkName);
         }
         else
         {
-            _excludedInks.Add(inkName);
+            _usedInks.Remove(inkName);
         }
 
         SetBusy(true, "ジョブを再構成中...");
@@ -410,7 +425,7 @@ public sealed class PreviewForm : Form
             var previous = _current;
 
             var result = await Task.Run(() => JobPipeline.RebuildFromImage(
-                previous.Image, previous.Config, previous.Resolution, inkMode, halftone, whiteMode, _excludedInks,
+                previous.Image, previous.Config, previous.Resolution, inkMode, halftone, whiteMode, _usedInks,
                 colourCorrection));
 
             ApplyPreviewResult(result);
@@ -441,11 +456,11 @@ public sealed class PreviewForm : Form
         }
     }
 
-    /// <summary>ジョブ内容のグリッドを作り直す。D-028: チェックを外した(除外した)
-    /// インクは jobPlanes に現れなくなるため、行が消えて再チェックできなくなって
-    /// しまう。そこで「現在使われているインク」に加え、「除外集合に入っているが
-    /// 現在は現れていないインク」もパレット定義から拾って行を残す(チェックを
-    /// 外したり戻したりを、再ラスタライズ無しで自由に行き来できるようにするため)。</summary>
+    /// <summary>ジョブ内容のグリッドを作り直す。D-030: パレット全体を常に表示する
+    /// (許可リストに無いインクも、いま原稿に現れていないインクも行を残す)。
+    /// これにより、まだ一度も使われていないメタリックを「これから使う」意思表示
+    /// としてチェックを入れることも、原稿にあるのに許可リストから外れている
+    /// インクのチェックを外すことも、再ラスタライズ無しで自由に行き来できる。</summary>
     private void PopulateInkGrid(PreviewResult result)
     {
         // Rows.Add/Clear は CellValueChanged を発火させうるが、この呼び出しは
@@ -453,17 +468,18 @@ public sealed class PreviewForm : Form
         // で行われるため、OnInkUseChangedAsync 先頭の _busy ガードで再入を防げる。
         _inkGrid.Rows.Clear();
 
-        var activeNames = new HashSet<string>(result.Inks.Select(ink => ink.Name));
-        var rows = new List<(string Name, int Order, string Label, int Passes, Color Color, bool Used)>();
-        foreach (var ink in result.Inks)
-        {
-            rows.Add((ink.Name, ink.Order, ink.Label, ink.Passes, ink.Color, true));
-        }
+        var activeByName = result.Inks.ToDictionary(ink => ink.Name);
+        var rows = new List<(string Name, int Order, string Label, int Passes, Color Color, bool Used, bool Appeared)>();
         foreach (var def in result.Config.Palette)
         {
-            if (_excludedInks.Contains(def.Name) && !activeNames.Contains(def.Name))
+            bool used = _usedInks.Contains(def.Name);
+            if (activeByName.TryGetValue(def.Name, out var active))
             {
-                rows.Add((def.Name, def.Order, def.Label, 0, PreviewRenderer.ResolveDisplayColor(def), false));
+                rows.Add((def.Name, def.Order, active.Label, active.Passes, active.Color, used, true));
+            }
+            else
+            {
+                rows.Add((def.Name, def.Order, def.Label, 0, PreviewRenderer.ResolveDisplayColor(def), used, false));
             }
         }
 
@@ -473,7 +489,9 @@ public sealed class PreviewForm : Form
             var gridRow = _inkGrid.Rows[rowIndex];
             gridRow.Cells["Color"].Style.BackColor = row.Color;
             gridRow.Tag = row.Name;
-            if (!row.Used)
+            // ジョブに現れないインク(D-030: チェックが外れている、または内容が
+            // 空)の行は灰色で並べる。パス数は 0。
+            if (!row.Appeared)
             {
                 gridRow.DefaultCellStyle.ForeColor = Color.Gray;
             }

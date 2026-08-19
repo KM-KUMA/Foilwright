@@ -103,9 +103,12 @@ internal static class Program
             string colourCorrection = settings.ColourCorrection;
             bool noCurlCorrection = settings.NoCurlCorrection;
             string machine = settings.Machine;
-            // D-028: UI 無しで除外の効果を検証するための隠しオプション
+            // D-030: UI 無しで許可リストの効果を検証するための隠しオプション
             // (カンマ区切りのインク名。src/Foilwright.Tray/PreviewForm.cs のチェック列と同義)。
-            HashSet<string>? excludedInks = null;
+            // --use-inks は許可リストそのものを指定し、--exclude-inks はそこから
+            // 引く(両方指定時は --use-inks を先に適用してから --exclude-inks を引く)。
+            HashSet<string>? useInksArg = null;
+            HashSet<string>? excludeInksArg = null;
             for (int i = 0; i < extraArgs.Length - 1; i++)
             {
                 switch (extraArgs[i])
@@ -116,8 +119,14 @@ internal static class Program
                     case "--white-mode": whiteMode = extraArgs[i + 1]; i++; break;
                     case "--colour-correction": colourCorrection = extraArgs[i + 1]; i++; break;
                     case "--machine": machine = extraArgs[i + 1]; i++; break;
+                    case "--use-inks":
+                        useInksArg = extraArgs[i + 1]
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                            .ToHashSet();
+                        i++;
+                        break;
                     case "--exclude-inks":
-                        excludedInks = extraArgs[i + 1]
+                        excludeInksArg = extraArgs[i + 1]
                             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                             .ToHashSet();
                         i++;
@@ -130,18 +139,23 @@ internal static class Program
             }
             route = MachineRoute.Resolve(machine);
 
-            if (excludedInks is { Count: > 0 })
+            var config = JobPipeline.LoadJobConfig(repoRoot, route, settings.PaperName, mediaName);
+
+            // D-030: --use-inks が指定されていればそれを許可リストの起点にし、
+            // 無ければ TraySettings の既定(旧設定はメタリック無効)を使う。
+            // --exclude-inks は最後に必ず適用する(D-028 の隠しオプションを維持)。
+            var usedInks = useInksArg ?? settings.ResolveUsedInks(config.Palette);
+            if (excludeInksArg is { Count: > 0 })
             {
-                Console.WriteLine($"除外するインク(D-028): {string.Join(", ", excludedInks)}");
+                usedInks = new HashSet<string>(usedInks.Where(name => !excludeInksArg.Contains(name)));
             }
 
+            Console.WriteLine($"使うインク(D-030): {string.Join(", ", usedInks.OrderBy(n => n, StringComparer.Ordinal))}");
             Console.WriteLine($"色補正(D-029): {colourCorrection}");
 
             var result = JobPipeline.BuildPreview(
                 psPath, repoRoot, route, settings.InkMode, settings.PaperName, mediaName,
-                resolutionKey, halftone, whiteMode, excludedInks, colourCorrection);
-
-            var config = JobPipeline.LoadJobConfig(repoRoot, route, settings.PaperName, mediaName);
+                resolutionKey, halftone, whiteMode, usedInks, colourCorrection);
             var job = new PrintJob
             {
                 // Emitter.EmitJob は Paper を常に 600dpi 基準で受け取り、
@@ -193,8 +207,11 @@ internal static class Program
             string halftone = settings.Halftone;
             string whiteMode = settings.WhiteMode;
             string colourCorrection = settings.ColourCorrection;
-            // D-028: UI 無しで除外の効果を検証するための隠しオプション。
-            HashSet<string>? excludedInks = null;
+            // D-030: UI 無しで許可リストの効果を検証するための隠しオプション。
+            // --use-inks は許可リストそのものを指定し、--exclude-inks はそこから
+            // 引く(両方指定時は --use-inks を先に適用してから --exclude-inks を引く)。
+            HashSet<string>? useInksArg = null;
+            HashSet<string>? excludeInksArg = null;
             for (int i = 0; i < extraArgs.Length - 1; i++)
             {
                 switch (extraArgs[i])
@@ -204,8 +221,14 @@ internal static class Program
                     case "--halftone": halftone = extraArgs[i + 1]; i++; break;
                     case "--white-mode": whiteMode = extraArgs[i + 1]; i++; break;
                     case "--colour-correction": colourCorrection = extraArgs[i + 1]; i++; break;
+                    case "--use-inks":
+                        useInksArg = extraArgs[i + 1]
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                            .ToHashSet();
+                        i++;
+                        break;
                     case "--exclude-inks":
-                        excludedInks = extraArgs[i + 1]
+                        excludeInksArg = extraArgs[i + 1]
                             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                             .ToHashSet();
                         i++;
@@ -213,16 +236,19 @@ internal static class Program
                 }
             }
 
-            if (excludedInks is { Count: > 0 })
+            var config = JobPipeline.LoadJobConfig(repoRoot, route, settings.PaperName, mediaName);
+            var usedInks = useInksArg ?? settings.ResolveUsedInks(config.Palette);
+            if (excludeInksArg is { Count: > 0 })
             {
-                Console.WriteLine($"除外するインク(D-028): {string.Join(", ", excludedInks)}");
+                usedInks = new HashSet<string>(usedInks.Where(name => !excludeInksArg.Contains(name)));
             }
 
+            Console.WriteLine($"使うインク(D-030): {string.Join(", ", usedInks.OrderBy(n => n, StringComparer.Ordinal))}");
             Console.WriteLine($"色補正(D-029): {colourCorrection}");
 
             var result = JobPipeline.BuildPreview(
                 psPath, repoRoot, route, settings.InkMode, settings.PaperName, mediaName,
-                resolutionKey, halftone, whiteMode, excludedInks, colourCorrection);
+                resolutionKey, halftone, whiteMode, usedInks, colourCorrection);
 
             result.Preview.Save(outputPngPath, System.Drawing.Imaging.ImageFormat.Png);
 

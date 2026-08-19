@@ -132,7 +132,7 @@ public static class JobPipeline
     public static PreviewResult BuildPreview(
         string psPath, string repoRoot, MachineRoute route, string inkMode,
         string paperName, string mediaName, string resolutionKey, string halftone, string whiteMode,
-        IReadOnlySet<string>? excludedInks = null, string colourCorrection = DefaultColourCorrection)
+        IReadOnlySet<string> usedInks, string colourCorrection = DefaultColourCorrection)
     {
         var config = LoadJobConfig(repoRoot, route, paperName, mediaName);
         var resolutionEntry = config.Profile.ResolveResolutionByKey(resolutionKey);
@@ -146,7 +146,7 @@ public static class JobPipeline
             var scaledPaper = config.Paper.ScaleToResolution(resolutionEntry.DpiX, resolutionEntry.DpiY);
             var image = fullImage.Crop(scaledPaper.LeftMargin, scaledPaper.TopMargin, scaledPaper.Width, scaledPaper.Length);
 
-            return BuildPreviewCore(image, config, resolutionEntry, inkMode, halftone, whiteMode, excludedInks, colourCorrection);
+            return BuildPreviewCore(image, config, resolutionEntry, inkMode, halftone, whiteMode, usedInks, colourCorrection);
         }
         finally
         {
@@ -156,22 +156,23 @@ public static class JobPipeline
 
     /// <summary>切り出し済みの画像を保持したまま、ジョブ組み立て(インク割り当て・
     /// プレーン分解・プレビュー描画)だけをやり直す。Ghostscript は再実行しない
-    /// (D-028 補足)。プレビュー画面でインクの除外(チェック)を切り替えたときに使う。
+    /// (D-028 補足)。プレビュー画面でインクの許可リスト(チェック)を切り替えたときに使う。
     ///
-    /// excludedInks: D-028 の「除外 = そのジョブのパレットからそのインクを外す」を
-    /// 実現する集合。ここに含まれるインクは <paramref name="config"/>.Palette から
-    /// 除いたうえで組み立てるため、`auto` では該当画素がそのまま CMYK 分解へ回る
-    /// (プレーンを作ってから捨てるのではない)。</summary>
+    /// usedInks: D-030 の「そのジョブで使うインクの許可リスト」。ここに
+    /// 含まれるインクだけを <paramref name="config"/>.Palette から残して組み立てる
+    /// ため、`auto` では許可リストに無いインクへ割り当たるはずだった画素が
+    /// そのまま CMYK 分解へ回る(D-028 の「除外 = パレットから外す」の一般形。
+    /// プレーンを作ってから捨てるのではない)。</summary>
     public static PreviewResult RebuildFromImage(
         PpmImage image, JobConfig config, ResolutionEntry resolution,
         string inkMode, string halftone, string whiteMode,
-        IReadOnlySet<string>? excludedInks, string colourCorrection = DefaultColourCorrection)
+        IReadOnlySet<string> usedInks, string colourCorrection = DefaultColourCorrection)
     {
-        return BuildPreviewCore(image, config, resolution, inkMode, halftone, whiteMode, excludedInks, colourCorrection);
+        return BuildPreviewCore(image, config, resolution, inkMode, halftone, whiteMode, usedInks, colourCorrection);
     }
 
     /// <summary>BuildPreview と RebuildFromImage の共通処理(インク割り当て以降)。
-    /// D-028: excludedInks に含まれるインクはパレットから除いてから
+    /// D-030: usedInks に含まれないインクはパレットから除いてから
     /// JobAssembly.BuildJobPlanes に渡す — プレーンを作ってから捨てるのではない。
     /// D-029: colourCorrection == "photo" のとき、photo_colcor テーブル
     /// (colour/photo_colcor.bin、リポジトリ直下から解決)と選択中の解像度を
@@ -179,12 +180,10 @@ public static class JobPipeline
     /// (600 は 0.8、1200 は -0.9)、解像度を渡し忘れると色がずれる。</summary>
     private static PreviewResult BuildPreviewCore(
         PpmImage image, JobConfig config, ResolutionEntry resolutionEntry,
-        string inkMode, string halftone, string whiteMode, IReadOnlySet<string>? excludedInks,
+        string inkMode, string halftone, string whiteMode, IReadOnlySet<string> usedInks,
         string colourCorrection)
     {
-        var palette = excludedInks is { Count: > 0 }
-            ? config.Palette.Where(ink => !excludedInks.Contains(ink.Name)).ToList()
-            : config.Palette;
+        var palette = config.Palette.Where(ink => usedInks.Contains(ink.Name)).ToList();
 
         string repoRoot = FindRepoRoot();
         string photoLutPath = Path.Combine(repoRoot, "colour", "photo_colcor.bin");
