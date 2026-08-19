@@ -65,6 +65,16 @@ gen g16_c1_blackraster_md5000_600.bin -model MD-5000 -resolution 600 -black test
 # デカール用途ではカール矯正を止める(§10.10.4)。curl バイトが 00 -> 01 に変わる
 gen g17_c1_nocurl_md5000_600.bin -model MD-5000 -resolution 600 -nocurlcorrection tests/cases/c1_black_120x120.ppm
 
+# passes(重ね塗り、DOMAIN §6.2)の byte-exact 検証。ppmtomd に passes という
+# 概念は無いが、-colourcorrection None で下色除去を挟まずに黒ベタを送ると
+# C/M/Y が全て 255 に飽和するので、そこへ同じインク(White)を複数コンポー
+# ネントへ割り当てると passes=N と同じ構造(色選択+ラスタの繰り返し)が
+# 得られる。ref/tests/test_golden.py の g21/g22 参照
+gen g21_c1_white_twice_md5000_600.bin -model MD-5000 -resolution 600 \
+    -colourcorrection None -colours C=White,M=White tests/cases/c1_black_120x120.ppm
+gen g22_c1_white_thrice_md5000_600.bin -model MD-5000 -resolution 600 \
+    -colourcorrection None -colours C=White,M=White,Y=White tests/cases/c1_black_120x120.ppm
+
 if cmp -s tests/golden/g1_c1_black_md5000_600.bin tests/golden/g5_c1_black_md5500_600.bin; then
   echo "MODEL_DIFF_ZERO (MD-5000 == MD-5500)"
 else

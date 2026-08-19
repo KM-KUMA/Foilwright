@@ -1,17 +1,18 @@
 """Structural tests for ink `passes` (overprinting; DOMAIN.md §6.2).
 
-Byte-exact golden coverage is not possible for this change: WSL was
-unavailable to regenerate `tests/golden/*.bin` from a real ppmtomd run
-(see docs/DOMAIN.md §6.1's 2026-08-19 note). These tests instead check
-the command-stream *structure* that was confirmed by hand from a real
-`ppmtomd -colours C=White,M=White` capture: repeating an ink's
-(colour-selection + raster) `passes` times, separated by backfeeds,
-with the 0x80 "final" flag on only the very last occurrence in the
-job, and exactly one eject at the very end.
+These tests check the command-stream *structure* directly (without going
+through a real ppmtomd capture): repeating an ink's (colour-selection +
+raster) `passes` times, separated by backfeeds, with the 0x80 "final"
+flag on only the very last occurrence in the job, and exactly one eject
+at the very end.
 
-**passes >= 2 is unverified against a golden fixture.** Re-run
-`tests/cases/make_golden.sh` under WSL and diff against a fresh
-ppmtomd capture once WSL is available, per DOMAIN.md §6.1.
+**Byte-exact golden coverage exists separately**: `test_golden.py`'s
+`test_g21_white_twice_md5000_600` (passes=2) and
+`test_g22_white_thrice_md5000_600` (passes=3) diff this same code path
+against `tests/golden/g21_*.bin` / `g22_*.bin`, captured from a real
+ppmtomd run once WSL was available again (2026-08-19). See the docstrings
+there for how `-colours C=White,M=White[,Y=White]` stands in for
+`passes`.
 """
 
 from __future__ import annotations

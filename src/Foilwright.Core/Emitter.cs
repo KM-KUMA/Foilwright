@@ -325,9 +325,9 @@ public static class Emitter
             // 揃えてある)。この展開は emitter の出力形状レベルだけの話で、
             // プレーン自体はインクごとに 1 枚のまま変わらない。
             //
-            // NOTE (2026-08-19): passes >= 2 は ppmtomd の実機 golden 未検証
-            // (ref/foilwright_ref/emitter.py の同名 NOTE を参照)。WSL 復旧後に
-            // make_golden.sh で採り直すこと。
+            // passes >= 2 は ppmtomd の実機 golden で検証済み: g21(passes=2)/
+            // g22(passes=3)。2026-08-19、WSL 復旧後に採取(GoldenTests.cs の
+            // G21WhiteTwiceMd5000_600 / G22WhiteThriceMd5000_600 参照)。
             var occurrences = new List<JobInk>();
             foreach (var ink in inks)
             {

@@ -499,3 +499,40 @@ def test_g16_blackraster_md5000_600():
     )
     actual = _render(CASES_DIR / "c1_black_120x120.ppm", job, {"black": "K"})
     _assert_golden_match(actual, GOLDEN_DIR / "g16_c1_blackraster_md5000_600.bin")
+
+
+def test_g21_white_twice_md5000_600():
+    """`passes` (DOMAIN §6.2) byte-exact against a real ppmtomd capture.
+
+    ppmtomd itself has no `passes` concept, so this fixture borrows a
+    different route to the same byte stream: `-colourcorrection None`
+    skips undercolour removal, so a solid black source makes C, M and Y
+    all saturate to 255. Assigning the *same* ink (White) to two of those
+    components (`-colours C=White,M=White`) makes ppmtomd emit two
+    identical (colour-selection + raster) occurrences of White, separated
+    by a backfeed -- which is exactly the structure `passes=2` builds
+    for a single ink. Captured 2026-08-19 once WSL was available again
+    (see the now-corrected NOTE in emitter.py); confirmed byte-identical
+    to a second independent run (determinism) and to this ref/
+    implementation's `passes=2` output."""
+    job = _job(600, "md-5000", [{"name": "white", "printer_code": 0x0B, "passes": 2}])
+    actual = _render(
+        CASES_DIR / "c1_black_120x120.ppm",
+        job,
+        {"white": "C"},
+        colour_correction="none",
+    )
+    _assert_golden_match(actual, GOLDEN_DIR / "g21_c1_white_twice_md5000_600.bin")
+
+
+def test_g22_white_thrice_md5000_600():
+    """Same construction as g21, with a third White component
+    (`-colours C=White,M=White,Y=White`) standing in for `passes=3`."""
+    job = _job(600, "md-5000", [{"name": "white", "printer_code": 0x0B, "passes": 3}])
+    actual = _render(
+        CASES_DIR / "c1_black_120x120.ppm",
+        job,
+        {"white": "C"},
+        colour_correction="none",
+    )
+    _assert_golden_match(actual, GOLDEN_DIR / "g22_c1_white_thrice_md5000_600.bin")

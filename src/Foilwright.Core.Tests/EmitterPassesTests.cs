@@ -1,10 +1,10 @@
 ﻿// Foilwright.Core.Tests — インク `passes`(重ね塗り; DOMAIN §6.2)の構造検証。
 //
-// ref/tests/test_passes.py と同じ観点をここでも検査する。golden での
-// バイト一致検証はできない(WSL 不在で passes>=2 の実機 golden が未採取 —
-// Emitter.cs の NOTE 参照)。ここでは実測から確認済みの構造だけを見る:
-// (色選択+ラスタ)を passes 回繰り返し、出現の間はすべてバックフィードで
-// 区切り、最終フラグ(0x80)はジョブ全体で最後の 1 回だけ、排出は 1 回だけ。
+// ref/tests/test_passes.py と同じ観点をここでも検査する。ここではコマンド
+// ストリームの構造だけを見る: (色選択+ラスタ)を passes 回繰り返し、出現の
+// 間はすべてバックフィードで区切り、最終フラグ(0x80)はジョブ全体で最後の
+// 1 回だけ、排出は 1 回だけ。byte-exact な golden 検証は GoldenTests.cs の
+// G21WhiteTwiceMd5000_600 / G22WhiteThriceMd5000_600 で別途行っている。
 
 using Foilwright.Core;
 

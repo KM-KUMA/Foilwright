@@ -445,6 +445,38 @@ public class GoldenTests
     }
 
     [Fact]
+    public void G21WhiteTwiceMd5000_600()
+    {
+        // passes(重ね塗り、DOMAIN §6.2)の byte-exact 検証。ppmtomd に passes
+        // という概念は無いが、-colourcorrection None は下色除去を挟まない
+        // ため黒ベタの C/M/Y はどれも 255 に飽和する。そこへ同じインク
+        // (White)を C と M の 2 コンポーネントへ割り当てると、
+        // (色選択+ラスタ)が同一内容のまま 2 回並ぶ — これは passes=2 が
+        // 作る構造と同一で、出来上がるバイト列も一致する。2026-08-19、
+        // WSL 復旧後に実機 ppmtomd で採取(ref/tests/test_golden.py の
+        // test_g21_white_twice_md5000_600 と同一条件)。
+        var inks = new List<JobInk> { new() { Name = "white", PrinterCode = 0x0B, Passes = 2 } };
+        var palette = new Dictionary<string, string> { ["white"] = "C" };
+        var actual = Render(
+            "c1_black_120x120.ppm", 600, "md-5000", inks, palette,
+            colourCorrection: "none");
+        AssertGoldenMatch(actual, "g21_c1_white_twice_md5000_600.bin");
+    }
+
+    [Fact]
+    public void G22WhiteThriceMd5000_600()
+    {
+        // g21 と同じ構成で、White を C/M/Y の 3 コンポーネントへ割り当てて
+        // passes=3 に対応させたもの。
+        var inks = new List<JobInk> { new() { Name = "white", PrinterCode = 0x0B, Passes = 3 } };
+        var palette = new Dictionary<string, string> { ["white"] = "C" };
+        var actual = Render(
+            "c1_black_120x120.ppm", 600, "md-5000", inks, palette,
+            colourCorrection: "none");
+        AssertGoldenMatch(actual, "g22_c1_white_thrice_md5000_600.bin");
+    }
+
+    [Fact]
     public void SingleEjectAcrossAllGolden()
     {
         // DOMAIN §4.10: 用紙は最終パスの後に一度だけ排出しなければならない。

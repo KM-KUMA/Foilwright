@@ -23,13 +23,13 @@ the golden fixtures under tests/golden/ exercise:
 No model-specific branching lives here (DOMAIN.md §4.4): all of the
 above is either fixed protocol behaviour or driven by `profile`.
 
-NOTE (2026-08-19): `passes` >= 2 is unverified against a real ppmtomd
-golden capture (WSL was unavailable for this change). Only the
-structural shape above (repeat count, backfeed placement, single final
-flag, single eject) was confirmed from a manual `ppmtomd -colours
-C=White,M=White` trace; it has not been byte-diffed against a
-generated golden fixture. Re-verify with `make_golden.sh` once WSL is
-available.
+`passes` >= 2 is verified byte-exact against a real ppmtomd golden
+capture: `tests/golden/g21_c1_white_twice_md5000_600.bin` (passes=2)
+and `g22_c1_white_thrice_md5000_600.bin` (passes=3), captured
+2026-08-19 once WSL was available again (see `tests/test_golden.py`'s
+`test_g21_white_twice_md5000_600` / `test_g22_white_thrice_md5000_600`
+for how `-colours C=White,M=White[,Y=White]` stands in for `passes` in
+a real ppmtomd run).
 """
 
 from __future__ import annotations
