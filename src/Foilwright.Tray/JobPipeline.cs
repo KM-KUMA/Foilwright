@@ -193,7 +193,7 @@ public static class JobPipeline
 
         var planes = jobPlanes.ToDictionary(jp => jp.Ink.Name, jp => jp.Plane);
         var jobInks = jobPlanes
-            .Select(jp => new JobInk { Name = jp.Ink.Name, PrinterCode = jp.Ink.PrinterCode })
+            .Select(jp => new JobInk { Name = jp.Ink.Name, PrinterCode = jp.Ink.PrinterCode, Passes = jp.Ink.Passes })
             .ToList();
         var inkInfos = jobPlanes
             .Select(jp => new InkPreviewInfo

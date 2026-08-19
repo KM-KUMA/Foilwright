@@ -28,6 +28,11 @@ public sealed class JobInk
 {
     public required string Name { get; init; }
     public required int PrinterCode { get; init; }
+
+    /// <summary>重ね塗り回数(DOMAIN §6.2)。既定 1。ref/ の
+    /// job["inks"][i]["passes"] に対応する(config.load_palette の既定値と
+    /// 揃えてある — config.py:181)。</summary>
+    public int Passes { get; init; } = 1;
 }
 
 /// <summary>emit_job に渡すジョブ記述。ここには機種プロファイルの参照ロジックを
@@ -315,25 +320,47 @@ public static class Emitter
         }
         else
         {
-            int lastIndex = inks.Count - 1;
+            // passes(DOMAIN §6.2): インクの(色選択+ラスタ)を passes 回
+            // 繰り返す。省略時は既定 1(ConfigLoader.LoadPalette の既定値に
+            // 揃えてある)。この展開は emitter の出力形状レベルだけの話で、
+            // プレーン自体はインクごとに 1 枚のまま変わらない。
+            //
+            // NOTE (2026-08-19): passes >= 2 は ppmtomd の実機 golden 未検証
+            // (ref/foilwright_ref/emitter.py の同名 NOTE を参照)。WSL 復旧後に
+            // make_golden.sh で採り直すこと。
+            var occurrences = new List<JobInk>();
+            foreach (var ink in inks)
+            {
+                if (ink.Passes < 1)
+                {
+                    throw new ArgumentException($"ink '{ink.Name}': 'passes' must be an integer >= 1, got {ink.Passes}");
+                }
+                for (int p = 0; p < ink.Passes; p++)
+                {
+                    occurrences.Add(ink);
+                }
+            }
+
+            int lastIndex = occurrences.Count - 1;
 
             byte[] SelectAndRows(int index)
             {
-                var ink = inks[index];
+                var ink = occurrences[index];
                 byte flag = index == lastIndex ? (byte)0x80 : (byte)0x00;
                 var buf = new List<byte> { Esc, 0x1A, (byte)ink.PrinterCode, flag, 0x72 };
                 buf.AddRange(EmitPlaneRows(planes[ink.Name], width, height));
                 return buf.ToArray();
             }
 
-            // 最初の(直接の)インクのバイト列はそのままストリームに乗る。
-            // それ以降の各インクは ppmtomd によって別バッファに蓄えられ、
-            // バックフィードコマンドの後ろに継ぎ足される(ppmtomd.c:2272-2296)
-            // — これはアクティブなインクが 2 つ以上あるときにのみ起きる。
+            // 最初の(直接の)出現のバイト列はそのままストリームに乗る。
+            // それ以降の出現は — 別インクでも同じインクの繰り返しパスでも —
+            // ppmtomd によって別バッファに蓄えられ、バックフィードコマンドの
+            // 後ろに継ぎ足される(ppmtomd.c:2272-2296)。これは出現が
+            // 2 つ以上あるときにのみ起きる。
             outBytes.AddRange(SelectAndRows(0));
-            if (inks.Count > 1)
+            if (occurrences.Count > 1)
             {
-                for (int index = 1; index < inks.Count; index++)
+                for (int index = 1; index < occurrences.Count; index++)
                 {
                     outBytes.AddRange(new byte[] { Esc, 0x1A, 0, 0, 0x0C }); // バックフィード
                     outBytes.AddRange(SelectAndRows(index));

@@ -485,7 +485,7 @@ internal static class Program
 
             var planes = jobPlanes.ToDictionary(jp => jp.Ink.Name, jp => jp.Plane);
             var inks = jobPlanes
-                .Select(jp => new JobInk { Name = jp.Ink.Name, PrinterCode = jp.Ink.PrinterCode })
+                .Select(jp => new JobInk { Name = jp.Ink.Name, PrinterCode = jp.Ink.PrinterCode, Passes = jp.Ink.Passes })
                 .ToList();
 
             var job = new PrintJob
