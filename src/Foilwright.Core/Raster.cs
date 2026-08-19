@@ -31,6 +31,71 @@ public static class Raster
 {
     private static readonly HashSet<string> ValidHalftones = new() { "none", "halftone", "coarse_halftone" };
 
+    // colour/photo_colcor.bin を、このファイル(src/Foilwright.Core/Raster.cs)
+    // からリポジトリルート相対で解決した既定パス。ToPlanes / ToPlanesAuto の
+    // photoLutPath 引数で呼び出しごとに上書きできる(DOMAIN §4.5: テーブルの
+    // 場所をこの 1 箇所より奥へハードコードしない)。
+    private static readonly string DefaultPhotoLutPath = Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "..", "colour", "photo_colcor.bin");
+
+    // 展開済み(64^3x4、約 1MB)の photo 色補正テーブルをパスごとにキャッシュする
+    // (ref/foilwright_ref/raster.py の functools.cache 相当。展開自体は使い回す
+    // 価値があるほど重い一方、Colour.cs 自体はキャッシュを持たない)。
+    private static readonly Dictionary<string, byte[]> ExpandedPhotoLutCache = new();
+
+    private static byte[] ExpandedPhotoLut(string? photoLutPath)
+    {
+        string path = photoLutPath ?? DefaultPhotoLutPath;
+        lock (ExpandedPhotoLutCache)
+        {
+            if (!ExpandedPhotoLutCache.TryGetValue(path, out var cached))
+            {
+                cached = Colour.ExpandLut(Colour.LoadPhotoLut(path));
+                ExpandedPhotoLutCache[path] = cached;
+            }
+            return cached;
+        }
+    }
+
+    /// <summary>colour_correction == "none"/"plain"/"photo" いずれかの式で、
+    /// 1 画素の R/G/B から C/M/Y/K の 4 値を作る。ToPlanes と ToPlanesAuto の
+    /// 両方から呼ばれる共通のインク分解式(ref/foilwright_ref/raster.py の
+    /// 各関数内に重複している式に対応)。</summary>
+    private static (int C, int M, int Y, int K) SeparateColour(
+        int r, int g, int b, string colourCorrection, int[]? gammaTable, byte[]? colConv)
+    {
+        int c, m, yv, k;
+        if (colourCorrection == "none")
+        {
+            c = 255 - r;
+            m = 255 - g;
+            yv = 255 - b;
+            k = 0;
+        }
+        else if (colourCorrection == "photo")
+        {
+            c = gammaTable![255 - r];
+            m = gammaTable[255 - g];
+            yv = gammaTable[255 - b];
+            int lutIndex = ((c & 0xFC) << 12) | ((m & 0xFC) << 6) | (yv & 0xFC);
+            c = colConv![lutIndex];
+            m = colConv[lutIndex + 1];
+            yv = colConv[lutIndex + 2];
+            k = colConv[lutIndex + 3];
+        }
+        else
+        {
+            c = 255 - r;
+            m = 255 - g;
+            yv = 255 - b;
+            k = Math.Min(c, Math.Min(m, yv));
+            c -= k;
+            m -= k;
+            yv -= k;
+        }
+        return (c, m, yv, k);
+    }
+
     // ppmtomd.c:986 "four" -- build_dith が n x n セルを 2x2 ブロックへ
     // 展開するときの補間重み。
     private static readonly int[] BuildDithFour = { 0, 2, 3, 1 };
@@ -319,14 +384,30 @@ public static class Raster
     ///     ditherNone)、"halftone"(ppmtomd の -dither Halftone)、
     ///     "coarse_halftone"(ppmtomd の -dither CoarseHalftone)のいずれか。
     ///     FloydSteinberg と Square は未実装(DOMAIN §4.2.1)。
+    /// colourCorrection: "none"、"plain"(既定 -- ppmtomd の colcorPlain。
+    ///     D-029 以前のこの関数の挙動とバイト一致)、"photo"(ppmtomd の
+    ///     colcorPhoto)のいずれか。式は Colour.cs / SeparateColour を参照。
+    /// resolution: colourCorrection == "photo" かつ halftone != "none" の
+    ///     ときだけ参照する(Colour.DefaultGamma の解像度依存の既定値、
+    ///     DOMAIN D-029)。それ以外では無視する。
+    /// photoLutPath: colourCorrection == "photo" のときだけ参照する。
+    ///     16x16x16x4 の photo 色補正テーブル(Colour.LoadPhotoLut の形式)の
+    ///     パス。既定は同梱の colour/photo_colcor.bin。
     ///
     /// 戻り値はインク名 -> バイト列。各行は MSB ファーストでバイト境界まで
     /// パディングし(行長 = ceil(width/8) バイト)、画像順に連結する。</summary>
-    public static Dictionary<string, byte[]> ToPlanes(PpmImage image, IReadOnlyDictionary<string, string> palette, string halftone = "none")
+    public static Dictionary<string, byte[]> ToPlanes(
+        PpmImage image, IReadOnlyDictionary<string, string> palette, string halftone = "none",
+        string colourCorrection = "plain", int resolution = 600, string? photoLutPath = null)
     {
         if (!ValidHalftones.Contains(halftone))
         {
             throw new ArgumentException($"unknown halftone mode '{halftone}'; expected one of coarse_halftone, halftone, none");
+        }
+        if (!Colour.ValidColourCorrections.Contains(colourCorrection))
+        {
+            throw new ArgumentException(
+                $"unknown colour correction '{colourCorrection}'; expected one of {string.Join(", ", Colour.ValidColourCorrections)}");
         }
 
         int width = image.Width, height = image.Height;
@@ -336,6 +417,14 @@ public static class Raster
 
         HalftoneMode? mode = HalftoneModes.GetValueOrDefault(halftone);
         var channelsNeeded = mode is not null ? palette.Values.Distinct().ToArray() : Array.Empty<string>();
+
+        int[]? gammaTable = null;
+        byte[]? colConv = null;
+        if (colourCorrection == "photo")
+        {
+            gammaTable = Colour.BuildGammaTable(Colour.DefaultGamma(halftone, resolution));
+            colConv = ExpandedPhotoLut(photoLutPath);
+        }
 
         for (int y = 0; y < height; y++)
         {
@@ -360,9 +449,7 @@ public static class Raster
             {
                 int idx = rowBase + x * 3;
                 int r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
-                int c = 255 - r, m = 255 - g, yv = 255 - b;
-                int k = Math.Min(c, Math.Min(m, yv));
-                c -= k; m -= k; yv -= k;
+                var (c, m, yv, k) = SeparateColour(r, g, b, colourCorrection, gammaTable, colConv);
                 var values = new Dictionary<string, int> { ["C"] = c, ["M"] = m, ["Y"] = yv, ["K"] = k };
 
                 int byteIndex = planeRowBase + (x >> 3);
@@ -516,16 +603,24 @@ public static class Raster
     ///   2. マッチしたらそのインクのプレーンのみに属する(DOMAIN §4.3:
     ///      1 パス = 1 カートリッジ。CMYK 分解には決して回されない)。
     ///   3. マッチしなければ CMYK 分解式(ToPlanes と同一)にかけ、
-    ///      cmykMap が指すプレーンへ立てる。
+    ///      cmykMap が指すプレーンへ立てる。colourCorrection / resolution /
+    ///      photoLutPath は CMYK 分解側にのみ効く(ToPlanes と同じ意味 --
+    ///      特色マッチング(手順 1)は色補正の影響を受けない)。
     ///   4. AutoUndercoat(高々 1 インク、ToPlanesMagic と同じ制約)は
     ///      最後に、特色・CMYK 両方を含む他の全プレーンの和集合 + 自身の
     ///      MagicRgb に直接マッチした画素として計算する。</summary>
     public static Dictionary<string, byte[]> ToPlanesAuto(
-        PpmImage image, IReadOnlyList<InkDefinition> inks, IReadOnlyDictionary<string, string> cmykMap, string halftone = "none")
+        PpmImage image, IReadOnlyList<InkDefinition> inks, IReadOnlyDictionary<string, string> cmykMap, string halftone = "none",
+        string colourCorrection = "plain", int resolution = 600, string? photoLutPath = null)
     {
         if (!ValidHalftones.Contains(halftone))
         {
             throw new ArgumentException($"unknown halftone mode '{halftone}'; expected one of coarse_halftone, halftone, none");
+        }
+        if (!Colour.ValidColourCorrections.Contains(colourCorrection))
+        {
+            throw new ArgumentException(
+                $"unknown colour correction '{colourCorrection}'; expected one of {string.Join(", ", Colour.ValidColourCorrections)}");
         }
 
         int width = image.Width, height = image.Height;
@@ -547,6 +642,14 @@ public static class Raster
 
         HalftoneMode? mode = HalftoneModes.GetValueOrDefault(halftone);
         var channelsNeeded = mode is not null ? cmykMap.Keys.ToArray() : Array.Empty<string>();
+
+        int[]? gammaTable = null;
+        byte[]? colConv = null;
+        if (colourCorrection == "photo")
+        {
+            gammaTable = Colour.BuildGammaTable(Colour.DefaultGamma(halftone, resolution));
+            colConv = ExpandedPhotoLut(photoLutPath);
+        }
 
         for (int y = 0; y < height; y++)
         {
@@ -611,9 +714,7 @@ public static class Raster
                     continue;
                 }
 
-                int c = 255 - r, m = 255 - g, yv = 255 - b;
-                int k = Math.Min(c, Math.Min(m, yv));
-                c -= k; m -= k; yv -= k;
+                var (c, m, yv, k) = SeparateColour(r, g, b, colourCorrection, gammaTable, colConv);
                 var values = new Dictionary<string, int> { ["C"] = c, ["M"] = m, ["Y"] = yv, ["K"] = k };
 
                 foreach (var (channel, name) in cmykMap)

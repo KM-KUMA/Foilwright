@@ -150,10 +150,11 @@ public class GoldenTests
         string ppmFileName, int resolution, string model, IReadOnlyList<JobInk> inks,
         IReadOnlyDictionary<string, string> palette, string halftone = "none",
         int xShift = 0, int yShift = 0, MediaSpec? mediaOverride = null,
-        bool noCurlCorrection = false, string transferMode = "colour_plane")
+        bool noCurlCorrection = false, string transferMode = "colour_plane",
+        string colourCorrection = "plain")
     {
         var image = PpmImage.Read(Path.Combine(CasesDir, ppmFileName));
-        var planes = Raster.ToPlanes(image, palette, halftone);
+        var planes = Raster.ToPlanes(image, palette, halftone, colourCorrection, resolution);
         var job = BuildJob(
             resolution, model, inks, image.Width, image.Height, xShift, yShift,
             noCurlCorrection: noCurlCorrection, mediaOverride: mediaOverride,
@@ -317,6 +318,28 @@ public class GoldenTests
     {
         var actual = Render("c6_fullcolour_240x120.ppm", 600, "md-5000", DefaultInks, DefaultPalette, halftone: "coarse_halftone");
         AssertGoldenMatch(actual, "g14_c6_coarsehalftone_md5000_600.bin");
+    }
+
+    [Fact]
+    public void G18PhotoCoarseMd5000_600()
+    {
+        // -colourcorrection Photo, -dither CoarseHalftone, 600dpi (D-029)。
+        // g12/g14 と同じ入力で、色補正だけが colcorPlain(下色除去)から
+        // colcorPhoto(ガンマ + ルックアップテーブル)に変わる。
+        var actual = Render(
+            "c6_fullcolour_240x120.ppm", 600, "md-5000", DefaultInks, DefaultPalette,
+            halftone: "coarse_halftone", colourCorrection: "photo");
+        AssertGoldenMatch(actual, "g18_c6_photo_coarse_md5000_600.bin");
+    }
+
+    [Fact]
+    public void G19PhotoHalftoneMd5000_600()
+    {
+        // -colourcorrection Photo, -dither Halftone, 600dpi (D-029)。
+        var actual = Render(
+            "c6_fullcolour_240x120.ppm", 600, "md-5000", DefaultInks, DefaultPalette,
+            halftone: "halftone", colourCorrection: "photo");
+        AssertGoldenMatch(actual, "g19_c6_photo_halftone_md5000_600.bin");
     }
 
     [Fact]

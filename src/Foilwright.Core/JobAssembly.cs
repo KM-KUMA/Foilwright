@@ -46,9 +46,16 @@ public static class JobAssembly
     ///
     /// 中身の無いプレーン(1 ドットも立っていない)のインクは戻り値から
     /// 除外する。全インクが空なら空リストを返す(呼び出し側はこれを見て
-    /// 送出をスキップする)。</summary>
+    /// 送出をスキップする)。
+    ///
+    /// colourCorrection: "none"/"plain"/"photo"(Raster.ToPlanes / ToPlanesAuto
+    ///     と同じ)。既定は "photo"(D-029: 実物のフルカラー原稿で colcorPlain
+    ///     の完全な下色除去が紫・緑・茶を黒一色に潰した実測を受けての決定)。
+    /// resolution / photoLutPath: colourCorrection == "photo" のときだけ参照
+    ///     する。Raster.ToPlanes / ToPlanesAuto にそのまま渡す。</summary>
     public static List<(InkDefinition Ink, byte[] Plane)> BuildJobPlanes(
-        PpmImage image, IReadOnlyList<InkDefinition> palette, string inkMode, string halftone = "none", string whiteMode = "auto")
+        PpmImage image, IReadOnlyList<InkDefinition> palette, string inkMode, string halftone = "none", string whiteMode = "auto",
+        string colourCorrection = "photo", int resolution = 600, string? photoLutPath = null)
     {
         if (!ValidWhiteModes.Contains(whiteMode))
         {
@@ -59,7 +66,7 @@ public static class JobAssembly
 
         Dictionary<string, byte[]> planes = inkMode switch
         {
-            "auto" => BuildAutoPlanes(image, adjustedPalette, halftone),
+            "auto" => BuildAutoPlanes(image, adjustedPalette, halftone, colourCorrection, resolution, photoLutPath),
             "spot_only" => Raster.ToPlanesMagic(image, adjustedPalette),
             "per_page" => throw new ArgumentException(
                 "ink mode 'per_page' needs multiple page inputs; the caller must reject it before calling BuildJobPlanes"),
@@ -139,7 +146,9 @@ public static class JobAssembly
     /// black)は、Raster.ToPlanesAuto の内部では特色側のプレーンが CMYK 側で
     /// 上書きされてしまう(D-019 補足)ため、内部専用の一時キーで CMYK 側を
     /// 受け取ってから OR で合成する。</summary>
-    private static Dictionary<string, byte[]> BuildAutoPlanes(PpmImage image, IReadOnlyList<InkDefinition> palette, string halftone)
+    private static Dictionary<string, byte[]> BuildAutoPlanes(
+        PpmImage image, IReadOnlyList<InkDefinition> palette, string halftone,
+        string colourCorrection, int resolution, string? photoLutPath)
     {
         var cmykMap = new Dictionary<string, string>();
         var twoRoleTempNames = new Dictionary<string, string>(); // 一時キー -> 実際のインク名
@@ -153,7 +162,7 @@ public static class JobAssembly
             if (ink.MagicRgb is not null)
             {
                 // 二役インク: CMYK 側を一時キーで受け、後で特色側のプレーンへ OR 合成する。
-                string tempName = ink.Name + " __cmyk_dup";
+                string tempName = ink.Name + "\0__cmyk_dup";
                 cmykMap[ink.Channel] = tempName;
                 twoRoleTempNames[tempName] = ink.Name;
             }
@@ -163,7 +172,7 @@ public static class JobAssembly
             }
         }
 
-        var raw = Raster.ToPlanesAuto(image, palette, cmykMap, halftone);
+        var raw = Raster.ToPlanesAuto(image, palette, cmykMap, halftone, colourCorrection, resolution, photoLutPath);
 
         var merged = new Dictionary<string, byte[]>();
         foreach (var (name, buf) in raw)

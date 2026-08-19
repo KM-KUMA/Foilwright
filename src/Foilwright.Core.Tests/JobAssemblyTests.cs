@@ -59,7 +59,11 @@ public class JobAssemblyTests
         var palette = MakePalette();
         var image = MakeMixedImage();
 
-        var result = JobAssembly.BuildJobPlanes(image, palette, "auto");
+        // このテストは colcorPlain(下色除去)の式を前提にコメントを書いている
+        // (x=1 の灰色が c=m=y=0/k=205 になる)。BuildJobPlanes の既定は D-029 で
+        // "photo" になったため、ここでは意図的に "plain" を明示して式を固定する
+        // -- 検証対象は色補正そのものではなく JobAssembly の合成ロジック。
+        var result = JobAssembly.BuildJobPlanes(image, palette, "auto", colourCorrection: "plain");
         var byName = result.ToDictionary(r => r.Ink.Name, r => r.Plane);
 
         // red は x=0 のみ(特色マッチ)。
@@ -80,7 +84,9 @@ public class JobAssemblyTests
         var palette = MakePalette();
         var image = MakeMixedImage();
 
-        var result = JobAssembly.BuildJobPlanes(image, palette, "auto");
+        // Auto_SpotMatchGoesToSpotPlane_RemainderGoesToCmykPlane と同じ理由で
+        // "plain" を明示する。
+        var result = JobAssembly.BuildJobPlanes(image, palette, "auto", colourCorrection: "plain");
 
         // black(二役)は結果に 1 エントリのみ(2 エントリに分裂しない)。
         var blackEntries = result.Where(r => r.Ink.Name == "black").ToList();
@@ -100,7 +106,8 @@ public class JobAssemblyTests
         var palette = MakePalette();
         var image = MakeMixedImage();
 
-        var result = JobAssembly.BuildJobPlanes(image, palette, "auto");
+        // 同上、"plain" を明示する。
+        var result = JobAssembly.BuildJobPlanes(image, palette, "auto", colourCorrection: "plain");
         var names = result.Select(r => r.Ink.Name).ToHashSet();
 
         Assert.DoesNotContain("cyan", names);
