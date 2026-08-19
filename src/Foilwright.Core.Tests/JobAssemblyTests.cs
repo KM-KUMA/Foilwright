@@ -366,6 +366,126 @@ public class JobAssemblyTests
         Assert.False(BitSet(magicByName["white"], 3));
     }
 
+    // --- 白版モード "silhouette"(D-034)の検証 -------------------------------
+    //
+    // 5x5 画像: 外周は純白(紙の背景)。内側 3x3 は黒い輪(x=1..3,y=1..3 の
+    // 枠)で、輪の内側の中心 1 画素(x=2,y=2)だけが純白(絵に囲まれた穴)。
+    //   - opaque は輪だけを白版に入れる(中心の純白は対象外)。
+    //   - silhouette は輪 + 中心の穴の両方を白版に入れる(D-034 の核心)。
+    private static PpmImage MakeRingImage()
+    {
+        // 5x5、各画素 RGB。輪 = (0,0,0)、それ以外は純白。
+        (int x, int y)[] ringPixels =
+        {
+            (1, 1), (2, 1), (3, 1),
+            (1, 2), (3, 2),
+            (1, 3), (2, 3), (3, 3),
+        };
+        var ringSet = new HashSet<(int, int)>(ringPixels);
+        byte[] pixels = new byte[5 * 5 * 3];
+        for (int y = 0; y < 5; y++)
+        {
+            for (int x = 0; x < 5; x++)
+            {
+                int idx = (y * 5 + x) * 3;
+                byte v = ringSet.Contains((x, y)) ? (byte)0 : (byte)255;
+                pixels[idx] = v;
+                pixels[idx + 1] = v;
+                pixels[idx + 2] = v;
+            }
+        }
+        return new PpmImage(5, 5, pixels);
+    }
+
+    private static bool BitSet2D(byte[] plane, int width, int x, int y)
+    {
+        int rowBytes = (width + 7) / 8;
+        int byteIndex = y * rowBytes + (x >> 3);
+        int bitMask = 0x80 >> (x & 7);
+        return (plane[byteIndex] & bitMask) != 0;
+    }
+
+    [Fact]
+    public void WhiteMode_Silhouette_IncludesEnclosedWhiteHole_OpaqueDoesNot()
+    {
+        var palette = MakePaletteWithWhite();
+        var image = MakeRingImage();
+
+        var silhouetteResult = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "silhouette");
+        var silhouetteByName = silhouetteResult.ToDictionary(r => r.Ink.Name, r => r.Plane);
+        Assert.True(silhouetteByName.ContainsKey("white"));
+        // 輪(例: x=1,y=1)は入る。
+        Assert.True(BitSet2D(silhouetteByName["white"], 5, 1, 1));
+        // 輪に囲まれた中心の純白の穴(x=2,y=2)も入る -- silhouette の核心。
+        Assert.True(BitSet2D(silhouetteByName["white"], 5, 2, 2));
+        // 紙の背景(四隅など、外周から到達できる純白)は入らない。
+        Assert.False(BitSet2D(silhouetteByName["white"], 5, 0, 0));
+
+        var opaqueResult = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "opaque");
+        var opaqueByName = opaqueResult.ToDictionary(r => r.Ink.Name, r => r.Plane);
+        Assert.True(opaqueByName.ContainsKey("white"));
+        // opaque も輪は入れる。
+        Assert.True(BitSet2D(opaqueByName["white"], 5, 1, 1));
+        // opaque は中心の穴を入れない(純白は無条件で対象外 -- D-032 の定義)。
+        Assert.False(BitSet2D(opaqueByName["white"], 5, 2, 2));
+
+        // silhouette のドット数は opaque より多い(穴の分だけ増える) --
+        // これが両モードが実際に違う結果を出すことの直接的な証拠。
+        int CountBits(byte[] plane)
+        {
+            int count = 0;
+            foreach (byte b in plane)
+            {
+                for (int bit = 0; bit < 8; bit++)
+                {
+                    if ((b & (0x80 >> bit)) != 0)
+                    {
+                        count++;
+                    }
+                }
+            }
+            return count;
+        }
+        Assert.True(CountBits(silhouetteByName["white"]) > CountBits(opaqueByName["white"]));
+    }
+
+    [Fact]
+    public void WhiteMode_Silhouette_AllPureWhiteImage_WhitePlaneIsEmptyAndExcluded()
+    {
+        var palette = MakePaletteWithWhite();
+        byte[] pixels = { 255, 255, 255, 255, 255, 255, 255, 255, 255 };
+        var image = new PpmImage(3, 1, pixels);
+
+        var result = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "silhouette");
+        var names = result.Select(r => r.Ink.Name).ToHashSet();
+
+        Assert.DoesNotContain("white", names);
+    }
+
+    [Fact]
+    public void WhiteMode_Silhouette_DoesNotChangeNoneAutoMagicOutputs()
+    {
+        var palette = MakePaletteWithWhite();
+        var image = MakeWhiteTestImage();
+
+        var noneResult = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "none");
+        Assert.DoesNotContain("white", noneResult.Select(r => r.Ink.Name));
+
+        var autoResult = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "auto");
+        var autoByName = autoResult.ToDictionary(r => r.Ink.Name, r => r.Plane);
+        Assert.True(BitSet(autoByName["white"], 0));
+        Assert.True(BitSet(autoByName["white"], 1));
+        Assert.True(BitSet(autoByName["white"], 2));
+        Assert.False(BitSet(autoByName["white"], 3));
+
+        var magicResult = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "magic");
+        var magicByName = magicResult.ToDictionary(r => r.Ink.Name, r => r.Plane);
+        Assert.False(BitSet(magicByName["white"], 0));
+        Assert.False(BitSet(magicByName["white"], 1));
+        Assert.True(BitSet(magicByName["white"], 2));
+        Assert.False(BitSet(magicByName["white"], 3));
+    }
+
     // --- ハーフトーン(DOMAIN §4.2.1)の選択可否の検証 ------------------------
     // Raster.cs のハーフトーン展開ロジック自体は変更していないため、ここでは
     // JobAssembly 経由で 3 モードすべてが選択でき、例外なく完了することだけを

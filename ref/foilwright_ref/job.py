@@ -36,6 +36,8 @@ The three responsibilities mirror JobAssembly.cs's module comment:
 
 from __future__ import annotations
 
+from collections import deque
+
 from . import raster
 
 
@@ -68,6 +70,15 @@ def apply_white_mode(palette: list[dict], white_mode: str) -> list[dict]:
         (build_job_planes) adds afterwards via apply_opaque_white_mode.
         The direct magic_rgb match is kept here so it is included too,
         same as "auto"/"magic".
+      - "silhouette" (D-034): force the white ink's `auto_undercoat` to
+        False (same as "magic"/"opaque"). Every pixel that is not
+        reachable from the sheet's edges by walking pure-white pixels
+        through 4-neighbours becomes white -- that includes pure-white
+        pixels enclosed by the artwork (e.g. a white-filled eye layer),
+        which "opaque" deliberately excludes. The caller (build_job_planes)
+        adds this afterwards via apply_silhouette_white_mode. The direct
+        magic_rgb match is kept here so it is included too, same as
+        "auto"/"magic"/"opaque".
 
     Mirrors JobAssembly.ApplyWhiteMode. Ink mappings are never mutated in
     place; a modified copy is returned for the ink whose flag changes.
@@ -89,14 +100,14 @@ def apply_white_mode(palette: list[dict], white_mode: str) -> list[dict]:
             with_auto_undercoat(ink, True) if ink is white_ink else ink
             for ink in palette
         ]
-    if white_mode in ("magic", "opaque"):
+    if white_mode in ("magic", "opaque", "silhouette"):
         return [
             with_auto_undercoat(ink, False) if ink is white_ink else ink
             for ink in palette
         ]
     raise ValueError(
         f"unknown white mode {white_mode!r}; expected one of "
-        "'none', 'auto', 'magic', 'opaque'"
+        "'none', 'auto', 'magic', 'opaque', 'silhouette'"
     )
 
 
@@ -172,6 +183,112 @@ def apply_opaque_white_mode(
         result[white_name] = bytes(merged)
     else:
         result[white_name] = opaque_plane
+    return result
+
+
+def compute_silhouette_plane(image: tuple[int, int, bytes]) -> bytes:
+    """Build a 1bit plane with a bit set for every pixel that is *not*
+    reachable from the sheet's four edges by walking pure-white
+    (255, 255, 255) pixels through 4-neighbours (DOMAIN.md §6.1 / §7.1 /
+    D-034).
+
+    Pure white reachable from an edge is the sheet's background (do not
+    print here); pure white enclosed by non-white pixels -- e.g. a
+    white-filled eye layer inside a closed outline -- is not reachable
+    and gets a bit set, same as every non-pure-white pixel.
+
+    Algorithm: a queue-based flood fill (BFS), seeded from every
+    pure-white pixel on the sheet's four edges. No recursion (avoids
+    stack overflow on large images -- D-034).
+
+    image: (width, height, pixels) as returned by read_ppm.
+
+    Returns a plane in the same packed format as
+    compute_non_white_pixel_plane: each row MSB-first, padded to a byte
+    boundary (row length = ceil(width/8) bytes), rows concatenated in
+    image order.
+    """
+    width, height, pixels = image
+    row_bytes = (width + 7) // 8
+
+    reached = bytearray(width * height)
+
+    def is_pure_white(x: int, y: int) -> bool:
+        idx = (y * width + x) * 3
+        return pixels[idx] == 255 and pixels[idx + 1] == 255 and pixels[idx + 2] == 255
+
+    queue: deque[tuple[int, int]] = deque()
+
+    def seed(x: int, y: int) -> None:
+        i = y * width + x
+        if reached[i]:
+            return
+        if not is_pure_white(x, y):
+            return
+        reached[i] = 1
+        queue.append((x, y))
+
+    for x in range(width):
+        seed(x, 0)
+        if height > 1:
+            seed(x, height - 1)
+    for y in range(height):
+        seed(0, y)
+        if width > 1:
+            seed(width - 1, y)
+
+    while queue:
+        x, y = queue.popleft()
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < width and 0 <= ny < height:
+                seed(nx, ny)
+
+    plane = bytearray(row_bytes * height)
+    for y in range(height):
+        row_base = y * width
+        plane_row_base = y * row_bytes
+        for x in range(width):
+            if not reached[row_base + x]:
+                byte_index = plane_row_base + (x >> 3)
+                bit_mask = 0x80 >> (x & 7)
+                plane[byte_index] |= bit_mask
+
+    return bytes(plane)
+
+
+def apply_silhouette_white_mode(
+    image: tuple[int, int, bytes], inks: list[dict], planes: dict[str, bytes]
+) -> dict[str, bytes]:
+    """Apply the "silhouette" white mode (DOMAIN.md §7.1 / D-034) on top
+    of an already-computed per-ink plane dict.
+
+    "White" is identified the same way as apply_opaque_white_mode: the
+    (at most one) ink with `auto_undercoat` set to True. If zero or more
+    than one ink has it set, `planes` is returned unchanged.
+
+    `planes` should already hold that ink's direct magic_rgb match (same
+    precondition as apply_opaque_white_mode) -- D-034 requires silhouette
+    to add the direct-match pixels too, same as "auto"/"magic"/"opaque".
+
+    Returns a new dict; `planes` itself is not mutated. Mirrors
+    JobAssembly.ApplySilhouetteWhite.
+    """
+    undercoat_names = [ink["name"] for ink in inks if ink.get("auto_undercoat")]
+    if len(undercoat_names) != 1:
+        return planes
+
+    white_name = undercoat_names[0]
+    silhouette_plane = compute_silhouette_plane(image)
+
+    result = dict(planes)
+    if white_name in result:
+        merged = bytearray(result[white_name])
+        for i, byte in enumerate(silhouette_plane):
+            merged[i] |= byte
+        result[white_name] = bytes(merged)
+    else:
+        result[white_name] = silhouette_plane
     return result
 
 
@@ -251,8 +368,10 @@ def build_job_planes(
         every pixel any other ink prints = auto_undercoat) / "magic"
         (only pixels matching white's magic_rgb) / "opaque" (every pixel
         that is not pure (255,255,255), plus direct magic_rgb matches --
-        DOMAIN.md §7.1 / D-027, "opaque" is D-032). Overrides the
-        palette's `auto_undercoat` flag.
+        DOMAIN.md §7.1 / D-027, "opaque" is D-032) / "silhouette" (every
+        pixel not reachable from the sheet's edges through pure-white
+        4-neighbours, plus direct magic_rgb matches -- D-034). Overrides
+        the palette's `auto_undercoat` flag.
 
     Inks with an entirely blank plane are excluded from the result. If
     every ink ends up blank, both return values are empty.
@@ -299,6 +418,12 @@ def build_job_planes(
         # same as "auto"/"magic"). The non-pure-white pixels are computed
         # straight from the image and OR-merged in here.
         planes = apply_opaque_white_mode(image, palette, planes)
+
+    if white_mode == "silhouette":
+        # Same reasoning as "opaque" above, but the mask comes from
+        # compute_silhouette_plane (D-034) instead of
+        # compute_non_white_pixel_plane.
+        planes = apply_silhouette_white_mode(image, palette, planes)
 
     # The result always walks the *original* palette (before white-mode
     # exclusion): a "none"-excluded ink is absent from adjusted_palette

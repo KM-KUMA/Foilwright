@@ -25,8 +25,8 @@ public static class JobAssembly
     public static readonly IReadOnlyList<string> ValidInkModes = new[] { "auto", "per_page", "spot_only" };
 
     /// <summary>サポートする白版モードの内部識別子(DOMAIN §7.1 / D-027、
-    /// "opaque" は D-032)。既定は "auto"。</summary>
-    public static readonly IReadOnlyList<string> ValidWhiteModes = new[] { "none", "auto", "magic", "opaque" };
+    /// "opaque" は D-032、"silhouette" は D-034)。既定は "auto"。</summary>
+    public static readonly IReadOnlyList<string> ValidWhiteModes = new[] { "none", "auto", "magic", "opaque", "silhouette" };
 
     /// <summary>サポートするハーフトーンの内部識別子(DOMAIN §4.2.1)。既定は "none"。
     /// Raster.cs 内部の同名リストと値を揃えてある(呼び出し側の入力検証・
@@ -86,6 +86,14 @@ public static class JobAssembly
             planes = ApplyOpaqueWhite(image, palette, planes);
         }
 
+        if (whiteMode == "silhouette")
+        {
+            // ApplyOpaqueWhite と同じ理屈だが、マスクは ComputeSilhouettePlane
+            // (D-034)から得る。ComputeNonWhitePixelPlane とは別のアルゴリズム
+            // (スキャンライン塗りつぶし)で計算し、突き合わせテストの網を強くする。
+            planes = ApplySilhouetteWhite(image, palette, planes);
+        }
+
         // 結果の一覧は常に元のパレット(白版モードで除外する前)を走査する。
         // "none" で除外したインクは adjustedPalette 側になく、planes 辞書にも
         // キーが無いため、下の TryGetValue が自然に false を返して除外される
@@ -138,7 +146,7 @@ public static class JobAssembly
         {
             "none" => palette.Where(ink => !ReferenceEquals(ink, whiteInk)).ToList(),
             "auto" => palette.Select(ink => ReferenceEquals(ink, whiteInk) ? WithAutoUndercoat(ink, true) : ink).ToList(),
-            "magic" or "opaque" => palette.Select(ink => ReferenceEquals(ink, whiteInk) ? WithAutoUndercoat(ink, false) : ink).ToList(),
+            "magic" or "opaque" or "silhouette" => palette.Select(ink => ReferenceEquals(ink, whiteInk) ? WithAutoUndercoat(ink, false) : ink).ToList(),
             _ => throw new ArgumentException($"unknown white mode '{whiteMode}'; expected one of {string.Join(", ", ValidWhiteModes)}"),
         };
     }
@@ -212,6 +220,198 @@ public static class JobAssembly
         }
 
         return plane;
+    }
+
+    /// <summary>白版モード "silhouette"(DOMAIN §7.1 / D-034)を適用する。
+    ///
+    /// 「白」はパレットで auto_undercoat: true になっているインクとして
+    /// 判別する(ApplyWhiteMode/ApplyOpaqueWhite と同じ規則。該当が 0 個または
+    /// 2 個以上なら白版モードの適用対象が定まらないため何もしない)。</summary>
+    private static Dictionary<string, byte[]> ApplySilhouetteWhite(
+        PpmImage image, IReadOnlyList<InkDefinition> palette, Dictionary<string, byte[]> planes)
+    {
+        var whiteInks = palette.Where(ink => ink.AutoUndercoat).ToList();
+        if (whiteInks.Count != 1)
+        {
+            return planes;
+        }
+        var whiteInk = whiteInks[0];
+
+        byte[] silhouettePlane = ComputeSilhouettePlane(image);
+
+        if (planes.TryGetValue(whiteInk.Name, out var existing))
+        {
+            var merged = (byte[])existing.Clone();
+            for (int i = 0; i < merged.Length; i++)
+            {
+                merged[i] |= silhouettePlane[i];
+            }
+            planes[whiteInk.Name] = merged;
+        }
+        else
+        {
+            planes[whiteInk.Name] = silhouettePlane;
+        }
+
+        return planes;
+    }
+
+    /// <summary>紙の四辺から純白(255,255,255)だけを 4 近傍で辿って
+    /// 到達できない画素すべてにビットを立てた 1bit プレーンを作る
+    /// (DOMAIN §6.1 / §7.1 / D-034)。到達できた純白は「紙の背景」
+    /// (印刷しない領域)、到達できない純白(絵に囲まれた穴)は白版の対象。
+    /// ビット順・行バイト数は ComputeNonWhitePixelPlane と同じ規則。
+    ///
+    /// アルゴリズムはスキャンライン方式の塗りつぶし(横方向の連続区間を
+    /// まとめて処理する)。ref/ の compute_silhouette_plane は同じ集合を
+    /// キューを使った素直な 4 近傍探索(1 画素ずつ)で計算しており、
+    /// アルゴリズムをあえて変えて突き合わせの網を強くしている(D-034)。
+    /// 再帰は使わない(A4 600dpi = 約 3,060 万画素でスタック溢れを避ける)。</summary>
+    private static byte[] ComputeSilhouettePlane(PpmImage image)
+    {
+        int width = image.Width, height = image.Height;
+        bool[] reached = FloodFillFromEdges(image);
+
+        int rowBytes = (width + 7) / 8;
+        var plane = new byte[rowBytes * height];
+
+        for (int y = 0; y < height; y++)
+        {
+            int rowBase = y * width;
+            int planeRowBase = y * rowBytes;
+            for (int x = 0; x < width; x++)
+            {
+                if (!reached[rowBase + x])
+                {
+                    int byteIndex = planeRowBase + (x >> 3);
+                    int bitMask = 0x80 >> (x & 7);
+                    plane[byteIndex] |= (byte)bitMask;
+                }
+            }
+        }
+
+        return plane;
+    }
+
+    /// <summary>紙の四辺の純白画素を種として、スキャンライン方式(横方向の
+    /// 連続区間ごとにまとめて処理する塗りつぶし)で純白の連結領域を求める。
+    /// 戻り値は画素ごとの到達可否(true = 紙の背景として到達できた)。
+    /// 種は画素単位ではなく区間単位でスタックに積むため、全画素を
+    /// キューに積む実装(Queue&lt;int&gt; に全画素)より少ないスタック消費で済む。</summary>
+    private static bool[] FloodFillFromEdges(PpmImage image)
+    {
+        int width = image.Width, height = image.Height;
+        byte[] pixels = image.Pixels;
+        var reached = new bool[width * height];
+
+        bool IsPureWhite(int x, int y)
+        {
+            int idx = (y * width + x) * 3;
+            return pixels[idx] == 255 && pixels[idx + 1] == 255 && pixels[idx + 2] == 255;
+        }
+
+        var stack = new Stack<(int X, int Y)>();
+
+        void Seed(int x, int y)
+        {
+            int i = y * width + x;
+            if (!reached[i] && IsPureWhite(x, y))
+            {
+                stack.Push((x, y));
+            }
+        }
+
+        for (int x = 0; x < width; x++)
+        {
+            Seed(x, 0);
+            if (height > 1)
+            {
+                Seed(x, height - 1);
+            }
+        }
+        for (int y = 0; y < height; y++)
+        {
+            Seed(0, y);
+            if (width > 1)
+            {
+                Seed(width - 1, y);
+            }
+        }
+
+        while (stack.Count > 0)
+        {
+            var (sx, sy) = stack.Pop();
+            int seedIndex = sy * width + sx;
+            if (reached[seedIndex])
+            {
+                // 別の区間から先に埋められていた種(スキャン中に重複して
+                // 積まれることがある)。
+                continue;
+            }
+
+            // 横方向に左右へ伸ばして、この行の連続する純白区間を確定する。
+            int xLeft = sx;
+            while (xLeft > 0 && !reached[sy * width + (xLeft - 1)] && IsPureWhite(xLeft - 1, sy))
+            {
+                xLeft--;
+            }
+            int xRight = sx;
+            while (xRight < width - 1 && !reached[sy * width + (xRight + 1)] && IsPureWhite(xRight + 1, sy))
+            {
+                xRight++;
+            }
+
+            int rowBase = sy * width;
+            for (int x = xLeft; x <= xRight; x++)
+            {
+                reached[rowBase + x] = true;
+            }
+
+            // 上下の隣接行を、確定した区間の幅の範囲内だけ走査し、未到達の
+            // 純白の連続区間ごとに 1 個だけ種を積む(区間内の残りは、その種を
+            // 処理するときに上の左右伸長でまとめて埋まる)。
+            ScanNeighbourRow(pixels, reached, width, height, xLeft, xRight, sy - 1, stack);
+            ScanNeighbourRow(pixels, reached, width, height, xLeft, xRight, sy + 1, stack);
+        }
+
+        return reached;
+    }
+
+    /// <summary>FloodFillFromEdges の補助: 隣接行 ny のうち [xLeft, xRight]
+    /// の範囲だけを走査し、未到達の純白の連続区間ごとに種を 1 個積む。</summary>
+    private static void ScanNeighbourRow(
+        byte[] pixels, bool[] reached, int width, int height, int xLeft, int xRight, int ny, Stack<(int X, int Y)> stack)
+    {
+        if (ny < 0 || ny >= height)
+        {
+            return;
+        }
+
+        bool IsPureWhite(int x, int y)
+        {
+            int idx = (y * width + x) * 3;
+            return pixels[idx] == 255 && pixels[idx + 1] == 255 && pixels[idx + 2] == 255;
+        }
+
+        int rowBase = ny * width;
+        int x = xLeft;
+        while (x <= xRight)
+        {
+            if (!reached[rowBase + x] && IsPureWhite(x, ny))
+            {
+                stack.Push((x, ny));
+                // この区間の残りは種を処理するときにまとめて埋まるため、
+                // 同じ区間内で種を重複して積まないよう先へ進める。
+                while (x <= xRight && !reached[rowBase + x] && IsPureWhite(x, ny))
+                {
+                    x++;
+                }
+            }
+            else
+            {
+                x++;
+            }
+        }
     }
 
     /// <summary>InkDefinition は record ではないため with 式が使えない。
