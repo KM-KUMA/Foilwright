@@ -1,14 +1,14 @@
 """Unit tests for the "opaque" white mode building blocks
-(foilwright_ref.raster.compute_non_white_pixel_plane /
+(foilwright_ref.job.compute_non_white_pixel_plane /
 apply_opaque_white_mode, DOMAIN.md §6.1 / §7.1 / D-032).
 
-There is no JobAssembly-equivalent layer in ref/ (see raster.py's
-apply_opaque_white_mode docstring): D-027's white-mode selector
-(none/auto/magic) was never built out here, only the underlying
-`auto_undercoat` flag that to_planes_magic/to_planes_auto honour. These
-tests therefore exercise the two new functions directly, and confirm
-that to_planes_magic/to_planes_auto -- the golden-verified functions
-behind "none"/"auto"/"magic" -- are untouched.
+These two functions live in job.py (D-033's JobAssembly-equivalent
+layer), not raster.py: they are called directly here (bypassing
+job.build_job_planes/apply_white_mode) so that these tests exercise the
+building blocks in isolation, and confirm that to_planes_magic/
+to_planes_auto -- the golden-verified functions behind
+"none"/"auto"/"magic" -- are untouched by their presence in the same
+package.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "ref"))
 
+from foilwright_ref import job as job_module
 from foilwright_ref import raster
 
 
@@ -52,7 +53,7 @@ def _bit(plane: bytes, row_bytes: int, x: int, y: int) -> int:
 
 def test_all_pure_white_image_plane_is_empty():
     image = _make_image([(255, 255, 255), (255, 255, 255)], width=2, height=1)
-    plane = raster.compute_non_white_pixel_plane(image)
+    plane = job_module.compute_non_white_pixel_plane(image)
     assert plane == bytes(1)
 
 
@@ -60,7 +61,7 @@ def test_every_non_pure_white_pixel_is_set():
     # x=0: red; x=1: near-white but not pure; x=2: pure white -> excluded.
     pixels = [(255, 0, 0), (254, 254, 254), (255, 255, 255)]
     image = _make_image(pixels, width=3, height=1)
-    plane = raster.compute_non_white_pixel_plane(image)
+    plane = job_module.compute_non_white_pixel_plane(image)
     assert _bit(plane, 1, 0, 0) == 1
     assert _bit(plane, 1, 1, 0) == 1
     assert _bit(plane, 1, 2, 0) == 0
@@ -72,7 +73,7 @@ def test_near_white_but_not_pure_is_included():
     # would not be assigned to any ink under CMYK separation or spot
     # matching (both treat it as effectively blank).
     image = _make_image([(254, 254, 254)], width=1, height=1)
-    plane = raster.compute_non_white_pixel_plane(image)
+    plane = job_module.compute_non_white_pixel_plane(image)
     assert _bit(plane, 1, 0, 0) == 1
 
 
@@ -120,7 +121,7 @@ def test_apply_opaque_white_mode_merges_into_existing_white_plane():
     image = _make_image(pixels, width=4, height=1)
     baseline = raster.to_planes_magic(image, adjusted_inks)
 
-    result = raster.apply_opaque_white_mode(image, original_inks, baseline)
+    result = job_module.apply_opaque_white_mode(image, original_inks, baseline)
 
     assert _bit(result["white"], 1, 0, 0) == 1  # opaque: not pure white
     assert _bit(result["white"], 1, 1, 0) == 1  # opaque: not pure white
@@ -146,7 +147,7 @@ def test_apply_opaque_white_mode_does_not_mutate_input_dict():
     baseline = {"white": bytes(1)}
     baseline_copy = dict(baseline)
 
-    raster.apply_opaque_white_mode(image, inks, baseline)
+    job_module.apply_opaque_white_mode(image, inks, baseline)
 
     assert baseline == baseline_copy
 
@@ -156,7 +157,7 @@ def test_apply_opaque_white_mode_zero_undercoat_inks_returns_planes_unchanged():
     image = _make_image([(255, 0, 0)], width=1, height=1)
     planes = {"red": bytes(1)}
 
-    result = raster.apply_opaque_white_mode(image, inks, planes)
+    result = job_module.apply_opaque_white_mode(image, inks, planes)
 
     assert result is planes
 
@@ -171,7 +172,7 @@ def test_apply_opaque_white_mode_multiple_undercoat_inks_returns_planes_unchange
     image = _make_image([(0, 0, 0)], width=1, height=1)
     planes = {"under1": bytes(1), "under2": bytes(1)}
 
-    result = raster.apply_opaque_white_mode(image, inks, planes)
+    result = job_module.apply_opaque_white_mode(image, inks, planes)
 
     assert result is planes
 
@@ -188,7 +189,7 @@ def test_apply_opaque_white_mode_creates_plane_if_missing():
     ]
     image = _make_image([(255, 0, 0)], width=1, height=1)
 
-    result = raster.apply_opaque_white_mode(image, inks, {})
+    result = job_module.apply_opaque_white_mode(image, inks, {})
 
     assert _bit(result["white"], 1, 0, 0) == 1
 

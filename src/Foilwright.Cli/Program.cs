@@ -1,16 +1,21 @@
 ﻿// Foilwright.Cli — トレイアプリの前身となるコンソールアプリ(Phase 2)。
 //
-// サブコマンド 3 つ:
-//   status  プリンタの状態を読んで、装填カセットを人が読める形で表示する
-//   print   既に組み立て済みの RGL バイト列ファイルを送出する
-//   listen  名前付きパイプで PostScript を受け取り、変換して印刷する
+// サブコマンド:
+//   status     プリンタの状態を読んで、装填カセットを人が読める形で表示する
+//   print      既に組み立て済みの RGL バイト列ファイルを送出する
+//   listen     名前付きパイプで PostScript を受け取り、変換して印刷する
+//   build-rgl  【開発用】PPM を直接受け取り、実機に触れずに RGL バイト列を
+//              ファイルへ書き出す(D-033: ref/ の job.py との突き合わせテスト
+//              専用の決定的な入口。--debug-rgl は Ghostscript を経由するため
+//              ラスタライザの差が混入し比較に使えない)。
 //
 // 設定ファイル(profiles/ papers/ palette/ media.yaml)はすべてリポジトリ
 // 直下から読む。値をここにハードコードしない(DOMAIN §4.5)。
 // 既定値: MD-5000(D-025) / 600dpi / A4 / 普通紙。
 //
 // 機種 → (プロファイル・送出方式・VID) の対応は Foilwright.Core.MachineRoute
-// に集約してある(D-025)。3 サブコマンド共通で --machine / --vid を受け付ける。
+// に集約してある(D-025)。status/print/listen は共通で --machine / --vid を
+// 受け付ける(build-rgl は実機に触れないため --vid は受け付けない)。
 
 using System.IO.Pipes;
 using System.Linq;
@@ -57,6 +62,8 @@ internal static class Program
                     return RunPrint(args.Skip(1).ToArray());
                 case "listen":
                     return RunListen(args.Skip(1).ToArray());
+                case "build-rgl":
+                    return RunBuildRgl(args.Skip(1).ToArray());
                 default:
                     PrintUsage();
                     return 1;
@@ -91,6 +98,12 @@ internal static class Program
         Console.Error.WriteLine($"                      --white-mode 省略時は '{DefaultWhiteMode}'(DOMAIN §7.1 / D-027、opaque は D-032)");
         Console.Error.WriteLine($"                      --colour-correction 省略時は '{DefaultColourCorrection}'(DOMAIN §7.1 / D-029)");
         Console.Error.WriteLine("                      --no-curl-correction を指定するとカール矯正を止める(デカール・フィルム用。DOMAIN §10.10.4)");
+        Console.Error.WriteLine("  build-rgl <入力.ppm> <出力.bin> [--machine md-5000|md-5500] [--paper <名前>] [--media <名前>]");
+        Console.Error.WriteLine("            [--resolution 600|1200x600] [--ink-mode auto|per_page|spot_only]");
+        Console.Error.WriteLine("            [--halftone none|halftone|coarse_halftone] [--white-mode none|auto|magic|opaque]");
+        Console.Error.WriteLine("            [--colour-correction none|plain|photo]");
+        Console.Error.WriteLine("                      【開発用】PPM を直接受け取り RGL バイト列をファイルへ書き出す。実機には触れない");
+        Console.Error.WriteLine("                      (D-033: ref/ の job.py との突き合わせテスト専用の決定的な入口。listen と違い Ghostscript を経由しない)");
         Console.Error.WriteLine($"  --machine 省略時は '{MachineRoute.DefaultMachine}'(D-025)。選べるのは: {MachineRoute.KnownMachinesDescription}");
         Console.Error.WriteLine("  --vid は機種既定の VID(変換ケーブル等の個体差)を上書きする。例: --vid 056E");
     }
@@ -577,6 +590,138 @@ internal static class Program
             TryDelete(psPath);
             TryDelete(ppmPath);
         }
+    }
+
+    // --- build-rgl(開発用。D-033)---------------------------------------------
+
+    /// <summary>【開発用】PPM を直接受け取り、実機に触れずに RGL バイト列を
+    /// ファイルへ書き出す(D-033)。listen の HandleJob と同じ組み立て手順
+    /// (JobAssembly.BuildJobPlanes → Emitter.EmitJob)を踏むが、Ghostscript も
+    /// 印字可能領域への切り出しも行わない — PPM のピクセル寸法をそのまま
+    /// image の width/height として扱う。ref/ の job.build_job_planes /
+    /// emitter.emit_job との突き合わせテスト(ref/tests/test_cross_language_match.py)
+    /// がラスタライザの差に汚染されないための決定的な入口。</summary>
+    private static int RunBuildRgl(string[] args)
+    {
+        var (route, _, positional) = ParseMachineArgs(args);
+
+        string inkMode = DefaultInkMode;
+        string resolutionKey = DefaultResolutionKey;
+        string paperName = DefaultPaperName;
+        string mediaName = DefaultMediaName;
+        string halftone = DefaultHalftone;
+        string whiteMode = DefaultWhiteMode;
+        string colourCorrection = DefaultColourCorrection;
+
+        var freePositional = new List<string>();
+        for (int i = 0; i < positional.Count; i++)
+        {
+            string opt = positional[i];
+            if (opt is "--ink-mode" or "--resolution" or "--paper" or "--media" or "--halftone" or "--white-mode" or "--colour-correction")
+            {
+                if (i + 1 >= positional.Count)
+                {
+                    Console.Error.WriteLine($"使い方: build-rgl {opt} <値>");
+                    return 1;
+                }
+                string value = positional[i + 1];
+                i++;
+                switch (opt)
+                {
+                    case "--ink-mode": inkMode = value; break;
+                    case "--resolution": resolutionKey = value; break;
+                    case "--paper": paperName = value; break;
+                    case "--media": mediaName = value; break;
+                    case "--halftone": halftone = value; break;
+                    case "--white-mode": whiteMode = value; break;
+                    case "--colour-correction": colourCorrection = value; break;
+                }
+            }
+            else
+            {
+                freePositional.Add(opt);
+            }
+        }
+
+        if (freePositional.Count != 2)
+        {
+            Console.Error.WriteLine("使い方: Foilwright.Cli build-rgl <入力.ppm> <出力.bin> [オプション]");
+            return 1;
+        }
+        string inputPath = freePositional[0];
+        string outputPath = freePositional[1];
+
+        if (!JobAssembly.ValidInkModes.Contains(inkMode) || inkMode == "per_page")
+        {
+            Console.Error.WriteLine(
+                $"不明なインク指定方式、または build-rgl(単一 PPM 入力)では選べない方式です: '{inkMode}'。" +
+                $"次のいずれかを指定してください: auto, spot_only");
+            return 1;
+        }
+        if (!JobAssembly.ValidHalftones.Contains(halftone))
+        {
+            Console.Error.WriteLine(
+                $"不明なハーフトーン '{halftone}'。次のいずれかを指定してください: {string.Join(", ", JobAssembly.ValidHalftones)}");
+            return 1;
+        }
+        if (!JobAssembly.ValidWhiteModes.Contains(whiteMode))
+        {
+            Console.Error.WriteLine(
+                $"不明な白版モード '{whiteMode}'。次のいずれかを指定してください: {string.Join(", ", JobAssembly.ValidWhiteModes)}");
+            return 1;
+        }
+        if (!Colour.ValidColourCorrections.Contains(colourCorrection))
+        {
+            Console.Error.WriteLine(
+                $"不明な色補正 '{colourCorrection}'。次のいずれかを指定してください: {string.Join(", ", Colour.ValidColourCorrections)}");
+            return 1;
+        }
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"ファイルなし: {inputPath}");
+            return 1;
+        }
+
+        string repoRoot = FindRepoRoot();
+        var config = LoadDefaultJobConfig(repoRoot, route, paperName, mediaName);
+
+        ResolutionEntry resolutionEntry;
+        try
+        {
+            resolutionEntry = config.Profile.ResolveResolutionByKey(resolutionKey);
+        }
+        catch (ConfigException ex)
+        {
+            Console.Error.WriteLine($"エラー: {ex.Message}");
+            return 1;
+        }
+
+        var image = PpmImage.Read(inputPath);
+
+        string photoLutPath = Path.Combine(repoRoot, "colour", "photo_colcor.bin");
+        var jobPlanes = JobAssembly.BuildJobPlanes(
+            image, config.Palette, inkMode, halftone, whiteMode,
+            colourCorrection, resolutionEntry.DpiX, photoLutPath);
+
+        var planes = jobPlanes.ToDictionary(jp => jp.Ink.Name, jp => jp.Plane);
+        var inks = jobPlanes
+            .Select(jp => new JobInk { Name = jp.Ink.Name, PrinterCode = jp.Ink.PrinterCode, Passes = jp.Ink.Passes })
+            .ToList();
+
+        var job = new PrintJob
+        {
+            Resolution = resolutionEntry.DpiX,
+            Paper = config.Paper,
+            Media = config.Media,
+            Inks = inks,
+            Width = image.Width,
+            Height = image.Height,
+        };
+
+        byte[] rgl = Emitter.EmitJob(planes, job);
+        File.WriteAllBytes(outputPath, rgl);
+        Console.WriteLine($"RGL 組み立て完了: {outputPath} ({rgl.Length} バイト)");
+        return 0;
     }
 
     private static void TryDelete(string path)
