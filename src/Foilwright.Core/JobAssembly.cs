@@ -24,8 +24,9 @@ public static class JobAssembly
     /// <summary>サポートするインク指定方式の内部識別子(DOMAIN §6.6)。</summary>
     public static readonly IReadOnlyList<string> ValidInkModes = new[] { "auto", "per_page", "spot_only" };
 
-    /// <summary>サポートする白版モードの内部識別子(DOMAIN §7.1 / D-027)。既定は "auto"。</summary>
-    public static readonly IReadOnlyList<string> ValidWhiteModes = new[] { "none", "auto", "magic" };
+    /// <summary>サポートする白版モードの内部識別子(DOMAIN §7.1 / D-027、
+    /// "opaque" は D-032)。既定は "auto"。</summary>
+    public static readonly IReadOnlyList<string> ValidWhiteModes = new[] { "none", "auto", "magic", "opaque" };
 
     /// <summary>サポートするハーフトーンの内部識別子(DOMAIN §4.2.1)。既定は "none"。
     /// Raster.cs 内部の同名リストと値を揃えてある(呼び出し側の入力検証・
@@ -41,8 +42,10 @@ public static class JobAssembly
     ///
     /// whiteMode: "none"(白のプレーンを作らない)/ "auto"(既定。他インクが
     ///     乗る画素の和集合を白にする = auto_undercoat 相当)/ "magic"
-    ///     (白の magic_rgb に一致した画素だけを白にする)のいずれか
-    ///     (DOMAIN §7.1 / D-027)。パレットの auto_undercoat フラグを上書きする。
+    ///     (白の magic_rgb に一致した画素だけを白にする)/ "opaque"
+    ///     (純白 255,255,255 でない画素すべてを白にする。magic_rgb への
+    ///     直接一致分も auto と同じく足す)のいずれか(DOMAIN §7.1 / D-027、
+    ///     "opaque" は D-032)。パレットの auto_undercoat フラグを上書きする。
     ///
     /// 中身の無いプレーン(1 ドットも立っていない)のインクは戻り値から
     /// 除外する。全インクが空なら空リストを返す(呼び出し側はこれを見て
@@ -72,6 +75,16 @@ public static class JobAssembly
                 "ink mode 'per_page' needs multiple page inputs; the caller must reject it before calling BuildJobPlanes"),
             _ => throw new ArgumentException($"unknown ink mode '{inkMode}'; expected one of {string.Join(", ", ValidInkModes)}"),
         };
+
+        if (whiteMode == "opaque")
+        {
+            // Raster.cs(golden 検証済み)には手を入れない。ApplyWhiteMode が
+            // opaque でも white インクの AutoUndercoat を false にしているため、
+            // ここまでの planes には white インクの magic_rgb 直接一致分だけが
+            // 入っている(D-032: auto と同じく直接一致分も足す、を満たす基礎)。
+            // 純白でない画素の分は画像から直接計算して OR で足し込む。
+            planes = ApplyOpaqueWhite(image, palette, planes);
+        }
 
         // 結果の一覧は常に元のパレット(白版モードで除外する前)を走査する。
         // "none" で除外したインクは adjustedPalette 側になく、planes 辞書にも
@@ -105,7 +118,13 @@ public static class JobAssembly
     ///   - "auto": 白インクの auto_undercoat を true に強制する(パレット側の
     ///     値が false でも、設定が上書きする)。
     ///   - "magic": 白インクの auto_undercoat を false に強制する。マジック
-    ///     カラーへの直接一致分のみが白になる。</summary>
+    ///     カラーへの直接一致分のみが白になる。
+    ///   - "opaque"(D-032): 白インクの auto_undercoat を false に強制する
+    ///     (magic と同じ)。他インクの和集合ではなく「純白でない画素すべて」
+    ///     が白になるべきなので、Raster.cs 側の和集合ロジックは使わない。
+    ///     マジックカラーへの直接一致分はここで magic と同様に確保しておき、
+    ///     純白でない画素の分は呼び出し元(BuildJobPlanes)が画像から直接
+    ///     計算して OR で足し込む(ApplyOpaqueWhite)。</summary>
     private static List<InkDefinition> ApplyWhiteMode(IReadOnlyList<InkDefinition> palette, string whiteMode)
     {
         var whiteInks = palette.Where(ink => ink.AutoUndercoat).ToList();
@@ -119,9 +138,80 @@ public static class JobAssembly
         {
             "none" => palette.Where(ink => !ReferenceEquals(ink, whiteInk)).ToList(),
             "auto" => palette.Select(ink => ReferenceEquals(ink, whiteInk) ? WithAutoUndercoat(ink, true) : ink).ToList(),
-            "magic" => palette.Select(ink => ReferenceEquals(ink, whiteInk) ? WithAutoUndercoat(ink, false) : ink).ToList(),
+            "magic" or "opaque" => palette.Select(ink => ReferenceEquals(ink, whiteInk) ? WithAutoUndercoat(ink, false) : ink).ToList(),
             _ => throw new ArgumentException($"unknown white mode '{whiteMode}'; expected one of {string.Join(", ", ValidWhiteModes)}"),
         };
+    }
+
+    /// <summary>白版モード "opaque"(DOMAIN §7.1 / D-032)を適用する。
+    ///
+    /// 「白」はパレットで auto_undercoat: true になっているインクとして
+    /// 判別する(ApplyWhiteMode と同じ規則。該当が 0 個または 2 個以上なら
+    /// 白版モードの適用対象が定まらないため何もしない)。
+    ///
+    /// 純白(255,255,255)の画素だけは対象から除く — DOMAIN §6.1 の約束
+    /// 「白は純白 255,255,255 ではない。255 は印刷しない領域」による。
+    /// 純白まで白にすると、原稿の余白(印刷しない領域)ごと紙全体が白で
+    /// 埋まってしまう。</summary>
+    private static Dictionary<string, byte[]> ApplyOpaqueWhite(
+        PpmImage image, IReadOnlyList<InkDefinition> palette, Dictionary<string, byte[]> planes)
+    {
+        var whiteInks = palette.Where(ink => ink.AutoUndercoat).ToList();
+        if (whiteInks.Count != 1)
+        {
+            return planes;
+        }
+        var whiteInk = whiteInks[0];
+
+        byte[] opaquePlane = ComputeNonWhitePixelPlane(image);
+
+        if (planes.TryGetValue(whiteInk.Name, out var existing))
+        {
+            var merged = (byte[])existing.Clone();
+            for (int i = 0; i < merged.Length; i++)
+            {
+                merged[i] |= opaquePlane[i];
+            }
+            planes[whiteInk.Name] = merged;
+        }
+        else
+        {
+            planes[whiteInk.Name] = opaquePlane;
+        }
+
+        return planes;
+    }
+
+    /// <summary>純白(255,255,255)でない画素すべてにビットを立てた 1bit プレーンを
+    /// 作る(DOMAIN §6.1 / D-032)。ビット順・行バイト数は Raster.cs の
+    /// ToPlanesMagic/ToPlanesAuto と同じ規則(MSB 先頭、(width+7)/8 バイト/行)。</summary>
+    private static byte[] ComputeNonWhitePixelPlane(PpmImage image)
+    {
+        int width = image.Width, height = image.Height;
+        byte[] pixels = image.Pixels;
+        int rowBytes = (width + 7) / 8;
+        var plane = new byte[rowBytes * height];
+
+        for (int y = 0; y < height; y++)
+        {
+            int rowBase = y * width * 3;
+            int planeRowBase = y * rowBytes;
+            for (int x = 0; x < width; x++)
+            {
+                int idx = rowBase + x * 3;
+                byte r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
+                if (r == 255 && g == 255 && b == 255)
+                {
+                    // 純白は「印刷しない領域」(DOMAIN §6.1)。opaque の対象外。
+                    continue;
+                }
+                int byteIndex = planeRowBase + (x >> 3);
+                int bitMask = 0x80 >> (x & 7);
+                plane[byteIndex] |= (byte)bitMask;
+            }
+        }
+
+        return plane;
     }
 
     /// <summary>InkDefinition は record ではないため with 式が使えない。

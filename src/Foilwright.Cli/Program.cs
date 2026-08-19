@@ -80,7 +80,7 @@ internal static class Program
         Console.Error.WriteLine("                      RGL バイト列ファイルを送出する");
         Console.Error.WriteLine("  listen [--ink-mode auto|per_page|spot_only] [--resolution 600|1200x600]");
         Console.Error.WriteLine("         [--paper <名前>] [--media <名前>] [--halftone none|halftone|coarse_halftone]");
-        Console.Error.WriteLine("         [--white-mode none|auto|magic] [--colour-correction none|plain|photo]");
+        Console.Error.WriteLine("         [--white-mode none|auto|magic|opaque] [--colour-correction none|plain|photo]");
         Console.Error.WriteLine("         [--no-curl-correction] [--machine md-5000|md-5500] [--vid XXXX]");
         Console.Error.WriteLine("                      名前付きパイプで PostScript を受け取り印刷する");
         Console.Error.WriteLine("                      --ink-mode 省略時は 'auto'(DOMAIN §6.6 / D-016)");
@@ -88,7 +88,7 @@ internal static class Program
         Console.Error.WriteLine($"                      --paper 省略時は '{DefaultPaperName}'。選べる値は用紙表(papers/{{系列}}.yaml)による(DOMAIN §5.5 / §15.10.2)");
         Console.Error.WriteLine($"                      --media 省略時は '{DefaultMediaName}'。選べる値は media.yaml による(DOMAIN §5.5.2)");
         Console.Error.WriteLine($"                      --halftone 省略時は '{DefaultHalftone}'(DOMAIN §4.2.1)");
-        Console.Error.WriteLine($"                      --white-mode 省略時は '{DefaultWhiteMode}'(DOMAIN §7.1 / D-027)");
+        Console.Error.WriteLine($"                      --white-mode 省略時は '{DefaultWhiteMode}'(DOMAIN §7.1 / D-027、opaque は D-032)");
         Console.Error.WriteLine($"                      --colour-correction 省略時は '{DefaultColourCorrection}'(DOMAIN §7.1 / D-029)");
         Console.Error.WriteLine("                      --no-curl-correction を指定するとカール矯正を止める(デカール・フィルム用。DOMAIN §10.10.4)");
         Console.Error.WriteLine($"  --machine 省略時は '{MachineRoute.DefaultMachine}'(D-025)。選べるのは: {MachineRoute.KnownMachinesDescription}");

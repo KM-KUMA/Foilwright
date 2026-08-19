@@ -276,6 +276,96 @@ public class JobAssemblyTests
         Assert.Throws<ArgumentException>(() => JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "bogus"));
     }
 
+    // --- 白版モード "opaque"(D-032)の検証 ----------------------------------
+
+    [Fact]
+    public void WhiteMode_Opaque_CoversEveryNonPureWhitePixel()
+    {
+        var palette = MakePaletteWithWhite();
+        var image = MakeWhiteTestImage();
+
+        var result = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "opaque");
+        var byName = result.ToDictionary(r => r.Ink.Name, r => r.Plane);
+
+        Assert.True(byName.ContainsKey("white"));
+        // x=0(red, 純白でない)、x=1(cyan/CMYK, 純白でない)、x=2(white の
+        // magic_rgb への直接一致、純白でない)はすべて白版に入る。x=3 は
+        // 純白(255,255,255)なので対象外(DOMAIN §6.1: 255 は印刷しない領域)。
+        Assert.True(BitSet(byName["white"], 0));
+        Assert.True(BitSet(byName["white"], 1));
+        Assert.True(BitSet(byName["white"], 2));
+        Assert.False(BitSet(byName["white"], 3));
+    }
+
+    [Fact]
+    public void WhiteMode_Opaque_AllPureWhiteImage_WhitePlaneIsEmptyAndExcluded()
+    {
+        var palette = MakePaletteWithWhite();
+        // 3 画素すべて純白。white 以外のインクも空になる(MakeBlankImage と
+        // 同じ性質だが white を含むパレットで確認する)。
+        byte[] pixels = { 255, 255, 255, 255, 255, 255, 255, 255, 255 };
+        var image = new PpmImage(3, 1, pixels);
+
+        var result = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "opaque");
+        var names = result.Select(r => r.Ink.Name).ToHashSet();
+
+        // 空プレーンは JobAssembly の既存規則(空プレーン除外)によりジョブから消える。
+        Assert.DoesNotContain("white", names);
+    }
+
+    [Fact]
+    public void WhiteMode_Opaque_NearWhiteButNotPure_IsIncluded()
+    {
+        var palette = MakePaletteWithWhite();
+        // (254,254,254) は auto なら他インクの画素になる場合を除き白版に
+        // 入らないが、opaque は「純白でない画素すべて」なので入る --
+        // これが auto との違いの核心(D-032)。
+        byte[] pixels =
+        {
+            254, 254, 254,
+            255, 255, 255,
+        };
+        var image = new PpmImage(2, 1, pixels);
+
+        var resultOpaque = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "opaque");
+        var byNameOpaque = resultOpaque.ToDictionary(r => r.Ink.Name, r => r.Plane);
+        Assert.True(byNameOpaque.ContainsKey("white"));
+        Assert.True(BitSet(byNameOpaque["white"], 0));
+        Assert.False(BitSet(byNameOpaque["white"], 1));
+
+        // auto ではこの画素はどのインクにも一致せず CMYK 分解も 0 になるため、
+        // 白版には入らない(auto との違いの確認)。
+        var resultAuto = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "auto");
+        var namesAuto = resultAuto.Select(r => r.Ink.Name).ToHashSet();
+        Assert.DoesNotContain("white", namesAuto);
+    }
+
+    [Fact]
+    public void WhiteMode_Opaque_DoesNotChangeNoneAutoMagicOutputs()
+    {
+        // none/auto/magic の各出力が opaque 追加前と 1 ビットも変わらないことの
+        // 回帰確認。期待値は WhiteMode_None/_Auto/_Magic の各テストと同一。
+        var palette = MakePaletteWithWhite();
+        var image = MakeWhiteTestImage();
+
+        var noneResult = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "none");
+        Assert.DoesNotContain("white", noneResult.Select(r => r.Ink.Name));
+
+        var autoResult = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "auto");
+        var autoByName = autoResult.ToDictionary(r => r.Ink.Name, r => r.Plane);
+        Assert.True(BitSet(autoByName["white"], 0));
+        Assert.True(BitSet(autoByName["white"], 1));
+        Assert.True(BitSet(autoByName["white"], 2));
+        Assert.False(BitSet(autoByName["white"], 3));
+
+        var magicResult = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "magic");
+        var magicByName = magicResult.ToDictionary(r => r.Ink.Name, r => r.Plane);
+        Assert.False(BitSet(magicByName["white"], 0));
+        Assert.False(BitSet(magicByName["white"], 1));
+        Assert.True(BitSet(magicByName["white"], 2));
+        Assert.False(BitSet(magicByName["white"], 3));
+    }
+
     // --- ハーフトーン(DOMAIN §4.2.1)の選択可否の検証 ------------------------
     // Raster.cs のハーフトーン展開ロジック自体は変更していないため、ここでは
     // JobAssembly 経由で 3 モードすべてが選択でき、例外なく完了することだけを
