@@ -3,8 +3,10 @@
 This reproduces the subset of ppmtomd 1.6's RGL command generation that
 the golden fixtures under tests/golden/ exercise:
 
-- single page, single pass, single transfer-mode group (transfer mode
-  is always "colourPlane" = 0x04; ppmtomd.c:1312-1313)
+- single page, single transfer-mode group (transfer mode is always
+  "colourPlane" = 0x04; ppmtomd.c:1312-1313); an ink's `passes` (DOMAIN
+  §6.2) repeats that ink's colour-selection + raster N times within the
+  job, for overprinting (opaque white hiding power; DOMAIN §4.3)
 - no curl correction, no LF/print-head adjustment, no glossy finish,
   no cassette barcode list, no x/y shift (none of the golden command
   lines use the options that would turn these on)
@@ -13,10 +15,21 @@ the golden fixtures under tests/golden/ exercise:
   in with a backfeed command" behaviour (ppmtomd.c:2092-2138 for the
   fd routing, 2244-2296 for the backfeed/splice), which is why a
   default (no -colours) job emits blank Cyan/Magenta/Yellow planes
-  even when only Black carries ink.
+  even when only Black carries ink. The same backfeed/splice structure
+  is reused for repeated passes of the same ink (observed in a real
+  `ppmtomd -colours C=White,M=White` capture: two White selections
+  separated by one backfeed, final flag only on the second).
 
 No model-specific branching lives here (DOMAIN.md §4.4): all of the
 above is either fixed protocol behaviour or driven by `profile`.
+
+NOTE (2026-08-19): `passes` >= 2 is unverified against a real ppmtomd
+golden capture (WSL was unavailable for this change). Only the
+structural shape above (repeat count, backfeed placement, single final
+flag, single eject) was confirmed from a manual `ppmtomd -colours
+C=White,M=White` trace; it has not been byte-diffed against a
+generated golden fixture. Re-verify with `make_golden.sh` once WSL is
+available.
 """
 
 from __future__ import annotations
@@ -227,23 +240,39 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
             raise ValueError(f"black_raster carries exactly one plane, got {len(inks)}")
         out += _emit_plane_rows(planes[inks[0]["name"]], width, height)
     else:
-        last_index = len(inks) - 1
+        # `passes` (DOMAIN §6.2): repeat an ink's (colour-selection +
+        # raster) that many times. Default 1 when omitted, matching
+        # config.load_palette's default (config.py:181). This expansion
+        # happens purely at the emitter's output-shape level: to_planes
+        # still produces one plane per ink, unchanged.
+        occurrences: list[dict] = []
+        for ink in inks:
+            passes = ink.get("passes", 1)
+            if not isinstance(passes, int) or isinstance(passes, bool) or passes < 1:
+                raise ValueError(
+                    f"ink '{ink.get('name')}': 'passes' must be an integer "
+                    f">= 1, got {passes!r}"
+                )
+            occurrences.extend([ink] * passes)
+
+        last_index = len(occurrences) - 1
 
         def _select_and_rows(index: int) -> bytes:
-            ink = inks[index]
+            ink = occurrences[index]
             flag = 0x80 if index == last_index else 0x00
             buf = bytearray([ESC, 0x1A, ink["printer_code"], flag, 0x72])
             buf += _emit_plane_rows(planes[ink["name"]], width, height)
             return bytes(buf)
 
-        # The first (direct) ink's bytes land immediately on the stream;
-        # every subsequent ink is buffered separately by ppmtomd and
-        # spliced back in afterwards behind a backfeed command
-        # (ppmtomd.c:2272-2296), which only happens when there is more
-        # than one active ink.
+        # The first (direct) occurrence's bytes land immediately on the
+        # stream; every subsequent occurrence -- whether a different ink
+        # or a repeated pass of the same one -- is buffered separately
+        # by ppmtomd and spliced back in afterwards behind a backfeed
+        # command (ppmtomd.c:2272-2296), which only happens when there
+        # is more than one occurrence in total.
         out += _select_and_rows(0)
-        if len(inks) > 1:
-            for index in range(1, len(inks)):
+        if len(occurrences) > 1:
+            for index in range(1, len(occurrences)):
                 out += bytes([ESC, 0x1A, 0, 0, 0x0C])  # backfeed
                 out += _select_and_rows(index)
 
