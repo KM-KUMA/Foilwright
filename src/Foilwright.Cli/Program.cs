@@ -259,16 +259,16 @@ internal static class Program
         return 0;
     }
 
-    /// <summary>05 01 応答 38 バイトを解釈を加えずそのまま表示する(DOMAIN §7.2/§11.4)。
-    /// レコードの 2〜3 バイト目は当初「リボン残量」と解釈したが実測で否定され、
-    /// 撤回済み(§7.2)。意味は未解明のため、ここでは断定的な語(残量・% 等)を
-    /// 使わず生の値だけを出す。16 ビット値の併記は「イエロー 653」という記録の
-    /// 読み方を示す参考表示であり、これも解釈ではない。</summary>
+    /// <summary>05 01 応答 38 バイトの構造どおりに表示する(DOMAIN §11.4。
+    /// 一次情報: ppmtomd 付属 getstat.pl の parse_status。中身はリポジトリに
+    /// コピーしない。URL は DOMAIN §11.4 参照)。
+    /// 構造: STX(1) + パケット種別(1) + ペイロード長 LE16(2) + 状態バイト(1) +
+    /// 9 エントリ x 3 バイト(27) + エラーバイト(5) + ETX(1) = 38。</summary>
     private static void PrintRawStatus(CassetteStatus status)
     {
         var raw = status.RawResponse;
         Console.WriteLine();
-        Console.WriteLine("--- --raw: 05 01 応答 38 バイト(意味は未解明。DOMAIN §7.2/§11.4)---");
+        Console.WriteLine("--- --raw: 05 01 応答 38 バイト(DOMAIN §11.4)---");
 
         Console.Write("16 進ダンプ:");
         for (int i = 0; i < raw.Count; i++)
@@ -282,18 +282,24 @@ internal static class Program
         }
         Console.WriteLine();
 
-        Console.WriteLine($"ヘッダ 5 バイト: {Convert.ToHexString(raw.Take(5).ToArray())}");
+        Console.WriteLine($"STX=0x{raw[0]:x2} パケット種別=0x{raw[1]:x2} " +
+            $"ペイロード長=0x{(raw[2] | (raw[3] << 8)):x4} 状態バイト=0x{raw[4]:x2}");
 
-        Console.WriteLine("レコード 11 個(3 バイトずつ。バイト1〜2 は参考として LE16 も併記。解釈ではない):");
-        for (int rec = 0; rec < 11; rec++)
+        Console.WriteLine("エントリ 9 個(1 upper/2 upper/3 upper/4 upper/1 lower/2 lower/3 lower/4 lower/carriage。" +
+            "各 [stat, low, high]。stat 上位2bit=状態(0=正常/1=リボン逆装着/2=リボン終端/3=カセット無し)、" +
+            "下位6bit=バーコード):");
+        for (int i = 0; i < CassetteStatus.EntryCount; i++)
         {
-            int off = 5 + rec * 3;
-            byte b0 = raw[off];
-            byte b1 = raw[off + 1];
-            byte b2 = raw[off + 2];
-            int le16 = b1 | (b2 << 8);
-            Console.WriteLine($"  [{rec,2}] {b0:x2} {b1:x2} {b2:x2}  (参考 LE16(byte1-2)={le16})");
+            byte stat = status.SlotBarcodes[i];
+            byte low = status.EntryLow[i];
+            byte high = status.EntryHigh[i];
+            string head = i == CassetteStatus.HeadSlotIndex ? "  <- ヘッドに装着中" : string.Empty;
+            Console.WriteLine($"  [{i}] stat=0x{stat:x2} low=0x{low:x2} high=0x{high:x2}  " +
+                $"{CassetteCatalog.GetName(stat)}{head}");
         }
+
+        Console.WriteLine($"エラーバイト e[0..4]: {Convert.ToHexString(status.ErrorBytes.ToArray())}");
+        Console.WriteLine($"ETX=0x{raw[37]:x2}");
     }
 
     // --- print ---------------------------------------------------------------

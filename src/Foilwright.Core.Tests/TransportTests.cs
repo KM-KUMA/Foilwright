@@ -151,25 +151,39 @@ public class TransportTests
     }
 
     [Fact]
-    public void CassetteStatus_Parse_SplitsHeaderAndElevenSlots()
+    public void CassetteStatus_Parse_SplitsHeaderAndNineEntriesPlusErrorBytes()
     {
-        // ヘッダ 5 バイト + 11 レコード x 3 バイト = 38 バイト。
-        // 各レコードは先頭バイトだけが意味を持つ(DOMAIN §11.4 / §15.5)。
+        // STX(1) + パケット種別(1) + ペイロード長 LE16(2) + 状態バイト(1) +
+        // 9 エントリ x 3 バイト(27) + エラーバイト(5) + ETX(1) = 38。
+        // 一次情報: ppmtomd 付属 getstat.pl の parse_status(URL は DOMAIN §11.4 参照)。
         byte[] raw = new byte[38];
+        raw[0] = 0x02; // STX
+        raw[1] = 0x80; // パケット種別
+        raw[2] = 0x21; // ペイロード長 LE16 下位
+        raw[3] = 0x00; // ペイロード長 LE16 上位
         raw[4] = 0x09; // 状態バイト = 実行中
-        byte[] expectedSlots = { 0xff, 0x03, 0x01, 0x00, 0xff, 0x02, 0xff, 0xff, 0x00, 0x00, 0x00 };
-        for (int i = 0; i < 11; i++)
+        byte[] expectedStats = { 0xff, 0x03, 0x01, 0x00, 0xff, 0x02, 0xff, 0xff, 0x00 };
+        for (int i = 0; i < CassetteStatus.EntryCount; i++)
         {
-            raw[5 + i * 3] = expectedSlots[i];
-            raw[5 + i * 3 + 1] = 0xEE; // レコードの残り 2 バイトはダミー
-            raw[5 + i * 3 + 2] = 0xEE;
+            raw[5 + i * 3] = expectedStats[i];
+            raw[5 + i * 3 + 1] = 0xEE; // low(ダミー)
+            raw[5 + i * 3 + 2] = 0xDD; // high(ダミー)
         }
+        byte[] expectedErrorBytes = { 0x11, 0x22, 0x33, 0x44, 0x55 };
+        for (int i = 0; i < expectedErrorBytes.Length; i++)
+        {
+            raw[32 + i] = expectedErrorBytes[i];
+        }
+        raw[37] = 0x03; // ETX
 
         var status = CassetteStatus.Parse(raw);
 
         Assert.Equal(0x09, status.StatusByte);
-        Assert.Equal(expectedSlots, status.SlotBarcodes);
+        Assert.Equal(expectedStats, status.SlotBarcodes);
         Assert.Equal(0x00, status.HeadCassette); // index 8 = ヘッドに装着中
+        Assert.All(status.EntryLow, b => Assert.Equal(0xEE, b));
+        Assert.All(status.EntryHigh, b => Assert.Equal(0xDD, b));
+        Assert.Equal(expectedErrorBytes, status.ErrorBytes);
     }
 
     [Fact]
@@ -177,5 +191,16 @@ public class TransportTests
     {
         Assert.Throws<TransportException>(() => CassetteStatus.Parse(new byte[37]));
         Assert.Throws<TransportException>(() => CassetteStatus.Parse(new byte[39]));
+    }
+
+    [Fact]
+    public void CassetteStatus_Parse_RejectsMissingEtx()
+    {
+        byte[] raw = new byte[38];
+        raw[0] = 0x02;
+        raw[1] = 0x80;
+        raw[37] = 0x00; // ETX ではない
+        var ex = Assert.Throws<TransportException>(() => CassetteStatus.Parse(raw));
+        Assert.Contains("ETX", ex.Message);
     }
 }

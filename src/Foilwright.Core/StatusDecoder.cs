@@ -1,21 +1,21 @@
-﻿// Foilwright.Core — CassetteStatus(38 バイトの状態応答)を人が読める日本語へ変換する
+// Foilwright.Core — CassetteStatus(38 バイトの状態応答)を人が読める日本語へ変換する
 // デコーダ(DOMAIN §7.2 のプリンタ状態表示に対応)。
 //
-// 実測で確定していることだけを扱う(DOMAIN §11.4 / §13.7.5 / §13.8.3)。
+// パケット構造・エラーバイトの解読は一次情報(ppmtomd 付属 getstat.pl の
+// parse_status)に基づく。中身はリポジトリにコピーしない
+// (https://ppmtomd.julianbradfield.org/getstat.pl 。参照は URL のみ。DOMAIN §11.4 参照)。
+//
 //   - 状態バイトはビットフラグの集合。0xc9 = 0xc0(エラー) | 0x09(印刷実行中) の
-//     重ね合わせに実測の裏付けがある。
-//   - 確定しているエラー種別は「状態バイト 0xc0 かつ rec[9] 先頭バイト 0x80」の
-//     1 件のみ。ただし **種別までは識別できない**(DOMAIN §11.4 の訂正)。
-    //
-    //     2026-08-04 に「0x80 = ペーパーフィードメカニズム異常」と結論したが、
-    //     2026-08-08 に同一機体で純正が「キャリッジメカニズムに異常」を表示して
-    //     いる最中の応答が **1 バイトも違わなかった**ため撤回した。§13.8.3 の
-    //     とおり機構エラーは 8 種類あるが、05 01 の応答はそれらを区別しない。
-    //     **特定の機構名を出してはならない** — 利用者が誤った箇所を点検する。
+//     重ね合わせに実測の裏付けがある(DOMAIN §11.4)。
+//   - エラーバイト(CassetteStatus.ErrorBytes、offset 32-36 = e[0..4])は
+//     getstat.pl の parse_status の論理どおりに解読する。旧実装は
+//     「3 バイト x 11 レコード」という誤ったパケット解釈のもとで
+//     このエラーバイトを「rec[9]/rec[10]」と呼び、ETX(offset 37)まで
+//     データとして読んでいた。その誤解釈のもとでは種別を特定できなかった
+//     (2026-08-04 の結論を 2026-08-08 に撤回)が、正しい構造で読み直すと
+//     機種をまたいで矛盾なく種別が分かれる(2026-08-20 確認)。
 //   - エラー中はカセット情報が更新されない(§11.4)。呼び出し側が鵜呑みにしないよう
 //     IsError / CassetteInfoMayBeStale を明示する。
-//
-// 語彙は純正ドライバのエラー文言カタログ(DOMAIN §13.8.3)に揃える。独自の言い回しは作らない。
 
 using System.Collections.Generic;
 
@@ -100,53 +100,62 @@ public static class CassetteCatalog
         [0x22] = "ポップ用青",
     };
 
-    /// <summary>上位ビットが立っているとき、そのカセットは使えない状態にある
-    /// (2026-08-19 実測)。シアンのリボンが終端まで来た機体が `0x83` を返し、
-    /// 利用者が現物を見てシアンが切れていることを確認した。
-    /// `0x83 = 0x80 | 0x03` で、下位 7 ビットは紙用シアンのバーコードである。
-    ///
-    /// **理由までは断定しない。** §11.4 の教訓のとおり、1 例では「その値が
-    /// その意味を持つ」ことしか示せず「その意味だけを表す」ことは示せない。
-    /// リボン切れ以外(異常検出など)でも立つ可能性が残る。したがって
-    /// 「使い切り」ではなく「使用不可」と表示する。</summary>
-    public const byte UnusableFlag = 0x80;
-
-    /// <summary>バーコード番号を日本語名に変換する。未装着(0xff)は「未装着」、
-    /// 上位ビットが立っていればインク名 + 「使用不可」、対応表に無い値は
-    /// 「不明なカセット(0xNN)」と正直に表示する。</summary>
-    public static string GetName(byte barcode)
+    /// <summary>エントリの stat バイト上位 2 ビットが示す状態
+    /// (一次情報: getstat.pl の parse_status。DOMAIN §11.4 参照)。</summary>
+    private enum RibbonState
     {
-        if (barcode == CassetteStatus.NotLoaded)
+        /// <summary>正常装着。</summary>
+        Normal = 0,
+
+        /// <summary>リボン逆装着(マニュアルでは reserved だが実測でこの意味と判明)。</summary>
+        Reversed = 1,
+
+        /// <summary>リボン終端。</summary>
+        End = 2,
+
+        /// <summary>カセット無し。</summary>
+        NoCassette = 3,
+    }
+
+    /// <summary>バーコード番号を日本語名に変換する(stat バイトそのものを受け取る)。
+    /// 上位 2 ビットで状態(正常/リボン逆装着/リボン終端/カセット無し)を判定し、
+    /// 下位 6 ビットでインク名を引く。カセット無しは「未装着」、対応表に無いバーコードは
+    /// 「不明なカセット(0xNN)」と正直に表示する。</summary>
+    public static string GetName(byte statByte)
+    {
+        var state = (RibbonState)(statByte >> 6);
+        if (state == RibbonState.NoCassette)
         {
             return "未装着";
         }
 
-        if (Names.TryGetValue(barcode, out var name))
-        {
-            return name;
-        }
+        byte barcode = (byte)(statByte & 0x3F);
+        string baseName = Names.TryGetValue(barcode, out var name)
+            ? name
+            : $"不明なカセット(0x{barcode:x2})";
 
-        // 上位ビットを外すと既知のインクになるなら、名指ししたうえで
-        // 使用不可であることを添える。「不明なカセット」よりも役に立つ。
-        byte cleared = (byte)(barcode & ~UnusableFlag);
-        if ((barcode & UnusableFlag) != 0 && Names.TryGetValue(cleared, out var baseName))
+        return state switch
         {
-            return $"{baseName}(使用不可。リボン切れの可能性)";
-        }
-
-        return $"不明なカセット(0x{barcode:x2})";
+            RibbonState.Reversed => $"{baseName}・リボン逆装着",
+            RibbonState.End => $"{baseName}・リボン終端",
+            _ => baseName,
+        };
     }
 }
 
 /// <summary>CassetteStatus を §7.2 のプリンタ状態表示向けに解釈するデコーダ。</summary>
 public static class StatusDecoder
 {
-    /// <summary>確定している機構エラー(rec[9] 先頭バイト → 文言)。純正ドライバの
-    /// エラー文言カタログ(DOMAIN §13.8.3)と語彙を揃える。機構エラーは 8 種類あるが、
-    /// 実測で対応づけられているのはこの 1 件のみ。残りを推測で埋めない。</summary>
-    private static readonly IReadOnlyDictionary<byte, string> KnownMechanismErrors = new Dictionary<byte, string>
+    /// <summary>Motor Error 詳細(ErrorBytes[4] のビット → 文言)。
+    /// 一次情報: getstat.pl の parse_status(289-364 行)。DOMAIN §11.4 参照。</summary>
+    private static readonly (byte Bit, string Label)[] MotorErrorDetails =
     {
-        [0x80] = "機構に異常が発生しました(種別は特定できません)",
+        (0x80, "カセットチェンジャ"),
+        (0x40, "CR"),
+        (0x20, "ベイルアーム"),
+        (0x10, "LF"),
+        (0x08, "給紙"),
+        (0x04, "アンチカール"),
     };
 
     /// <summary>状態バイトが確定していて、かつエラー/印刷実行中のいずれのビットも
@@ -173,16 +182,74 @@ public static class StatusDecoder
         return flags;
     }
 
-    /// <summary>rec[9] 先頭バイト(CassetteStatus.SlotBarcodes[9])からエラー文言を得る。
-    /// 未知の値は「未知のエラー(状態=0xNN, rec9=0xNN)」と生の値付きで表示する。</summary>
+    /// <summary>ErrorBytes(e[0..4])を getstat.pl の parse_status の論理どおりに解読する。
+    /// どの既知ビットにも該当しない場合は生の値付きで「未知のエラー」を返す。</summary>
     private static string DescribeError(CassetteStatus status)
     {
-        byte rec9 = status.SlotBarcodes[9];
-        if (KnownMechanismErrors.TryGetValue(rec9, out var message))
+        byte e0 = status.ErrorBytes[0];
+        byte e1 = status.ErrorBytes[1];
+        byte e2 = status.ErrorBytes[2];
+        byte e3 = status.ErrorBytes[3];
+        byte e4 = status.ErrorBytes[4];
+
+        var messages = new List<string>();
+
+        if ((e0 & 0x80) != 0)
         {
-            return message;
+            var details = new List<string>();
+            foreach (var (bit, label) in MotorErrorDetails)
+            {
+                if ((e4 & bit) != 0)
+                {
+                    details.Add(label);
+                }
+            }
+            messages.Add(details.Count > 0
+                ? $"モータエラー({string.Join("・", details)})"
+                : "モータエラー");
         }
-        return $"未知のエラー(状態=0x{status.StatusByte:x2}, rec9=0x{rec9:x2})";
+
+        if ((e0 & 0x01) != 0)
+        {
+            messages.Add("EEPROM エラー");
+        }
+
+        if ((e1 & 0x80) != 0)
+        {
+            string kind = (e2 & 0x80) != 0 ? "用紙サイズ違い" : "用紙なし";
+            string source = (e2 & 0x40) != 0 ? "手差し" : "トレイ";
+            messages.Add($"{kind}({source})");
+        }
+
+        if ((e1 & 0x40) != 0)
+        {
+            string kind = (e2 & 0x08) != 0 ? "排紙エラー" : "給紙ミスフィード";
+            string source = (e2 & 0x04) != 0 ? "手差し" : "トレイ";
+            messages.Add($"紙詰まり({kind}・{source})");
+        }
+
+        if ((e1 & 0x22) != 0)
+        {
+            messages.Add((e1 & 0x20) != 0 ? "リボン終端" : "リボン破断");
+        }
+
+        int cassetteCode = (e3 & 0x07) >> 1;
+        if (cassetteCode == 2)
+        {
+            messages.Add("カセット占有(Cassette Occupied)");
+        }
+        else if (cassetteCode == 3)
+        {
+            messages.Add("リボン不一致(Ribbon Mismatch)");
+        }
+
+        if (messages.Count == 0)
+        {
+            byte[] raw = { e0, e1, e2, e3, e4 };
+            return $"未知のエラー(状態=0x{status.StatusByte:x2}, e={Convert.ToHexString(raw)})";
+        }
+
+        return string.Join("+", messages);
     }
 
     /// <summary>CassetteStatus を人が読める報告に変換する(DOMAIN §7.2)。</summary>

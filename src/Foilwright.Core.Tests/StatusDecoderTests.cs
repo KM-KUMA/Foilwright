@@ -2,17 +2,27 @@
 //
 // ここで使う 38 バイトの応答はすべて DOMAIN §11.4 に記録された実測値。
 // ただし §11.4 の「ペーパーフィード異常」2 例(MD-5500 / MD-5000)は文中の
-// 表記が 1 レコード(3 バイト)分短く転記されている(rec[9]/rec[10] の手前で
-// 抜けている)。ここでは末尾 2 レコード(rec[9]=80 00 00 / rec[10])と
-// ヘッダの状態バイトだけを実測値どおりに保ち、抜けている 1 レコード分は
-// 検証に影響しない ff 00 00(未装着)で埋めて 38 バイトに揃えている。
+// 表記が 1 エントリ(3 バイト)分短く転記されている(offset 29-31 の手前で
+// 抜けている)。ここでは末尾のエラーバイト(offset 32-36)とヘッダの状態バイト
+// だけを実測値どおりに保ち、抜けている 1 エントリ分は検証に影響しない
+// ff 00 00(未装着)で埋めて 38 バイトに揃えている。
 //
-// 【訂正(2026-08-08、DOMAIN §11.4)】以下の変数名・コメントは採取時の呼称
-// 「ペーパーフィード異常」をそのまま残しているが、これは同一のバイト列の
-// 出どころを指す名前に過ぎない。rec[9] 先頭 0x80 が示す実際の意味は
-// 「機構エラーのいずれか(8 種類、種別不明)」であり、デコーダの出力は
-// 特定の機構名を含まない(Describe_MechanismError_DoesNotNameSpecificMechanism 参照)。
-
+// 【2026-08-20】パケット構造を一次情報(ppmtomd 付属 getstat.pl の
+// parse_status。URL は DOMAIN §11.4 参照)に基づいて訂正した。旧実装は
+// 「3 バイト x 11 レコード」と読んでおり、実際のエラーバイト(offset 32-36)を
+// レコードとして扱っていた。正しくは 状態 1 + 9 エントリ x 3 + エラー 5 + ETX。
+//
+// **エラーバイト e[4] にモータ種別の欄が実在することが分かった**(0x10=LF /
+// 0x40=CR など)。ただし **これを「故障した機構の種別」として断定してはいけない**:
+//
+//   - 同じ「ペーパーフィード異常」の表示に対し、MD-5500 は e[4]=0x10(LF)、
+//     MD-5000 は e[4]=0x40(CR)と、機種で違う値を返していた
+//   - 同一機体(MD-5000)で純正が「ペーパーフィード異常」と「キャリッジ異常」を
+//     表示した 2 回の応答は **1 バイトも違わなかった**(DOMAIN §11.4、2026-08-08)。
+//     **バイト列が同一である以上、オフセットの読み方を変えても区別はつかない。**
+//
+// したがって §13.8.3 の「種別は特定できません」という慎重な扱いは有効なまま。
+// **バイトが言っていることは表示してよいが、それが実際の故障箇所だと断定しない。**
 using Foilwright.Core;
 
 namespace Foilwright.Core.Tests;
@@ -108,62 +118,122 @@ public class StatusDecoderTests
     }
 
     [Fact]
-    public void Describe_Md5500PaperFeedError_ReportsKnownErrorMessage()
+    public void Describe_Md5500PaperFeedError_ReportsMotorErrorWithLfDetail()
     {
+        // errorBytes(offset 32-36) = 80 00 00 00 10 → e[0]&0x80(モータエラー)、
+        // e[4]=0x10(LF)。DOMAIN §11.4 / 一次情報 getstat.pl 参照。
         var status = CassetteStatus.Parse(Md5500PaperFeedErrorResponse);
         var report = StatusDecoder.Describe(status);
 
         Assert.True(report.IsError);
         Assert.False(report.IsPrinting);
         Assert.True(report.CassetteInfoMayBeStale);
-        Assert.Equal("機構に異常が発生しました(種別は特定できません)", report.ErrorDetail);
-        Assert.Contains("機構に異常が発生しました(種別は特定できません)", report.StatusSummary);
+        Assert.Equal("モータエラー(LF)", report.ErrorDetail);
+        Assert.Contains("モータエラー(LF)", report.StatusSummary);
     }
 
     [Fact]
-    public void Describe_Md5000Error_ReportsSameKnownErrorMessage()
+    public void Describe_Md5000Error_ReportsMotorErrorWithCrDetail()
     {
-        // DOMAIN §11.4: 「エラーの意味づけは機種をまたいで通用するとみられる」。
+        // errorBytes(offset 32-36) = 80 00 00 00 40 → e[0]&0x80(モータエラー)、
+        // e[4]=0x40(CR)。
+        //
+        // 注意: この応答は、純正が「ペーパーフィード異常」を表示していたときのもの。
+        // 同一機体で「キャリッジ異常」を表示していたときの応答も 1 バイトも違わなかった
+        // (DOMAIN §11.4、2026-08-08)。**e[4] が言う CR は、故障箇所の断定に使えない。**
         var status = CassetteStatus.Parse(Md5000ErrorResponse);
         var report = StatusDecoder.Describe(status);
 
         Assert.True(report.IsError);
-        Assert.Equal("機構に異常が発生しました(種別は特定できません)", report.ErrorDetail);
+        Assert.Equal("モータエラー(CR)", report.ErrorDetail);
     }
 
     [Fact]
-    public void Describe_MechanismError_DoesNotNameSpecificMechanism()
+    public void Describe_MotorError_ErrorByte4_DiffersBetweenMachines_ForTheSameReportedFault()
     {
-        // DOMAIN §11.4【訂正】(2026-08-08): 「rec[9] 先頭 0x80」は 2026-08-04 に
-        // 「ペーパーフィードメカニズム異常」と確定したが、同一機体で純正ドライバが
-        // 「キャリッジメカニズムに異常」を表示中に採取した応答が 1 バイトも
-        // 違わなかったため撤回した。05 01 の応答は §13.8.3 の 8 種類の機構エラーを
-        // 区別しないので、表示文言に特定の機構名を書き込んではならない。
+        // 同じ「ペーパーフィード異常」に対し、MD-5500 は e[4]=0x10(LF)、
+        // MD-5000 は e[4]=0x40(CR)を返していた。**機種で値が違う。**
+        // これは「e[4] が故障機構を一意に指す」わけではないことの証拠であり、
+        // 区別できること自体を利点として扱わない(§13.8.3 の慎重な扱いは有効)。
         var md5500 = StatusDecoder.Describe(CassetteStatus.Parse(Md5500PaperFeedErrorResponse));
         var md5000 = StatusDecoder.Describe(CassetteStatus.Parse(Md5000ErrorResponse));
 
-        foreach (var detail in new[] { md5500.ErrorDetail, md5000.ErrorDetail })
-        {
-            Assert.NotNull(detail);
-            Assert.DoesNotContain("ペーパーフィード", detail);
-            Assert.DoesNotContain("キャリッジ", detail);
-        }
+        Assert.NotEqual(md5500.ErrorDetail, md5000.ErrorDetail);
+        Assert.Contains("LF", md5500.ErrorDetail);
+        Assert.Contains("CR", md5000.ErrorDetail);
     }
 
     [Fact]
     public void Describe_0xC9_IsBothErrorAndPrinting()
     {
+        // errorBytes(offset 32-36) = 00 10 00 86 00 → e[3]&0x07=0x06,
+        // >>1 = 3 →「リボン不一致(Ribbon Mismatch)」(getstat.pl の e[3] 論理)。
         var status = CassetteStatus.Parse(PrintingErrorResponse);
         var report = StatusDecoder.Describe(status);
 
         Assert.Equal((byte)0xc9, status.StatusByte);
         Assert.True(report.IsError);
         Assert.True(report.IsPrinting);
-        // rec[9] 先頭は 0x00 なので、確定済みの「ペーパーフィード」(0x80)には
-        // 該当しない未知のエラーとして、生の値付きで表示されること。
-        Assert.Contains("未知のエラー", report.ErrorDetail);
-        Assert.Contains("0xc9", report.ErrorDetail);
-        Assert.Contains("0x00", report.ErrorDetail);
+        Assert.Contains("リボン不一致", report.ErrorDetail);
+        Assert.Contains("Ribbon Mismatch", report.ErrorDetail);
+    }
+
+    [Fact]
+    public void Describe_Idle_NoErrorBytes_ReportsNoError()
+    {
+        // 実測との対応(依頼メッセージの表): 待機。状態=0x00、e[0..4]=00 00 00 00 00。
+        var status = CassetteStatus.Parse(BuildResponse(0x00, new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00 }));
+        var report = StatusDecoder.Describe(status);
+
+        Assert.False(report.IsError);
+        Assert.Null(report.ErrorDetail);
+        Assert.Equal("待機", report.StatusSummary);
+    }
+
+    [Fact]
+    public void Describe_RealPrintFailure_ReportsOutOfPaperAndJam()
+    {
+        // 実測との対応: 実原稿の印刷で失敗。状態=0xC9、e[0..4]=00 c0 08 00 00。
+        // 期待する解読: 用紙なし(トレイ)+紙詰まり(排紙エラー・トレイ)。
+        var status = CassetteStatus.Parse(BuildResponse(0xC9, new byte[] { 0x00, 0xC0, 0x08, 0x00, 0x00 }));
+        var report = StatusDecoder.Describe(status);
+
+        Assert.True(report.IsError);
+        Assert.Equal("用紙なし(トレイ)+紙詰まり(排紙エラー・トレイ)", report.ErrorDetail);
+    }
+
+    [Fact]
+    public void Describe_MarginProbeFailure_ReportsPaperSizeMismatch()
+    {
+        // 実測との対応: 余白プローブで失敗。状態=0xC9、e[0..4]=00 80 80 00 00。
+        // 期待する解読: 用紙サイズ違い(トレイ)(紙詰まりビットは立っていない)。
+        var status = CassetteStatus.Parse(BuildResponse(0xC9, new byte[] { 0x00, 0x80, 0x80, 0x00, 0x00 }));
+        var report = StatusDecoder.Describe(status);
+
+        Assert.True(report.IsError);
+        Assert.Equal("用紙サイズ違い(トレイ)", report.ErrorDetail);
+    }
+
+    /// <summary>状態バイトとエラーバイト 5 個だけを指定し、残りは意味のない
+    /// ダミー値(エントリ全て未装着 ff 00 00)で埋めた 38 バイトの応答を組み立てる。</summary>
+    private static byte[] BuildResponse(byte statusByte, byte[] errorBytes)
+    {
+        byte[] raw = new byte[38];
+        raw[0] = 0x02; // STX
+        raw[1] = 0x80; // パケット種別
+        raw[2] = 0x21; // ペイロード長 LE16 下位(33)
+        raw[3] = 0x00; // ペイロード長 LE16 上位
+        raw[4] = statusByte;
+        for (int i = 0; i < CassetteStatus.EntryCount; i++)
+        {
+            int offset = 5 + i * 3;
+            raw[offset] = 0xFF; // 未装着
+            raw[offset + 1] = 0x00;
+            raw[offset + 2] = 0x00;
+        }
+        Array.Copy(errorBytes, 0, raw, 32, 5);
+        raw[37] = 0x03; // ETX
+        return raw;
     }
 
     [Fact]
@@ -194,24 +264,39 @@ public class StatusDecoderTests
     [Fact]
     public void CassetteCatalog_UnknownBarcode_ShowsRawValue()
     {
-        // 上位ビット(使用不可フラグ)を外しても対応表に無い値を選ぶこと。
-        // 0x99 は 0x80 | 0x19 = フォト用イエローの使用不可を意味するように
-        // なったため、ここでは使えない。
-        string name = CassetteCatalog.GetName(0x7e);
+        // stat バイト上位 2 ビット=00(正常)、下位 6 ビット=0x3e(対応表に無い値)。
+        string name = CassetteCatalog.GetName(0x3e);
         Assert.Contains("不明なカセット", name);
-        Assert.Contains("0x7e", name);
+        Assert.Contains("0x3e", name);
     }
 
     [Fact]
-    public void CassetteCatalog_UnusableFlag_NamesTheInk()
+    public void CassetteCatalog_RibbonEnd_NamesTheInkWithEndSuffix()
     {
         // 2026-08-19 実測: シアンのリボンが終端まで来た機体が 0x83 を返し、
-        // 利用者が現物でシアン切れを確認した。0x83 = 0x80 | 0x03(紙用シアン)。
-        // どのインクかは名指しできるが、理由は断定しない(§11.4 の教訓)。
+        // 利用者が現物でシアン切れを確認した。0x83 = stat 上位 2 ビット 2(リボン終端)
+        // + 下位 6 ビット 0x03(紙用シアン)(一次情報: getstat.pl の parse_status)。
         string name = CassetteCatalog.GetName(0x83);
         Assert.Contains("シアン", name);
-        Assert.Contains("使用不可", name);
+        Assert.Contains("リボン終端", name);
         Assert.DoesNotContain("不明なカセット", name);
+    }
+
+    [Fact]
+    public void CassetteCatalog_RibbonReversed_NamesTheInkWithReversedSuffix()
+    {
+        // stat 上位 2 ビット 1(リボン逆装着)+ 下位 6 ビット 0x00(紙用ブラック)。
+        string name = CassetteCatalog.GetName(0x40);
+        Assert.Contains("ブラック", name);
+        Assert.Contains("リボン逆装着", name);
+    }
+
+    [Fact]
+    public void CassetteCatalog_NoCassette_ReturnsUnloadedLabel()
+    {
+        // stat 上位 2 ビット 3(カセット無し)。下位 6 ビットは無意味。
+        string name = CassetteCatalog.GetName(0xC0);
+        Assert.Equal("未装着", name);
     }
 
     [Fact]

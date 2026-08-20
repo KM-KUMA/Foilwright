@@ -56,8 +56,13 @@ public static class AlpsProtocol
     /// <summary>許可・受理として期待される 1 バイト応答。</summary>
     public const byte Ack = 0x06;
 
-    /// <summary>状態応答の総バイト数(ヘッダ 5 バイト + 11 レコード x 3 バイト)。</summary>
+    /// <summary>状態応答の総バイト数。構造は STX(1) + パケット種別(1) + ペイロード長 LE16(2) +
+    /// 状態バイト(1) + 9 エントリ x 3 バイト(27) + エラーバイト(5) + ETX(1) = 38
+    /// (一次情報: ppmtomd 付属 getstat.pl の parse_status。URL は DOMAIN §11.4 参照)。</summary>
     public const int StatusResponseLength = 38;
+
+    /// <summary>状態応答の末尾を示す ETX。</summary>
+    public const byte StatusResponseEtx = 0x03;
 
     /// <summary>RGL ストリームを MaxPayload バイトごとの断片に分割する。
     /// 空の入力は 0 個の断片を返す(空ジョブを送る意味が無いため)。</summary>
@@ -90,31 +95,63 @@ public static class AlpsProtocol
     }
 }
 
-/// <summary>カセット状態応答(38 バイト)のパース結果(DOMAIN §11.4 / §15.5)。
-/// ヘッダ 5 バイト + 11 レコード x 3 バイト。各レコードの先頭バイトが
-/// カセットのバーコード番号、0xff は未装着。9 番目のレコード(index 8)は
-/// 現在ヘッドに装着中のカセット。</summary>
+/// <summary>カセット状態応答(38 バイト)のパース結果。
+///
+/// 構造(一次情報: ppmtomd 付属 getstat.pl の parse_status。中身はリポジトリに
+/// コピーしない。URL は DOMAIN §11.4 参照):
+///   offset 0    STX (0x02)
+///   offset 1    パケット種別 (0x80 = ステータス応答)
+///   offset 2-3  ペイロード長 LE16 (= 0x0021 = 33)
+///   offset 4    状態バイト
+///   offset 5-31 9 エントリ x 3 バイト([stat, low, high])
+///   offset 32-36 エラーバイト e[0..4]
+///   offset 37   ETX (0x03)
+///
+/// 9 エントリの並びは「1 upper / 2 upper / 3 upper / 4 upper / 1 lower /
+/// 2 lower / 3 lower / 4 lower / carriage」。9 番目(index 8)が
+/// 現在ヘッドに装着中のカセット。
+///
+/// 各エントリの stat バイトは上位 2 ビットが状態(0=正常装着 / 1=リボン逆装着
+/// / 2=リボン終端 / 3=カセット無し)、下位 6 ビットがバーコード番号。
+/// 【訂正】旧実装は「3 バイト x 11 レコード」と誤解し、ここでいうエラー
+/// バイト(offset 32-36)を 10 番目・11 番目のレコードとして扱い、
+/// ETX(offset 37)までデータとして読んでいた。</summary>
 public sealed class CassetteStatus
 {
-    /// <summary>装着なしを表すバーコード値。</summary>
+    /// <summary>装着なしを表すバーコード値(stat バイトそのもの。実測では
+    /// 常に 0xFF = 上位 2 ビット 3(カセット無し) かつ下位 6 ビットも全て 1)。</summary>
     public const byte NotLoaded = 0xFF;
+
+    /// <summary>エントリ数(1〜4 upper / 1〜4 lower / carriage)。</summary>
+    public const int EntryCount = 9;
 
     /// <summary>現在ヘッドに装着中のカセットのスロット index(0 起点)。</summary>
     public const int HeadSlotIndex = 8;
 
-    public required byte[] Header { get; init; } // 5 バイト。5 バイト目が実行状態(00=待機/09=実行中/01=完了)
-    public required IReadOnlyList<byte> SlotBarcodes { get; init; } // 11 バイト
+    public required byte[] Header { get; init; } // 5 バイト(STX, パケット種別, ペイロード長 LE16, 状態バイト)
 
-    /// <summary>応答 38 バイトをそのまま保持したもの(DOMAIN §11.4 / §15.2)。
-    /// Header / SlotBarcodes が捨てている各レコードの 2〜3 バイト目
-    /// (§7.2 で「リボン残量」と当初解釈したが撤回済み・意味未解明)を
-    /// 生の値のまま観察するための保持であり、ここでの解釈は加えない。</summary>
+    /// <summary>各エントリの stat バイト(先頭バイト。上位 2 ビット=状態、下位 6 ビット=バーコード)。9 バイト。</summary>
+    public required IReadOnlyList<byte> SlotBarcodes { get; init; }
+
+    /// <summary>各エントリの 2 バイト目(low。残量とみられる値。0 は「不明」)。9 バイト。</summary>
+    public required IReadOnlyList<byte> EntryLow { get; init; }
+
+    /// <summary>各エントリの 3 バイト目(high。非ゼロは「リボン破断」とみられる)。9 バイト。</summary>
+    public required IReadOnlyList<byte> EntryHigh { get; init; }
+
+    /// <summary>エラーバイト e[0..4](offset 32-36)。5 バイト。</summary>
+    public required IReadOnlyList<byte> ErrorBytes { get; init; }
+
+    /// <summary>応答 38 バイトをそのまま保持したもの。上記プロパティが構造化した値と
+    /// 完全に対応する(推測による切り捨ては無い)。</summary>
     public required IReadOnlyList<byte> RawResponse { get; init; } // 38 バイト
 
-    /// <summary>5 バイト目(状態バイト)。00=送出前 / 09=印刷実行中 / 01=完了(DOMAIN §15.4)。</summary>
+    /// <summary>offset 4(状態バイト)。ビット構成は DOMAIN §11.4 参照
+    /// (bit7=off-line / bit6=off-line 時の error・alarm / bit4=給紙位置 auto/manual /
+    /// bit3=printing / bit2,1=printing 時のジョブ種別 / bit0=バッファ not-empty)。</summary>
     public byte StatusByte => Header[4];
 
-    /// <summary>現在ヘッドに装着中のカセットのバーコード。未装着なら NotLoaded。</summary>
+    /// <summary>現在ヘッドに装着中のカセットの stat バイト。未装着(カセット無し)なら NotLoaded。</summary>
     public byte HeadCassette => SlotBarcodes[HeadSlotIndex];
 
     public static CassetteStatus Parse(byte[] raw)
@@ -124,13 +161,34 @@ public sealed class CassetteStatus
             throw new TransportException(
                 $"status response must be {AlpsProtocol.StatusResponseLength} bytes, got {raw.Length}");
         }
-        var header = raw[..5];
-        var slots = new byte[11];
-        for (int i = 0; i < 11; i++)
+        if (raw[37] != AlpsProtocol.StatusResponseEtx)
         {
-            slots[i] = raw[5 + i * 3];
+            throw new TransportException(
+                $"status response must end with ETX (0x03), got 0x{raw[37]:x2}");
         }
-        return new CassetteStatus { Header = header, SlotBarcodes = slots, RawResponse = raw };
+
+        var header = raw[..5];
+        var barcodes = new byte[EntryCount];
+        var low = new byte[EntryCount];
+        var high = new byte[EntryCount];
+        for (int i = 0; i < EntryCount; i++)
+        {
+            int offset = 5 + i * 3;
+            barcodes[i] = raw[offset];
+            low[i] = raw[offset + 1];
+            high[i] = raw[offset + 2];
+        }
+        var errorBytes = raw[32..37];
+
+        return new CassetteStatus
+        {
+            Header = header,
+            SlotBarcodes = barcodes,
+            EntryLow = low,
+            EntryHigh = high,
+            ErrorBytes = errorBytes,
+            RawResponse = raw,
+        };
     }
 }
 
