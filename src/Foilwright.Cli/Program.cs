@@ -171,24 +171,6 @@ internal static class Program
         return vid.StartsWith("VID_", StringComparison.OrdinalIgnoreCase) ? vid : $"VID_{vid}";
     }
 
-    // --- リポジトリ内の設定ファイルの場所 --------------------------------------
-
-    private static string FindRepoRoot()
-    {
-        // src/Foilwright.Cli/bin/Debug/net10.0 から 5 階層上がる
-        // (Foilwright.Core.Tests/GoldenTests.cs と同じ規則)。
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (int i = 0; i < 5; i++)
-        {
-            if (dir.Parent is null)
-            {
-                break;
-            }
-            dir = dir.Parent;
-        }
-        return dir.FullName;
-    }
-
     private sealed class JobConfig
     {
         public required ProfileSpec Profile { get; init; }
@@ -197,20 +179,20 @@ internal static class Program
         public required List<InkDefinition> Palette { get; init; }
     }
 
-    private static JobConfig LoadDefaultJobConfig(string repoRoot, MachineRoute route, string paperName, string mediaName)
+    private static JobConfig LoadDefaultJobConfig(string assetRoot, MachineRoute route, string paperName, string mediaName)
     {
-        var profile = ConfigLoader.LoadProfile(Path.Combine(repoRoot, "profiles", route.ProfileFileName));
-        var paperTable = ConfigLoader.ResolvePaperTable(profile, Path.Combine(repoRoot, "papers"));
+        var profile = ConfigLoader.LoadProfile(Path.Combine(assetRoot, "profiles", route.ProfileFileName));
+        var paperTable = ConfigLoader.ResolvePaperTable(profile, Path.Combine(assetRoot, "papers"));
         if (!paperTable.TryGetValue(paperName, out var paper))
         {
             throw new ConfigException($"paper '{paperName}' not found in paper table '{profile.PaperTable}'");
         }
-        var mediaTable = ConfigLoader.LoadMediaTable(Path.Combine(repoRoot, "media.yaml"));
+        var mediaTable = ConfigLoader.LoadMediaTable(Path.Combine(assetRoot, "media.yaml"));
         if (!mediaTable.TryGetValue(mediaName, out var media))
         {
             throw new ConfigException($"media '{mediaName}' not found in media.yaml");
         }
-        var palette = ConfigLoader.LoadPalette(Path.Combine(repoRoot, "palette", "default.yaml"));
+        var palette = ConfigLoader.LoadPalette(Path.Combine(assetRoot, "palette", "default.yaml"));
         return new JobConfig { Profile = profile, Paper = paper, Media = media, Palette = palette };
     }
 
@@ -526,11 +508,11 @@ internal static class Program
             return 1;
         }
 
-        string repoRoot = FindRepoRoot();
+        string assetRoot = AssetRoot.ResolveDefault();
         // 不明な用紙名は LoadDefaultJobConfig 内で ConfigException を投げる
         // (Main の catch がまとめて拾い、エラー文言を表示して終了コード 1 で
         // 終わる。既定値へ黙って落とさない)。
-        var config = LoadDefaultJobConfig(repoRoot, route, paperName, mediaName);
+        var config = LoadDefaultJobConfig(assetRoot, route, paperName, mediaName);
 
         // --resolution はプロファイルの resolutions から探す。プロファイル読み込み後
         // でなければ選べる値を検証できないため、機種ごとの config ロード後にここで検証する。
@@ -637,7 +619,7 @@ internal static class Program
             // D-029: colourCorrection == "photo" のときだけ photoLutPath /
             // resolutionEntry.DpiX が参照される。ガンマの既定値は解像度で
             // 変わる(600 は 0.8、1200 は -0.9)ため、解像度を渡し忘れると色がずれる。
-            string photoLutPath = Path.Combine(FindRepoRoot(), "colour", "photo_colcor.bin");
+            string photoLutPath = Path.Combine(AssetRoot.ResolveDefault(), "colour", "photo_colcor.bin");
             var jobPlanes = JobAssembly.BuildJobPlanes(
                 image, config.Palette, options.InkMode, options.Halftone, options.WhiteMode,
                 options.ColourCorrection, resolutionEntry.DpiX, photoLutPath, alphaImage);
@@ -821,8 +803,8 @@ internal static class Program
             return 1;
         }
 
-        string repoRoot = FindRepoRoot();
-        var config = LoadDefaultJobConfig(repoRoot, route, paperName, mediaName);
+        string assetRoot = AssetRoot.ResolveDefault();
+        var config = LoadDefaultJobConfig(assetRoot, route, paperName, mediaName);
 
         ResolutionEntry resolutionEntry;
         try
@@ -842,7 +824,7 @@ internal static class Program
         // 決定的な入口。切り出しも行わない -- image と同じく寸法をそのまま扱う)。
         PngImage? alphaImage = alphaPngPath is null ? null : PngImage.Read(alphaPngPath);
 
-        string photoLutPath = Path.Combine(repoRoot, "colour", "photo_colcor.bin");
+        string photoLutPath = Path.Combine(assetRoot, "colour", "photo_colcor.bin");
         var jobPlanes = JobAssembly.BuildJobPlanes(
             image, config.Palette, inkMode, halftone, whiteMode,
             colourCorrection, resolutionEntry.DpiX, photoLutPath, alphaImage);

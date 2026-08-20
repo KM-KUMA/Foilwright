@@ -23,7 +23,7 @@ public sealed class PreviewForm : Form
 {
     private readonly string _psPath;
     private readonly TraySettings _settings;
-    private readonly string _repoRoot;
+    private readonly string _assetRoot;
 
     private readonly ComboBox _machineCombo;
     private readonly ComboBox _inkModeCombo;
@@ -98,11 +98,11 @@ public sealed class PreviewForm : Form
     {
         _psPath = psPath;
         _settings = settings;
-        _repoRoot = JobPipeline.FindRepoRoot();
+        _assetRoot = AssetRoot.ResolveDefault();
 
         // D-030: パレットは機種・メディア・用紙に依存しないため、ここで
         // 一度だけ読み、許可リストの既定値解決に使う。
-        _palette = ConfigLoader.LoadPalette(Path.Combine(_repoRoot, "palette", "default.yaml"));
+        _palette = ConfigLoader.LoadPalette(Path.Combine(_assetRoot, "palette", "default.yaml"));
         _usedInks = settings.ResolveUsedInks(_palette);
         // D-031: null(一度も触っていない)は空辞書として扱う — 空辞書は
         // 「このジョブでは上書き無し」を意味し、パレットの既定値がそのまま使われる。
@@ -474,7 +474,7 @@ public sealed class PreviewForm : Form
         try
         {
             var route = MachineRoute.Resolve(machine);
-            var profile = ConfigLoader.LoadProfile(Path.Combine(_repoRoot, "profiles", route.ProfileFileName));
+            var profile = ConfigLoader.LoadProfile(Path.Combine(_assetRoot, "profiles", route.ProfileFileName));
             _resolutionCombo.Items.Clear();
             foreach (var entry in profile.Resolutions)
             {
@@ -502,8 +502,8 @@ public sealed class PreviewForm : Form
         try
         {
             var route = MachineRoute.Resolve(machine);
-            var profile = ConfigLoader.LoadProfile(Path.Combine(_repoRoot, "profiles", route.ProfileFileName));
-            var paperTable = ConfigLoader.ResolvePaperTable(profile, Path.Combine(_repoRoot, "papers"));
+            var profile = ConfigLoader.LoadProfile(Path.Combine(_assetRoot, "profiles", route.ProfileFileName));
+            var paperTable = ConfigLoader.ResolvePaperTable(profile, Path.Combine(_assetRoot, "papers"));
             _paperCombo.Items.Clear();
             PaperItem? preferred = null;
             foreach (var kv in paperTable.OrderBy(kv => kv.Key, StringComparer.Ordinal))
@@ -529,7 +529,7 @@ public sealed class PreviewForm : Form
     {
         try
         {
-            var mediaTable = ConfigLoader.LoadMediaTable(Path.Combine(_repoRoot, "media.yaml"));
+            var mediaTable = ConfigLoader.LoadMediaTable(Path.Combine(_assetRoot, "media.yaml"));
             _mediaCombo.Items.Clear();
             MediaItem? preferred = null;
             foreach (var kv in mediaTable.OrderBy(kv => kv.Key, StringComparer.Ordinal))
@@ -594,7 +594,7 @@ public sealed class PreviewForm : Form
             // D-030: 許可リストは解像度・メディア・機種などを変えて再プレビューしても
             // そのまま持ち越す(許可されていないインクがもう現れなければ自然に消える)。
             var result = await Task.Run(() => JobPipeline.BuildPreview(
-                _psPath, _repoRoot, route, inkMode, paperName, mediaName, resolutionKey, halftone, whiteMode,
+                _psPath, _assetRoot, route, inkMode, paperName, mediaName, resolutionKey, halftone, whiteMode,
                 _usedInks, _passesOverride, colourCorrection));
 
             ApplyPreviewResult(result);
@@ -922,7 +922,7 @@ public sealed class PreviewForm : Form
             // _settings.PaperName(保存済みの既定値)のままだと、プレビューで
             // 用紙を切り替えても実際の送出は古い既定値のまま行われ、
             // プレビューと送出結果がずれる(切り出し位置がずれる実害)。
-            var config = JobPipeline.LoadJobConfig(_repoRoot, route, paperName, mediaName);
+            var config = JobPipeline.LoadJobConfig(_assetRoot, route, paperName, mediaName);
             var job = new PrintJob
             {
                 // Emitter.EmitJob は Paper を常に 600dpi 基準の値として受け取り、

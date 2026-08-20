@@ -92,7 +92,7 @@ internal static class Program
                 return;
             }
 
-            string repoRoot = JobPipeline.FindRepoRoot();
+            string assetRoot = AssetRoot.ResolveDefault();
             var settings = TraySettings.Load();
             var route = MachineRoute.Resolve(settings.Machine);
 
@@ -148,7 +148,7 @@ internal static class Program
             }
             route = MachineRoute.Resolve(machine);
 
-            var config = JobPipeline.LoadJobConfig(repoRoot, route, paperName, mediaName);
+            var config = JobPipeline.LoadJobConfig(assetRoot, route, paperName, mediaName);
 
             // D-030: --use-inks が指定されていればそれを許可リストの起点にし、
             // 無ければ TraySettings の既定(旧設定はメタリック無効)を使う。
@@ -169,7 +169,7 @@ internal static class Program
                 $"パス数の上書き(D-031): {(passesOverride.Count == 0 ? "(なし。パレットの既定値を使用)" : string.Join(", ", passesOverride.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value}")))}");
 
             var result = JobPipeline.BuildPreview(
-                psPath, repoRoot, route, settings.InkMode, paperName, mediaName,
+                psPath, assetRoot, route, settings.InkMode, paperName, mediaName,
                 resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection);
             var job = new PrintJob
             {
@@ -216,7 +216,7 @@ internal static class Program
                 return;
             }
 
-            string repoRoot = JobPipeline.FindRepoRoot();
+            string assetRoot = AssetRoot.ResolveDefault();
             var settings = TraySettings.Load();
             var route = MachineRoute.Resolve(settings.Machine);
 
@@ -261,7 +261,7 @@ internal static class Program
                 }
             }
 
-            var config = JobPipeline.LoadJobConfig(repoRoot, route, paperName, mediaName);
+            var config = JobPipeline.LoadJobConfig(assetRoot, route, paperName, mediaName);
             var usedInks = useInksArg ?? settings.ResolveUsedInks(config.Palette);
             if (excludeInksArg is { Count: > 0 })
             {
@@ -275,7 +275,7 @@ internal static class Program
                 $"パス数の上書き(D-031): {(passesOverride.Count == 0 ? "(なし。パレットの既定値を使用)" : string.Join(", ", passesOverride.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value}")))}");
 
             var result = JobPipeline.BuildPreview(
-                psPath, repoRoot, route, settings.InkMode, paperName, mediaName,
+                psPath, assetRoot, route, settings.InkMode, paperName, mediaName,
                 resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection);
 
             result.Preview.Save(outputPngPath, System.Drawing.Imaging.ImageFormat.Png);

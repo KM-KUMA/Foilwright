@@ -97,37 +97,20 @@ public static class JobPipeline
 
     private const int PreviewMaxWidth = 900;
 
-    /// <summary>実行アセンブリの場所からリポジトリ直下を探す。
-    /// Foilwright.Cli.Program.FindRepoRoot と同じ規則(bin/Debug/net10.0-windows
-    /// から 5 階層上がる)。</summary>
-    public static string FindRepoRoot()
+    public static JobConfig LoadJobConfig(string assetRoot, MachineRoute route, string paperName, string mediaName)
     {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (int i = 0; i < 5; i++)
-        {
-            if (dir.Parent is null)
-            {
-                break;
-            }
-            dir = dir.Parent;
-        }
-        return dir.FullName;
-    }
-
-    public static JobConfig LoadJobConfig(string repoRoot, MachineRoute route, string paperName, string mediaName)
-    {
-        var profile = ConfigLoader.LoadProfile(Path.Combine(repoRoot, "profiles", route.ProfileFileName));
-        var paperTable = ConfigLoader.ResolvePaperTable(profile, Path.Combine(repoRoot, "papers"));
+        var profile = ConfigLoader.LoadProfile(Path.Combine(assetRoot, "profiles", route.ProfileFileName));
+        var paperTable = ConfigLoader.ResolvePaperTable(profile, Path.Combine(assetRoot, "papers"));
         if (!paperTable.TryGetValue(paperName, out var paper))
         {
             throw new ConfigException($"paper '{paperName}' not found in paper table '{profile.PaperTable}'");
         }
-        var mediaTable = ConfigLoader.LoadMediaTable(Path.Combine(repoRoot, "media.yaml"));
+        var mediaTable = ConfigLoader.LoadMediaTable(Path.Combine(assetRoot, "media.yaml"));
         if (!mediaTable.TryGetValue(mediaName, out var media))
         {
             throw new ConfigException($"media '{mediaName}' not found in media.yaml");
         }
-        var palette = ConfigLoader.LoadPalette(Path.Combine(repoRoot, "palette", "default.yaml"));
+        var palette = ConfigLoader.LoadPalette(Path.Combine(assetRoot, "palette", "default.yaml"));
         return new JobConfig { Profile = profile, Paper = paper, Media = media, Palette = palette };
     }
 
@@ -138,12 +121,12 @@ public static class JobPipeline
     /// resolutionKey: ResolutionEntry.Key の形式(例: "600" / "1200x600")。
     /// プロファイルの resolutions から解決する(DOMAIN §4.5: コードに埋め込まない)。</summary>
     public static PreviewResult BuildPreview(
-        string psPath, string repoRoot, MachineRoute route, string inkMode,
+        string psPath, string assetRoot, MachineRoute route, string inkMode,
         string paperName, string mediaName, string resolutionKey, string halftone, string whiteMode,
         IReadOnlySet<string> usedInks, IReadOnlyDictionary<string, int> passesOverride,
         string colourCorrection = DefaultColourCorrection)
     {
-        var config = LoadJobConfig(repoRoot, route, paperName, mediaName);
+        var config = LoadJobConfig(assetRoot, route, paperName, mediaName);
         var resolutionEntry = config.Profile.ResolveResolutionByKey(resolutionKey);
         string ppmPath = Path.Combine(Path.GetTempPath(), $"foilwright_{Guid.NewGuid():n}.ppm");
         // 白版モードが "alpha" のときだけ使う(D-037)。他のモードではここが
@@ -255,8 +238,8 @@ public static class JobPipeline
     {
         var palette = config.Palette.Where(ink => usedInks.Contains(ink.Name)).ToList();
 
-        string repoRoot = FindRepoRoot();
-        string photoLutPath = Path.Combine(repoRoot, "colour", "photo_colcor.bin");
+        string assetRoot = AssetRoot.ResolveDefault();
+        string photoLutPath = Path.Combine(assetRoot, "colour", "photo_colcor.bin");
 
         var jobPlanes = JobAssembly.BuildJobPlanes(
             image, palette, inkMode, halftone, whiteMode, colourCorrection, resolutionEntry.DpiX, photoLutPath, alphaImage);
