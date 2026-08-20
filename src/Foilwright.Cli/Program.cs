@@ -64,13 +64,15 @@ internal static class Program
                     return RunListen(args.Skip(1).ToArray());
                 case "build-rgl":
                     return RunBuildRgl(args.Skip(1).ToArray());
+                case "decode-png":
+                    return RunDecodePng(args.Skip(1).ToArray());
                 default:
                     PrintUsage();
                     return 1;
             }
         }
         catch (Exception ex) when (ex is TransportException or GhostscriptException or ConfigException
-            or PpmFormatException or MachineRouteException)
+            or PpmFormatException or MachineRouteException or PngFormatException)
         {
             Console.Error.WriteLine($"エラー: {ex.Message}");
             return 1;
@@ -104,6 +106,9 @@ internal static class Program
         Console.Error.WriteLine("            [--colour-correction none|plain|photo]");
         Console.Error.WriteLine("                      【開発用】PPM を直接受け取り RGL バイト列をファイルへ書き出す。実機には触れない");
         Console.Error.WriteLine("                      (D-033: ref/ の job.py との突き合わせテスト専用の決定的な入口。listen と違い Ghostscript を経由しない)");
+        Console.Error.WriteLine("  decode-png <入力.png> <出力.raw>");
+        Console.Error.WriteLine("                      【開発用】PNG(RGBA)を読み、幅・高さを標準出力へ、RGBA の生バイト列を出力.raw へ書き出す");
+        Console.Error.WriteLine("                      (D-036: ref/ の png.py との突き合わせテスト専用の決定的な入口)");
         Console.Error.WriteLine($"  --machine 省略時は '{MachineRoute.DefaultMachine}'(D-025)。選べるのは: {MachineRoute.KnownMachinesDescription}");
         Console.Error.WriteLine("  --vid は機種既定の VID(変換ケーブル等の個体差)を上書きする。例: --vid 056E");
     }
@@ -721,6 +726,34 @@ internal static class Program
         byte[] rgl = Emitter.EmitJob(planes, job);
         File.WriteAllBytes(outputPath, rgl);
         Console.WriteLine($"RGL 組み立て完了: {outputPath} ({rgl.Length} バイト)");
+        return 0;
+    }
+
+    // --- decode-png(開発用。D-036)---------------------------------------------
+
+    /// <summary>【開発用】PNG(RGBA)を読み、幅・高さを標準出力へ、RGBA の生
+    /// バイト列を出力ファイルへ書き出す(D-036)。ref/ の png.read_png_rgba
+    /// との突き合わせテスト(ref/tests/test_png_cross_language.py)専用の
+    /// 決定的な入口。</summary>
+    private static int RunDecodePng(string[] args)
+    {
+        if (args.Length != 2)
+        {
+            Console.Error.WriteLine("使い方: Foilwright.Cli decode-png <入力.png> <出力.raw>");
+            return 1;
+        }
+        string inputPath = args[0];
+        string outputPath = args[1];
+
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"ファイルなし: {inputPath}");
+            return 1;
+        }
+
+        var image = PngImage.Read(inputPath);
+        File.WriteAllBytes(outputPath, image.Pixels);
+        Console.WriteLine($"{image.Width} {image.Height}");
         return 0;
     }
 
