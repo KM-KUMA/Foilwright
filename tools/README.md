@@ -31,12 +31,18 @@
 | `setup-printer-b.cmd` | **Windows 同梱の `MS Publisher Color Printer` で仮想プリンタを作る**(D-022)。署名もドライバパッケージも要らない。**これが現行の動作構成**。ただしポートは `FILE:` のままなので、次の 1 本と組で使う |
 | `setup-pipe-port.cmd` | 名前付きポート `\.\pipe\foilwright` を作り、プリンタをそこへ向ける(D-023)。**トレイアプリが受け取る口** |
 | `rebuild.ps1` | トレイを止める → ビルド → 起こす → パイプ確認(§15.12)。**開発者向けだが、動作確認の手順として配布物にも要る** |
+| `make-package.cmd` | **`make-package.ps1` をダブルクリックで動かせるようにした包み。**PowerShell を知らなくても配布物を作れる。終了時にキー待ちで止まるので、窓が消えない。**インストールは行わない**(プリンタにも触らない) |
 | `make-package.ps1` | 配布物を組み立てる。`dotnet publish --self-contained` → 設定を集める → `install.ps1` / `uninstall.ps1` / `README.txt` を添えて zip(D-041)。出力は `dist/`(追跡対象外) |
 | `package/install.ps1` | **zip に同梱される導入スクリプト。** 管理者権限と Ghostscript を確認 → `%LOCALAPPDATA%\Foilwright` へ配置 → ポート → プリンタ → 自動起動 → トレイ起動とパイプ確認。**何を入れたかを `install-manifest.json` に記録する** |
 | `package/uninstall.ps1` | **zip に同梱される削除スクリプト。** manifest を読み、**自分が入れたものだけ**消す。manifest が無ければ何もしない。設定は既定で残し `-Purge` で消す。`-WhatIf` 対応 |
 | `package/README.txt` | zip に同梱される利用者向けの手順 |
 
 **配布に関係するのはこの 7 本である。**
+
+**`.cmd` は逆に、BOM 無し・ASCII(英語)で書くこと。** 既存 18 本すべてがそうなっている。
+**日本語を `.cmd` に直接書くと cp932 で壊れる。** 利用者に見せる日本語は
+PowerShell 側(BOM 付き UTF-8)に喋らせ、`.cmd` は起動と後始末だけを担う。
+`.cmd` の改行は **LF**(既存 18 本すべて LF)。
 
 **PowerShell スクリプトは UTF-8 **BOM 付き**で保存すること。**
 **BOM が無いと PowerShell 5.1 は ANSI(cp932)として読み、日本語の文字列が壊れて構文エラーになる。**
