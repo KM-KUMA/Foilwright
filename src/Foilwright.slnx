@@ -3,4 +3,5 @@
   <Project Path="Foilwright.Core.Tests/Foilwright.Core.Tests.csproj" />
   <Project Path="Foilwright.Core/Foilwright.Core.csproj" />
   <Project Path="Foilwright.Tray/Foilwright.Tray.csproj" />
+  <Project Path="Foilwright.Tray.Tests/Foilwright.Tray.Tests.csproj" />
 </Solution>

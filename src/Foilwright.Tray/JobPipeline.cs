@@ -124,7 +124,8 @@ public static class JobPipeline
         string psPath, string assetRoot, MachineRoute route, string inkMode,
         string paperName, string mediaName, string resolutionKey, string halftone, string whiteMode,
         IReadOnlySet<string> usedInks, IReadOnlyDictionary<string, int> passesOverride,
-        string colourCorrection = DefaultColourCorrection)
+        string colourCorrection = DefaultColourCorrection,
+        IReadOnlyDictionary<string, int[]?>? magicRgbOverride = null)
     {
         var config = LoadJobConfig(assetRoot, route, paperName, mediaName);
         var resolutionEntry = config.Profile.ResolveResolutionByKey(resolutionKey);
@@ -155,7 +156,7 @@ public static class JobPipeline
                 alphaImage = CropAlpha(fullAlphaImage, scaledPaper.LeftMargin, scaledPaper.TopMargin, scaledPaper.Width, scaledPaper.Length);
             }
 
-            return BuildPreviewCore(image, config, resolutionEntry, inkMode, halftone, whiteMode, usedInks, passesOverride, colourCorrection, alphaImage);
+            return BuildPreviewCore(image, config, resolutionEntry, inkMode, halftone, whiteMode, usedInks, passesOverride, colourCorrection, alphaImage, magicRgbOverride);
         }
         finally
         {
@@ -215,9 +216,10 @@ public static class JobPipeline
         PpmImage image, JobConfig config, ResolutionEntry resolution,
         string inkMode, string halftone, string whiteMode,
         IReadOnlySet<string> usedInks, IReadOnlyDictionary<string, int> passesOverride,
-        string colourCorrection = DefaultColourCorrection, PngImage? alphaImage = null)
+        string colourCorrection = DefaultColourCorrection, PngImage? alphaImage = null,
+        IReadOnlyDictionary<string, int[]?>? magicRgbOverride = null)
     {
-        return BuildPreviewCore(image, config, resolution, inkMode, halftone, whiteMode, usedInks, passesOverride, colourCorrection, alphaImage);
+        return BuildPreviewCore(image, config, resolution, inkMode, halftone, whiteMode, usedInks, passesOverride, colourCorrection, alphaImage, magicRgbOverride);
     }
 
     /// <summary>BuildPreview と RebuildFromImage の共通処理(インク割り当て以降)。
@@ -230,19 +232,29 @@ public static class JobPipeline
     /// D-029: colourCorrection == "photo" のとき、photo_colcor テーブル
     /// (colour/photo_colcor.bin、リポジトリ直下から解決)と選択中の解像度を
     /// JobAssembly.BuildJobPlanes へ渡す。ガンマの既定値が解像度で変わるため
-    /// (600 は 0.8、1200 は -0.9)、解像度を渡し忘れると色がずれる。</summary>
+    /// (600 は 0.8、1200 は -0.9)、解像度を渡し忘れると色がずれる。
+    /// D-042: magicRgbOverride にそのインクの上書きがあれば、パレットの magic_rgb を
+    /// 差し替えた「照合用パレット」を作ってから JobAssembly.BuildJobPlanes に渡す
+    /// (JobAssembly / raster には手を入れない。D-042 決定 6)。</summary>
     private static PreviewResult BuildPreviewCore(
         PpmImage image, JobConfig config, ResolutionEntry resolutionEntry,
         string inkMode, string halftone, string whiteMode, IReadOnlySet<string> usedInks,
-        IReadOnlyDictionary<string, int> passesOverride, string colourCorrection, PngImage? alphaImage = null)
+        IReadOnlyDictionary<string, int> passesOverride, string colourCorrection, PngImage? alphaImage = null,
+        IReadOnlyDictionary<string, int[]?>? magicRgbOverride = null)
     {
         var palette = config.Palette.Where(ink => usedInks.Contains(ink.Name)).ToList();
+
+        // D-042: マジックカラーの上書きは「照合」にだけ効かせる。表示色は元のパレットの
+        // ままにする — 白を #000000 に割り当てたとき、プレビューまで黒く描いてしまうと
+        // 黒インクと見分けが付かず、誤爆を検出できなくなる(DOMAIN §7.2)。
+        var rawByName = palette.ToDictionary(ink => ink.Name);
+        var matchPalette = TraySettings.ApplyMagicRgbOverride(palette, magicRgbOverride);
 
         string assetRoot = AssetRoot.ResolveDefault();
         string photoLutPath = Path.Combine(assetRoot, "colour", "photo_colcor.bin");
 
         var jobPlanes = JobAssembly.BuildJobPlanes(
-            image, palette, inkMode, halftone, whiteMode, colourCorrection, resolutionEntry.DpiX, photoLutPath, alphaImage);
+            image, matchPalette, inkMode, halftone, whiteMode, colourCorrection, resolutionEntry.DpiX, photoLutPath, alphaImage);
 
         var planes = jobPlanes.ToDictionary(jp => jp.Ink.Name, jp => jp.Plane);
         var jobInks = jobPlanes
@@ -261,14 +273,21 @@ public static class JobPipeline
                 Order = jp.Ink.Order,
                 Passes = ResolvePasses(jp.Ink, passesOverride),
                 PrinterCode = jp.Ink.PrinterCode,
-                Color = PreviewRenderer.ResolveDisplayColor(jp.Ink),
+                // D-042: 表示色は上書き前(パレットのまま)のインクから引く。
+                Color = PreviewRenderer.ResolveDisplayColor(RawInkOf(jp.Ink, rawByName)),
             })
+            .ToList();
+
+        // D-042: 描画にも上書き前のインクを使う(色の対応付けを変えない)。
+        // プレーンそのものは上書き後の照合結果であり、差し替えるのは Ink だけ。
+        var displayPlanes = jobPlanes
+            .Select(jp => (Ink: RawInkOf(jp.Ink, rawByName), jp.Plane))
             .ToList();
 
         // D-038: 1200x600 のように画素が正方形でない解像度では、縦横に同じ倍率を
         // かけると縦に潰れて見える(PreviewRenderer 側で dpiX/dpiY を使って補正する)。
         var bitmap = PreviewRenderer.Render(
-            image.Width, image.Height, jobPlanes, PreviewMaxWidth, resolutionEntry.DpiX, resolutionEntry.DpiY);
+            image.Width, image.Height, displayPlanes, PreviewMaxWidth, resolutionEntry.DpiX, resolutionEntry.DpiY);
 
         return new PreviewResult
         {
@@ -291,6 +310,13 @@ public static class JobPipeline
     /// と同じ流儀(名前で引き、無ければ既定へフォールバック)。</summary>
     private static int ResolvePasses(InkDefinition ink, IReadOnlyDictionary<string, int> passesOverride) =>
         passesOverride.TryGetValue(ink.Name, out int passes) ? passes : ink.Passes;
+
+    /// <summary>D-042: 照合用パレットのインク(マジックカラーを上書き済み)から、
+    /// 上書き前のインクを名前で引き直す。表示(プレビューの色・凡例)は常に
+    /// 上書き前の色で行う — 引けなかった場合は渡されたインクをそのまま使う
+    /// (白版の下地など、パレットに無いインクが返ってくる可能性への保険)。</summary>
+    private static InkDefinition RawInkOf(InkDefinition ink, IReadOnlyDictionary<string, InkDefinition> rawByName) =>
+        rawByName.TryGetValue(ink.Name, out var raw) ? raw : ink;
 
     /// <summary>RGL を組み立てるだけで送出しない。実機を消費せずに
     /// バイト列を検査するための経路(§9.5: バイト列の検証と実機の刷り上がり

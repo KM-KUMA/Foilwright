@@ -13,8 +13,13 @@
 // 終了する。対話的デスクトップが無い環境(自動検証など)でも、実際に
 // 生成されるプレビュー画像を確認できるようにするための経路。
 
+using System.Runtime.CompilerServices;
 using System.Windows.Forms;
 using Foilwright.Core;
+
+// 引数解析(ParseMagicRgbArg など)は UI もプリンタも要らない純粋な処理であり、
+// 単体テストの対象にする。テストアセンブリにだけ internal を見せる。
+[assembly: InternalsVisibleTo("Foilwright.Tray.Tests")]
 
 namespace Foilwright.Tray;
 
@@ -113,6 +118,9 @@ internal static class Program
             // D-031: UI 無しでパス数の上書きを検証するための隠しオプション
             // (カンマ区切りの ink=n。src/Foilwright.Tray/PreviewForm.cs の「パス数」列と同義)。
             Dictionary<string, int>? passesArg = null;
+            // D-042: UI 無しでマジックカラーの上書きを検証するための隠しオプション
+            // (カンマ区切りの ink=#RRGGBB / ink=none。PreviewForm の「色」列と同義)。
+            Dictionary<string, int[]?>? magicRgbArg = null;
             for (int i = 0; i < extraArgs.Length - 1; i++)
             {
                 switch (extraArgs[i])
@@ -124,6 +132,10 @@ internal static class Program
                     case "--white-mode": whiteMode = extraArgs[i + 1]; i++; break;
                     case "--colour-correction": colourCorrection = extraArgs[i + 1]; i++; break;
                     case "--machine": machine = extraArgs[i + 1]; i++; break;
+                    case "--magic-rgb":
+                        magicRgbArg = ParseMagicRgbArg(extraArgs[i + 1]);
+                        i++;
+                        break;
                     case "--use-inks":
                         useInksArg = extraArgs[i + 1]
                             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -163,14 +175,21 @@ internal static class Program
             // 無ければ TraySettings の既定(保存済みの上書き)を使う。
             var passesOverride = passesArg ?? settings.PassesOverride ?? new Dictionary<string, int>();
 
+            // D-042: --magic-rgb が指定されていればそれを上書きの起点にし、
+            // 無ければ TraySettings の既定(保存済みの上書き)を使う。
+            var magicRgbOverride = magicRgbArg ?? settings.MagicRgbOverride ?? new Dictionary<string, int[]?>();
+            // D-042: 打ち間違いはその場で止める。
+            if (magicRgbArg is not null) { RejectUnknownInkNames(magicRgbArg, config.Palette); }
+
             Console.WriteLine($"使うインク(D-030): {string.Join(", ", usedInks.OrderBy(n => n, StringComparer.Ordinal))}");
             Console.WriteLine($"色補正(D-029): {colourCorrection}");
             Console.WriteLine(
                 $"パス数の上書き(D-031): {(passesOverride.Count == 0 ? "(なし。パレットの既定値を使用)" : string.Join(", ", passesOverride.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value}")))}");
+            Console.WriteLine($"マジックカラーの上書き(D-042): {FormatMagicRgbOverride(magicRgbOverride)}");
 
             var result = JobPipeline.BuildPreview(
                 psPath, assetRoot, route, settings.InkMode, paperName, mediaName,
-                resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection);
+                resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection, magicRgbOverride);
             var job = new PrintJob
             {
                 // Emitter.EmitJob は Paper を常に 600dpi 基準で受け取り、
@@ -232,6 +251,8 @@ internal static class Program
             HashSet<string>? useInksArg = null;
             HashSet<string>? excludeInksArg = null;
             Dictionary<string, int>? passesArg = null;
+            // D-042: RunDebugRgl と同じ隠しオプション(ink=#RRGGBB / ink=none)。
+            Dictionary<string, int[]?>? magicRgbArg = null;
             for (int i = 0; i < extraArgs.Length - 1; i++)
             {
                 switch (extraArgs[i])
@@ -242,6 +263,10 @@ internal static class Program
                     case "--halftone": halftone = extraArgs[i + 1]; i++; break;
                     case "--white-mode": whiteMode = extraArgs[i + 1]; i++; break;
                     case "--colour-correction": colourCorrection = extraArgs[i + 1]; i++; break;
+                    case "--magic-rgb":
+                        magicRgbArg = ParseMagicRgbArg(extraArgs[i + 1]);
+                        i++;
+                        break;
                     case "--use-inks":
                         useInksArg = extraArgs[i + 1]
                             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -268,15 +293,20 @@ internal static class Program
                 usedInks = new HashSet<string>(usedInks.Where(name => !excludeInksArg.Contains(name)));
             }
             var passesOverride = passesArg ?? settings.PassesOverride ?? new Dictionary<string, int>();
+            // D-042: RunDebugRgl と同じ解決順(コマンドライン → 保存済み設定 → 上書き無し)。
+            var magicRgbOverride = magicRgbArg ?? settings.MagicRgbOverride ?? new Dictionary<string, int[]?>();
+            // D-042: 打ち間違いはその場で止める。
+            if (magicRgbArg is not null) { RejectUnknownInkNames(magicRgbArg, config.Palette); }
 
             Console.WriteLine($"使うインク(D-030): {string.Join(", ", usedInks.OrderBy(n => n, StringComparer.Ordinal))}");
             Console.WriteLine($"色補正(D-029): {colourCorrection}");
             Console.WriteLine(
                 $"パス数の上書き(D-031): {(passesOverride.Count == 0 ? "(なし。パレットの既定値を使用)" : string.Join(", ", passesOverride.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value}")))}");
+            Console.WriteLine($"マジックカラーの上書き(D-042): {FormatMagicRgbOverride(magicRgbOverride)}");
 
             var result = JobPipeline.BuildPreview(
                 psPath, assetRoot, route, settings.InkMode, paperName, mediaName,
-                resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection);
+                resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection, magicRgbOverride);
 
             result.Preview.Save(outputPngPath, System.Drawing.Imaging.ImageFormat.Png);
 
@@ -326,4 +356,73 @@ internal static class Program
         }
         return result;
     }
+
+    /// <summary>D-042: `--magic-rgb white=#000000,metallic_gold=none` の形式を解析する。
+    /// 色は `#RRGGBB`(先頭の `#` は省略可)、`none` はそのインクの色を明示的に外す
+    /// (= マジック判定に参加させない)ことを表し、辞書の値 null になる。
+    /// 不正な書式は黙って無視せずその場で拒否する(ParsePassesArg と同じ方針)。</summary>
+    internal static Dictionary<string, int[]?> ParseMagicRgbArg(string arg)
+    {
+        var result = new Dictionary<string, int[]?>();
+        foreach (string entry in arg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string[] parts = entry.Split('=', 2);
+            if (parts.Length != 2 || parts[0].Length == 0)
+            {
+                throw new ConfigException(
+                    $"--magic-rgb の形式が不正です(ink=#RRGGBB または ink=none の形式にしてください): '{entry}'");
+            }
+            string inkName = parts[0];
+            string value = parts[1];
+            if (string.Equals(value, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                result[inkName] = null;
+                continue;
+            }
+            string hex = value.StartsWith('#') ? value[1..] : value;
+            if (hex.Length != 6
+                || !int.TryParse(hex[0..2], System.Globalization.NumberStyles.HexNumber, null, out int r)
+                || !int.TryParse(hex[2..4], System.Globalization.NumberStyles.HexNumber, null, out int g)
+                || !int.TryParse(hex[4..6], System.Globalization.NumberStyles.HexNumber, null, out int b))
+            {
+                throw new ConfigException(
+                    $"--magic-rgb '{inkName}' の値が不正です。#RRGGBB(16 進 6 桁)または none で指定してください(D-042): '{value}'");
+            }
+            result[inkName] = new[] { r, g, b };
+        }
+        return result;
+    }
+
+    /// <summary>D-042: --magic-rgb にパレットへ無いインク名が混じっていたら、その場で
+    /// 止める。黙って無視すると「指定したのに何も変わらない」という追いにくい形に
+    /// なるため(実際に `whte=#000000` が無反応で通ってしまった)。
+    ///
+    /// 判定するのはコマンドラインで渡された分だけで、settings.json に保存された
+    /// 上書きは対象にしない — パレットからインクが消えた古い設定が残っていても、
+    /// 印刷そのものを止めてしまわないようにするため(該当項目は無視される)。</summary>
+    internal static void RejectUnknownInkNames(
+        IReadOnlyDictionary<string, int[]?> overrides, IReadOnlyList<InkDefinition> palette)
+    {
+        var known = palette.Select(ink => ink.Name).ToHashSet(StringComparer.Ordinal);
+        var unknown = overrides.Keys
+            .Where(name => !known.Contains(name))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+        if (unknown.Count > 0)
+        {
+            throw new ConfigException(
+                $"--magic-rgb にパレットへ無いインク名があります(D-042): {string.Join(", ", unknown)} / " +
+                $"使えるインク名: {string.Join(", ", known.OrderBy(name => name, StringComparer.Ordinal))}");
+        }
+    }
+
+    /// <summary>D-042: マジックカラーの上書きをログ 1 行にまとめる(--passes と同じ調子)。</summary>
+    private static string FormatMagicRgbOverride(IReadOnlyDictionary<string, int[]?> overrides) =>
+        overrides.Count == 0
+            ? "(なし。パレットの既定値を使用)"
+            : string.Join(", ", overrides
+                .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                .Select(kv => kv.Value is { } rgb
+                    ? $"{kv.Key}=#{rgb[0]:x2}{rgb[1]:x2}{rgb[2]:x2}"
+                    : $"{kv.Key}=none"));
 }

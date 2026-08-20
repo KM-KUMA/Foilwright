@@ -81,7 +81,10 @@ Write-Host '=== 5. パイプの確認 ===' -ForegroundColor Cyan
 $found = $false
 foreach ($i in 1..12) {
     Start-Sleep -Seconds 1
-    if ([System.IO.Directory]::GetFiles('\.\pipe\') -match 'foilwright') { $found = $true; break }
+    # 名前付きパイプの一覧は `\\.\pipe\` から読む。先頭の `\\` を落とすと
+    # カレントドライブの `\pipe`(例: `E:\pipe`)を探して例外になる —
+    # 2026-08-21 まで、この確認は一度も機能していなかった。
+    if ([System.IO.Directory]::GetFiles('\\.\pipe\') -match 'foilwright') { $found = $true; break }
 }
 if ($found) {
     Write-Host '  待ち受け中。印刷してよい' -ForegroundColor Green

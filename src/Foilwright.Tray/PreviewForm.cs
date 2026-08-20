@@ -38,6 +38,12 @@ public sealed class PreviewForm : Form
     private readonly PictureBox _previewBox;
     private readonly Label _jobSummaryLabel;
     private readonly DataGridView _inkGrid;
+
+    // D-042: マジックカラーの選択・既定への復帰・色の重複警告。
+    private readonly Button _pickColorButton;
+    private readonly Button _resetColorButton;
+    private readonly Label _magicRgbWarningLabel;
+
     private readonly TextBox _statusText;
     private readonly Button _statusRefreshButton;
     private readonly ProgressBar _progressBar;
@@ -76,6 +82,13 @@ public sealed class PreviewForm : Form
     /// インクは JobPipeline がパレットの既定値(InkDefinition.Passes)を使う。</summary>
     private readonly Dictionary<string, int> _passesOverride;
 
+    /// <summary>D-042: マジックカラーのジョブごとの上書き(ink 名 → RGB 3 値、
+    /// null は「色を外す」)。TraySettings.MagicRgbOverride を初期状態とし
+    /// (null なら空辞書、= 上書き無し)、以後はプレビューの「色」列がジョブごとの
+    /// 上書きとして書き換える。SaveAsDefaults を押さない限り TraySettings には
+    /// 反映しない。ここに項目が無いインクはパレットの magic_rgb をそのまま使う。</summary>
+    private readonly Dictionary<string, int[]?> _magicRgbOverride;
+
     /// <summary>_usedInks の既定値を解決するために先読みしたパレット
     /// (palette/default.yaml)。機種・メディア・用紙を変えても不変
     /// (パレットはこれらに依存しない)。</summary>
@@ -109,6 +122,10 @@ public sealed class PreviewForm : Form
         _passesOverride = settings.PassesOverride is { } passesOverride
             ? new Dictionary<string, int>(passesOverride)
             : new Dictionary<string, int>();
+        // D-042: パス数の上書きと同じ扱い(null = 一度も触っていない → 空辞書)。
+        _magicRgbOverride = settings.MagicRgbOverride is { } magicRgbOverride
+            ? new Dictionary<string, int[]?>(magicRgbOverride)
+            : new Dictionary<string, int[]?>();
 
         Text = "Foilwright — 印刷プレビュー";
         Width = 1200;
@@ -262,7 +279,8 @@ public sealed class PreviewForm : Form
         _colourCorrectionCombo.SelectedIndexChanged += (_, _) => _ = RefreshPreviewAsync();
 
         // ジョブ内容(§7.2 の 2: パス数・使用インク・順序)
-        var jobGroup = new GroupBox { Text = "ジョブ内容", Dock = DockStyle.Top, Height = 240 };
+        // D-042: 色の選択ボタン(1 行)と重複警告(1 行)を足したぶん高さを増やす。
+        var jobGroup = new GroupBox { Text = "ジョブ内容", Dock = DockStyle.Top, Height = 310 };
         _jobSummaryLabel = new Label { Dock = DockStyle.Top, Height = 24, AutoSize = false, Padding = new Padding(4) };
         _inkGrid = new DataGridView
         {
@@ -286,7 +304,6 @@ public sealed class PreviewForm : Form
         // 立っているビット数(ドット数)を表示する列を足す。既存の列の右に置く。
         _inkGrid.Columns.Add("DotCount", "ドット数");
         _inkGrid.Columns["Order"]!.ReadOnly = true;
-        _inkGrid.Columns["Color"]!.ReadOnly = true;
         _inkGrid.Columns["Label"]!.ReadOnly = true;
         _inkGrid.Columns["DotCount"]!.ReadOnly = true;
         _inkGrid.Columns["DotCount"]!.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
@@ -294,6 +311,12 @@ public sealed class PreviewForm : Form
         // (TraySettings.MinPasses/MaxPasses)で、CellValidating がその場で拒否する。
         var passesColumn = _inkGrid.Columns["Passes"]!;
         passesColumn.ReadOnly = false;
+        // D-042: マジックカラー(そのインクへ割り当てる色)を編集可能にする。
+        // 書式は #RRGGBB(先頭の # は省略可)、空文字はそのインクの色を外す
+        // (= マジック判定に参加させない)。CellValidating がその場で拒否する。
+        var colorColumn = _inkGrid.Columns["Color"]!;
+        colorColumn.ReadOnly = false;
+        colorColumn.HeaderText = "色(#RRGGBB)";
         // チェックボックス列は確定(コミット)が 1 セル遅れる既知の挙動があるため、
         // CurrentCellDirtyStateChanged で即座にコミットしてから CellValueChanged を拾う。
         _inkGrid.CurrentCellDirtyStateChanged += (_, _) =>
@@ -310,20 +333,41 @@ public sealed class PreviewForm : Form
         // CellValueChanged は発火しない。
         _inkGrid.CellValidating += (_, e) =>
         {
-            if (e.RowIndex < 0 || e.ColumnIndex != passesColumn.Index)
+            if (e.RowIndex < 0)
             {
                 return;
             }
-            var cell = _inkGrid.Rows[e.RowIndex].Cells[e.ColumnIndex];
-            if (!int.TryParse(e.FormattedValue?.ToString(), out int value)
-                || value < TraySettings.MinPasses || value > TraySettings.MaxPasses)
+            if (e.ColumnIndex == passesColumn.Index)
             {
-                e.Cancel = true;
-                cell.ErrorText =
-                    $"パス数は整数で {TraySettings.MinPasses}〜{TraySettings.MaxPasses} の範囲で指定してください(D-031)。";
-                return;
+                var cell = _inkGrid.Rows[e.RowIndex].Cells[e.ColumnIndex];
+                if (!int.TryParse(e.FormattedValue?.ToString(), out int value)
+                    || value < TraySettings.MinPasses || value > TraySettings.MaxPasses)
+                {
+                    e.Cancel = true;
+                    cell.ErrorText =
+                        $"パス数は整数で {TraySettings.MinPasses}〜{TraySettings.MaxPasses} の範囲で指定してください(D-031)。";
+                    return;
+                }
+                cell.ErrorText = string.Empty;
             }
-            cell.ErrorText = string.Empty;
+            else if (e.ColumnIndex == colorColumn.Index)
+            {
+                // D-042: パス数と同じ流儀で、不正な色はその場で拒否する
+                // (黙って近い色に丸めない。誤った色で刷るとリボンと用紙を失う)。
+                var cell = _inkGrid.Rows[e.RowIndex].Cells[e.ColumnIndex];
+                // 注: このラムダの第 1 引数が `_` という名前のため、`out _` と書くと
+                // 破棄ではなくその引数(object)への代入と解釈されて型が合わない。
+                // 明示的な変数で受ける。
+                if (!TryParseColorCell(e.FormattedValue?.ToString(), out int[]? _unused))
+                {
+                    e.Cancel = true;
+                    cell.ErrorText =
+                        "色は #RRGGBB(16 進 6 桁。先頭の # は省略可)で指定してください。" +
+                        "空欄にするとそのインクの色を外します(D-042)。";
+                    return;
+                }
+                cell.ErrorText = string.Empty;
+            }
         };
         _inkGrid.CellValueChanged += (_, e) =>
         {
@@ -374,9 +418,68 @@ public sealed class PreviewForm : Form
                     }
                 });
             }
+            else if (e.ColumnIndex == colorColumn.Index)
+            {
+                BeginInvoke(async () =>
+                {
+                    try
+                    {
+                        await OnMagicRgbChangedAsync(rowIndex);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this, $"色の変更に失敗しました: {ex.Message}", "Foilwright",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                });
+            }
         };
         jobGroup.Controls.Add(_inkGrid);
         jobGroup.Controls.Add(_jobSummaryLabel);
+
+        // D-042: 色が重複したときの警告(印刷は止めない。警告のみ)。
+        // グリッドの下、色を選ぶボタンの上に置く。
+        _magicRgbWarningLabel = new Label
+        {
+            Dock = DockStyle.Bottom,
+            AutoSize = false,
+            Height = 32,
+            ForeColor = Color.Red,
+            Text = string.Empty,
+        };
+        jobGroup.Controls.Add(_magicRgbWarningLabel);
+
+        // D-042: 色の選択・既定へ戻すボタン。どちらも「選択中の行」に対して働く。
+        var colorButtonPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            FlowDirection = FlowDirection.LeftToRight,
+            Height = 34,
+            AutoSize = false,
+            Padding = new Padding(4, 2, 4, 2),
+        };
+        _pickColorButton = new Button { Text = "色を選ぶ...", AutoSize = true };
+        _pickColorButton.Click += (_, _) => PickMagicRgbForSelectedRow();
+        _resetColorButton = new Button { Text = "色を既定に戻す", AutoSize = true };
+        _resetColorButton.Click += (_, _) =>
+        {
+            BeginInvoke(async () =>
+            {
+                try
+                {
+                    await ResetMagicRgbForSelectedRowAsync();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, $"色を既定に戻せませんでした: {ex.Message}", "Foilwright",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            });
+        };
+        colorButtonPanel.Controls.Add(_pickColorButton);
+        colorButtonPanel.Controls.Add(_resetColorButton);
+        jobGroup.Controls.Add(colorButtonPanel);
+
         right.Controls.Add(jobGroup);
 
         // プリンタ状態(§7.2 の 7)+ カセットの過不足表示(§7.3 / D-026)。
@@ -592,6 +695,8 @@ public sealed class PreviewForm : Form
         _settings.UsedInks = new HashSet<string>(_usedInks);
         // D-031: パス数の上書きも同様に、このジョブの状態をそのまま既定値へ保存する。
         _settings.PassesOverride = new Dictionary<string, int>(_passesOverride);
+        // D-042: マジックカラーの上書きも同様に、このジョブの状態をそのまま既定値へ保存する。
+        _settings.MagicRgbOverride = new Dictionary<string, int[]?>(_magicRgbOverride);
         _settings.Save();
         MessageBox.Show(this, "既定値として保存しました。", "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
@@ -622,7 +727,7 @@ public sealed class PreviewForm : Form
             // そのまま持ち越す(許可されていないインクがもう現れなければ自然に消える)。
             var result = await Task.Run(() => JobPipeline.BuildPreview(
                 _psPath, _assetRoot, route, inkMode, paperName, mediaName, resolutionKey, halftone, whiteMode,
-                _usedInks, _passesOverride, colourCorrection));
+                _usedInks, _passesOverride, colourCorrection, _magicRgbOverride));
 
             ApplyPreviewResult(result);
         }
@@ -678,7 +783,7 @@ public sealed class PreviewForm : Form
 
             var result = await Task.Run(() => JobPipeline.RebuildFromImage(
                 previous.Image, previous.Config, previous.Resolution, inkMode, halftone, whiteMode, _usedInks,
-                _passesOverride, colourCorrection, previous.AlphaImage));
+                _passesOverride, colourCorrection, previous.AlphaImage, _magicRgbOverride));
 
             ApplyPreviewResult(result);
         }
@@ -747,7 +852,7 @@ public sealed class PreviewForm : Form
 
             var result = await Task.Run(() => JobPipeline.RebuildFromImage(
                 previous.Image, previous.Config, previous.Resolution, inkMode, halftone, whiteMode, _usedInks,
-                _passesOverride, colourCorrection, previous.AlphaImage));
+                _passesOverride, colourCorrection, previous.AlphaImage, _magicRgbOverride));
 
             ApplyPreviewResult(result);
         }
@@ -763,6 +868,174 @@ public sealed class PreviewForm : Form
         {
             SetBusy(false, string.Empty);
         }
+    }
+
+    /// <summary>D-042: 「色」列の入力を RGB 3 値へ解析する。受け付ける書式は
+    /// `#RRGGBB` / `RRGGBB`(先頭の `#` は省略可)と、空文字(= 色なし。そのインクを
+    /// マジック判定に参加させない)。それ以外は false を返し、CellValidating が
+    /// その場で拒否する。</summary>
+    private static bool TryParseColorCell(string? text, out int[]? rgb)
+    {
+        rgb = null;
+        string value = (text ?? string.Empty).Trim();
+        if (value.Length == 0)
+        {
+            // 空欄は「色なし」。null を入れる意思表示であり、不正入力ではない。
+            return true;
+        }
+        string hex = value.StartsWith('#') ? value[1..] : value;
+        if (hex.Length != 6
+            || !int.TryParse(hex[0..2], System.Globalization.NumberStyles.HexNumber, null, out int r)
+            || !int.TryParse(hex[2..4], System.Globalization.NumberStyles.HexNumber, null, out int g)
+            || !int.TryParse(hex[4..6], System.Globalization.NumberStyles.HexNumber, null, out int b))
+        {
+            return false;
+        }
+        rgb = new[] { r, g, b };
+        return true;
+    }
+
+    /// <summary>D-042: RGB 3 値を「色」列の表示文字列にする(色なしは空文字)。</summary>
+    private static string FormatColorCell(int[]? rgb) =>
+        rgb is null ? string.Empty : $"#{rgb[0]:x2}{rgb[1]:x2}{rgb[2]:x2}";
+
+    /// <summary>D-042: そのインクに実際に効くマジックカラー。ジョブごとの上書きが
+    /// あればそれを、無ければパレットの magic_rgb を返す(TraySettings.ResolvePasses
+    /// と同じ流儀)。</summary>
+    private int[]? ResolveMagicRgb(InkDefinition def) =>
+        _magicRgbOverride.TryGetValue(def.Name, out int[]? rgb) ? rgb : def.MagicRgb;
+
+    /// <summary>D-042: 「色」列を編集したときのハンドラ。値は CellValidating で
+    /// 書式を確認済み。Ghostscript を再実行せず、切り出し済みの画像を保持したまま
+    /// JobPipeline.RebuildFromImage でジョブ組み立てだけをやり直す
+    /// (D-028 補足 / OnPassesChangedAsync と同じ扱い)。</summary>
+    private async Task OnMagicRgbChangedAsync(int rowIndex)
+    {
+        if (_busy || _current is null)
+        {
+            return;
+        }
+        if (rowIndex < 0 || rowIndex >= _inkGrid.Rows.Count)
+        {
+            return;
+        }
+        var row = _inkGrid.Rows[rowIndex];
+        if (row.Tag is not string inkName)
+        {
+            return;
+        }
+        // CellValidating で確認済みだが、念のためもう一度検証する(黙って丸めない)。
+        if (!TryParseColorCell(row.Cells["Color"].Value?.ToString(), out int[]? rgb))
+        {
+            return;
+        }
+        // 空欄(rgb == null)は「色を明示的に外す」。項目そのものを消すのは
+        // 「色を既定に戻す」ボタンの役目であり、ここでは消さない。
+        _magicRgbOverride[inkName] = rgb;
+
+        await RebuildAfterMagicRgbChangeAsync();
+    }
+
+    /// <summary>D-042: 「色を選ぶ...」ボタン。選択中の行に対して ColorDialog を開き、
+    /// 選ばれた色をそのセルへ入れる — 値の反映は手入力とまったく同じ経路
+    /// (CellValueChanged → OnMagicRgbChangedAsync)を通す。行が選ばれていなければ
+    /// 何もしない。</summary>
+    private void PickMagicRgbForSelectedRow()
+    {
+        if (_busy)
+        {
+            return;
+        }
+        var row = _inkGrid.CurrentRow;
+        if (row is null || row.Index < 0 || row.Tag is not string)
+        {
+            return;
+        }
+        using var dialog = new ColorDialog { FullOpen = true };
+        if (TryParseColorCell(row.Cells["Color"].Value?.ToString(), out int[]? current) && current is not null)
+        {
+            dialog.Color = Color.FromArgb(current[0], current[1], current[2]);
+        }
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+        var picked = dialog.Color;
+        row.Cells["Color"].Value = FormatColorCell(new[] { (int)picked.R, (int)picked.G, (int)picked.B });
+    }
+
+    /// <summary>D-042: 「色を既定に戻す」ボタン。選択中の行の上書きを
+    /// _magicRgbOverride から取り除き、パレット(palette/default.yaml)の
+    /// magic_rgb に戻す。</summary>
+    private async Task ResetMagicRgbForSelectedRowAsync()
+    {
+        if (_busy || _current is null)
+        {
+            return;
+        }
+        var row = _inkGrid.CurrentRow;
+        if (row is null || row.Index < 0 || row.Tag is not string inkName)
+        {
+            return;
+        }
+        if (!_magicRgbOverride.Remove(inkName))
+        {
+            // もともと上書きが無ければ何も変わらない(再構成もしない)。
+            return;
+        }
+
+        await RebuildAfterMagicRgbChangeAsync();
+    }
+
+    /// <summary>D-042: 色の上書きを変えたあとの再構成。OnInkUseChangedAsync /
+    /// OnPassesChangedAsync と同じ流儀で、Ghostscript は再実行しない。</summary>
+    private async Task RebuildAfterMagicRgbChangeAsync()
+    {
+        SetBusy(true, "ジョブを再構成中...");
+        try
+        {
+            string inkMode = (string)_inkModeCombo.SelectedItem!;
+            string halftone = (string)_halftoneCombo.SelectedItem!;
+            string whiteMode = (string)_whiteModeCombo.SelectedItem!;
+            string colourCorrection = (string)_colourCorrectionCombo.SelectedItem!;
+            var previous = _current!;
+
+            var result = await Task.Run(() => JobPipeline.RebuildFromImage(
+                previous.Image, previous.Config, previous.Resolution, inkMode, halftone, whiteMode, _usedInks,
+                _passesOverride, colourCorrection, previous.AlphaImage, _magicRgbOverride));
+
+            ApplyPreviewResult(result);
+        }
+        catch (Exception ex) when (ex is ConfigException or PpmFormatException)
+        {
+            // OnPassesChangedAsync と同じ流儀。_magicRgbOverride は変更済みのまま
+            // にする(利用者が選んだ色は次回の操作までそのまま保持する)。
+            MessageBox.Show(this, $"ジョブの再構成に失敗しました: {ex.Message}", "Foilwright",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            SetBusy(false, string.Empty);
+        }
+    }
+
+    /// <summary>D-042: 使用中のインク 2 つ以上に同じ色が割り当たっていたら赤字で
+    /// 警告する。画素がどちらのインクへ行くかは判定の順序で決まり、利用者からは
+    /// 分かりにくいため — ただし**印刷は止めない**(警告のみ。D-042)。</summary>
+    private void UpdateMagicRgbWarning()
+    {
+        var duplicates = _palette
+            .Where(def => _usedInks.Contains(def.Name))
+            .Select(def => (def.Name, Rgb: ResolveMagicRgb(def)))
+            .Where(x => x.Rgb is not null)
+            .GroupBy(x => FormatColorCell(x.Rgb), StringComparer.Ordinal)
+            .Where(g => g.Count() >= 2)
+            .Select(g => $"{g.Key} ({string.Join(", ", g.Select(x => x.Name))})")
+            .ToList();
+
+        _magicRgbWarningLabel.Text = duplicates.Count == 0
+            ? string.Empty
+            : $"⚠ 同じ色が複数のインクに割り当てられています: {string.Join(" / ", duplicates)}";
     }
 
     /// <summary>新しい PreviewResult を画面へ反映し、古いものを破棄する
@@ -804,18 +1077,21 @@ public sealed class PreviewForm : Form
         _inkGrid.Rows.Clear();
 
         var activeByName = result.Inks.ToDictionary(ink => ink.Name);
-        var rows = new List<(string Name, int Order, string Label, int Passes, Color Color, bool Used, bool Appeared, long DotCount)>();
+        var rows = new List<(string Name, int Order, string Label, int Passes, Color Color, bool Used, bool Appeared, long DotCount, string MagicText)>();
         foreach (var def in result.Config.Palette)
         {
             bool used = _usedInks.Contains(def.Name);
             long dotCount = result.Planes.TryGetValue(def.Name, out var plane) ? CountSetBits(plane) : 0;
+            // D-042: 「色」列にはそのインクに実際に効くマジックカラーを出す
+            // (上書きがあれば上書き後、無ければパレットの magic_rgb。色なしは空文字)。
+            string magicText = FormatColorCell(ResolveMagicRgb(def));
             if (activeByName.TryGetValue(def.Name, out var active))
             {
-                rows.Add((def.Name, def.Order, active.Label, active.Passes, active.Color, used, true, dotCount));
+                rows.Add((def.Name, def.Order, active.Label, active.Passes, active.Color, used, true, dotCount, magicText));
             }
             else
             {
-                rows.Add((def.Name, def.Order, def.Label, 0, PreviewRenderer.ResolveDisplayColor(def), used, false, dotCount));
+                rows.Add((def.Name, def.Order, def.Label, 0, PreviewRenderer.ResolveDisplayColor(def), used, false, dotCount, magicText));
             }
         }
 
@@ -823,9 +1099,14 @@ public sealed class PreviewForm : Form
         {
             // D-038: 桁区切り(例 181,422)で表示する。
             int rowIndex = _inkGrid.Rows.Add(
-                row.Used, row.Order, string.Empty, row.Label, row.Passes, row.DotCount.ToString("N0"));
+                row.Used, row.Order, row.MagicText, row.Label, row.Passes, row.DotCount.ToString("N0"));
             var gridRow = _inkGrid.Rows[rowIndex];
+            // D-042: セルの背景色は「プレビューでそのインクを描いている色」のまま
+            // にする(凡例としての役割。上書きしても変えない — JobPipeline が
+            // 表示色を上書き前のパレットから引くのと揃える)。文字は背景に埋もれ
+            // ないよう明暗で反転させる。
             gridRow.Cells["Color"].Style.BackColor = row.Color;
+            gridRow.Cells["Color"].Style.ForeColor = ContrastingTextColor(row.Color);
             gridRow.Tag = row.Name;
             // ジョブに現れないインク(D-030: チェックが外れている、または内容が
             // 空)の行は灰色で並べる。パス数は 0。
@@ -834,7 +1115,15 @@ public sealed class PreviewForm : Form
                 gridRow.DefaultCellStyle.ForeColor = Color.Gray;
             }
         }
+
+        // D-042: 色の重複警告は、グリッドを作り直すたびに出し直す。
+        UpdateMagicRgbWarning();
     }
+
+    /// <summary>D-042: 背景色の上に置く文字の色。明るい背景なら黒、暗い背景なら白
+    /// (「色」列は背景に実際の色を出すため、同系色の文字だと読めなくなる)。</summary>
+    private static Color ContrastingTextColor(Color background) =>
+        (background.R + background.G + background.B) / 3 >= 128 ? Color.Black : Color.White;
 
     /// <summary>D-038: プレーン(1 ビット = 1 ドット)の立っているビット数を数える。
     /// 「刷る前に白の量を確認する」に使う(DOMAIN §10.5)。</summary>
@@ -1132,6 +1421,10 @@ public sealed class PreviewForm : Form
         _inkGrid.Columns["Use"]!.ReadOnly = busy;
         // D-031: 再構成中はパス数列も編集不可にする(Use 列と同じ扱い)。
         _inkGrid.Columns["Passes"]!.ReadOnly = busy;
+        // D-042: 再構成中は「色」列と色の操作ボタンも触れなくする(Use 列と同じ扱い)。
+        _inkGrid.Columns["Color"]!.ReadOnly = busy;
+        _pickColorButton.Enabled = !busy;
+        _resetColorButton.Enabled = !busy;
         _cancelButton.Enabled = !busy;
         _printButton.Enabled = !busy && _current is { Inks.Count: > 0 };
         Text = busy && statusMessage.Length > 0

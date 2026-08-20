@@ -100,6 +100,103 @@ public sealed class TraySettings
     public int ResolvePasses(InkDefinition ink) =>
         PassesOverride is { } overrides && overrides.TryGetValue(ink.Name, out int passes) ? passes : ink.Passes;
 
+    /// <summary>D-042: マジックカラー(magic_rgb)のジョブごとの上書き(ink 名 → RGB 3 値)。
+    /// D-030(使うインク)・D-031(パス数)と同じ形の下層(既定値)であり、プレビューの
+    /// 「色」列がジョブごとの上書きを持つ。
+    ///
+    /// null と空辞書を区別する: null は「利用者が一度も触っていない(または旧
+    /// settings.json に項目が無い)」を表し、パレット(palette/default.yaml)の
+    /// magic_rgb をそのまま使う。空辞書は「利用者が一度は編集したが、結局どの
+    /// インクも上書きしなかった」状態であり、そのまま尊重する(結果としてどちらも
+    /// パレットの値になるが、意味としては明示的な「上書き無し」)。
+    ///
+    /// 値の意味は 2 通りある:
+    ///   int[3] — そのインクのマジックカラーを差し替える(0〜255 の RGB)。
+    ///   null   — そのインクの色を明示的に外す(マジック判定に参加させない)。
+    ///
+    /// D-042 決定 2: 上書きできるのは色だけ。tolerance(許容誤差)と order(順序)は
+    /// パレットの値のままにする — 許容誤差まで出すと「なぜか別のインクで刷られる」
+    /// という分かりにくい事故が増えるため。</summary>
+    public Dictionary<string, int[]?>? MagicRgbOverride { get; set; }
+
+    /// <summary>D-042: パレットに tolerance を持たないインク(プロセスインク)へ
+    /// 色を割り当てたときに使う許容誤差。既定パレットの白・黒と同じ 8。</summary>
+    public const int DefaultOverrideTolerance = 8;
+
+    /// <summary>D-042: RGB 3 値として妥当か(3 要素・各 0..255)。
+    /// null は「色なし」(マジック判定に参加させない)を表す正当な値のため true。</summary>
+    public static bool IsValidMagicRgb(int[]? rgb) =>
+        rgb is null || (rgb.Length == 3 && rgb.All(v => v is >= 0 and <= 255));
+
+    /// <summary>D-042: パレットに <see cref="MagicRgbOverride"/> を適用した
+    /// 「照合用パレット」を返す。元のリスト・元の InkDefinition は変更しない。</summary>
+    public List<InkDefinition> ApplyMagicRgbOverride(IReadOnlyList<InkDefinition> palette) =>
+        ApplyMagicRgbOverride(palette, MagicRgbOverride);
+
+    /// <summary>D-042: パレットにマジックカラーの上書きを適用した「照合用パレット」を
+    /// 返す(辞書を受け取る静的版。JobPipeline は TraySettings のインスタンスを
+    /// 持たないためこちらを使う)。
+    ///
+    /// 規則:
+    ///   該当インクの項目が無い → そのインクはそのまま(同じインスタンスを返す)。
+    ///   値が int[3]           → MagicRgb をその値にする。Tolerance は元のインクが
+    ///                           持っていればその値を維持し、持っていなければ
+    ///                           <see cref="DefaultOverrideTolerance"/> を使う
+    ///                           (D-042 決定 2: 許容誤差は上書きしない)。
+    ///   値が null             → MagicRgb / Tolerance をともに null にする(色を外す)。
+    ///
+    /// 妥当でない値(3 要素でない・0..255 の範囲外)は黙って無視せず
+    /// <see cref="ConfigException"/> を投げる — 打ち間違いのまま刷ると
+    /// 生産終了品のリボンと用紙を失うため(D-031 の CellValidating と同じ方針)。
+    /// 検証はパレットに無いインク名の項目に対しても行う(綴り間違いを見逃さない)。</summary>
+    public static List<InkDefinition> ApplyMagicRgbOverride(
+        IReadOnlyList<InkDefinition> palette, IReadOnlyDictionary<string, int[]?>? overrides)
+    {
+        if (overrides is null || overrides.Count == 0)
+        {
+            return palette.ToList();
+        }
+
+        foreach (var (inkName, rgb) in overrides)
+        {
+            if (!IsValidMagicRgb(rgb))
+            {
+                throw new ConfigException(
+                    $"マジックカラーの上書き '{inkName}' の値が不正です。RGB 3 値(各 0〜255)で指定してください(D-042): " +
+                    $"[{string.Join(", ", rgb!)}]");
+            }
+        }
+
+        var result = new List<InkDefinition>(palette.Count);
+        foreach (var ink in palette)
+        {
+            if (!overrides.TryGetValue(ink.Name, out int[]? rgb))
+            {
+                // 上書きが無いインクはそのまま(インスタンスを作り直さない)。
+                result.Add(ink);
+                continue;
+            }
+            // InkDefinition は sealed + init プロパティのみで `with` が使えないため、
+            // 全プロパティを写した新しいインスタンスを作る。写し漏れは静かなバグに
+            // なる(送出に使う printer_code や過不足判定の barcode が消える)ので、
+            // プロパティを足したときは必ずここも足すこと。
+            result.Add(new InkDefinition
+            {
+                Name = ink.Name,
+                Label = ink.Label,
+                PrinterCode = ink.PrinterCode,
+                Order = ink.Order,
+                MagicRgb = rgb is null ? null : new[] { rgb[0], rgb[1], rgb[2] },
+                Tolerance = rgb is null ? null : ink.Tolerance ?? DefaultOverrideTolerance,
+                Channel = ink.Channel,
+                Barcode = ink.Barcode,
+                AutoUndercoat = ink.AutoUndercoat,
+                Passes = ink.Passes,
+            });
+        }
+        return result;
+    }
+
     private static string SettingsPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "Foilwright",
