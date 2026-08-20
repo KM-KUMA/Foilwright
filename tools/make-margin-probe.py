@@ -46,8 +46,12 @@ DPI = 600
 SAFETY_MM = 3.0  # いちばん端の印でも、紙の内側にこれだけ残す
 
 # 実測で確かめたプリンタ側の固定余白(2026-08-20)
-ORIGIN_TOP_MM = 284 / DPI * 25.4
-ORIGIN_LEFT_MM = 80 / DPI * 25.4
+# A4 系の既定値。**用紙によって違う**(2026-08-20 実測):
+#   A4 / B5 / letter / legal / executive  上 12.03mm
+#   postcard / dyesublabel                上  3.01mm
+# --declare を使うときは用紙表の top_margin / left_margin から取り直す。
+DEFAULT_ORIGIN_TOP_MM = 284 / DPI * 25.4
+DEFAULT_ORIGIN_LEFT_MM = 80 / DPI * 25.4
 
 SHEETS = {
     "a4": (210.0, 297.0),
@@ -75,20 +79,25 @@ def main() -> None:
         table = config.resolve_paper_table(profile, str(REPO / "papers"))
         entry = table[args.declare]
         paper_code = entry["code"]
+        # 刷り始めは用紙ごとに違う。表の値を使う(定数で決め打ちしない)
+        origin_top = entry["top_margin"] / DPI * 25.4
+        origin_left = entry["left_margin"] / DPI * 25.4
         decl_w, decl_h = entry["width"], entry["length"]
         # ラスタの端から 0 / 1.7 / 3.4 ... mm 内側に置く
         bottom_gaps = [
-            sheet_h - (ORIGIN_TOP_MM + (decl_h - k) / DPI * 25.4)
+            sheet_h - (origin_top + (decl_h - k) / DPI * 25.4)
             for k in (0, 40, 80, 120, 160, 200, 240)
         ]
         right_gaps = [
-            sheet_w - (ORIGIN_LEFT_MM + (decl_w - k) / DPI * 25.4)
+            sheet_w - (origin_left + (decl_w - k) / DPI * 25.4)
             for k in (0, 40, 80, 120, 160)
         ]
     else:
         paper_code = 0x00
-        decl_w = dots(sheet_w - ORIGIN_LEFT_MM - SAFETY_MM)
-        decl_h = dots(sheet_h - ORIGIN_TOP_MM - SAFETY_MM)
+        origin_top = DEFAULT_ORIGIN_TOP_MM
+        origin_left = DEFAULT_ORIGIN_LEFT_MM
+        decl_w = dots(sheet_w - origin_left - SAFETY_MM)
+        decl_h = dots(sheet_h - origin_top - SAFETY_MM)
         bottom_gaps = [25.0, 20.0, 15.0, 12.0, 9.0, 6.0, SAFETY_MM]
         right_gaps = [12.0, 9.0, 6.0, 4.5, SAFETY_MM]
 
@@ -105,10 +114,10 @@ def main() -> None:
                 i = base + x * 3
                 buf[i : i + 3] = b"\x00\x00\x00"
 
-    reach_b = ORIGIN_TOP_MM + decl_h / DPI * 25.4
-    reach_r = ORIGIN_LEFT_MM + decl_w / DPI * 25.4
+    reach_b = origin_top + decl_h / DPI * 25.4
+    reach_r = origin_left + decl_w / DPI * 25.4
     print(f"紙 {args.sheet}: {sheet_w} x {sheet_h} mm")
-    print(f"刷り始め: 上 {ORIGIN_TOP_MM:.2f}mm / 左 {ORIGIN_LEFT_MM:.2f}mm(実測)")
+    print(f"刷り始め: 上 {origin_top:.2f}mm / 左 {origin_left:.2f}mm(実測)")
     print(
         f"宣言: code=0x{paper_code:02x} {decl_w} x {decl_h} ドット "
         f"({decl_w / DPI * 25.4:.1f} x {decl_h / DPI * 25.4:.1f} mm)"
@@ -120,7 +129,7 @@ def main() -> None:
 
     print("\n下方向の階段(紙の下端からの距離 / 印の下辺):")
     for i, gap in enumerate(bottom_gaps):
-        y1 = dots(sheet_h - gap - ORIGIN_TOP_MM)
+        y1 = dots(sheet_h - gap - origin_top)
         y0 = y1 - 40
         x0, x1 = 200, 200 + 200 + i * 120
         box(x0, y0, x1, y1)
@@ -128,7 +137,7 @@ def main() -> None:
 
     print("\n右方向の階段(紙の右端からの距離 / 印の右辺):")
     for i, gap in enumerate(right_gaps):
-        x1 = dots(sheet_w - gap - ORIGIN_LEFT_MM)
+        x1 = dots(sheet_w - gap - origin_left)
         x0 = x1 - 40
         y0 = 400 + i * 300
         y1 = y0 + 200 + i * 120
