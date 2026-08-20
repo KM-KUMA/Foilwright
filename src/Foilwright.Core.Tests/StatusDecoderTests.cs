@@ -1,4 +1,4 @@
-﻿// Foilwright.Core.Tests — StatusDecoder(CassetteStatus → 日本語表示)の検証。
+// Foilwright.Core.Tests — StatusDecoder(CassetteStatus → 日本語表示)の検証。
 //
 // ここで使う 38 バイトの応答はすべて DOMAIN §11.4 に記録された実測値。
 // ただし §11.4 の「ペーパーフィード異常」2 例(MD-5500 / MD-5000)は文中の
@@ -335,5 +335,26 @@ public class StatusDecoderTests
         {
             Assert.Equal(i + 1, report.HolderSlots[i].SlotNumber);
         }
+    }
+    [Fact]
+    public void Describe_CoverOpen_IsNamed()
+    {
+        // 2026-08-20 実機実測: カバーを開けると 0xC0 / e[0]=0x40 になり、
+        // 閉じると 0x00 / e = 00 00 00 00 00 に戻った。
+        // 当初この分岐を実装し忘れており「未知のエラー」と表示していた。
+        var raw = new byte[38];
+        raw[0] = 0x02; raw[1] = 0x80; raw[2] = 0x21; raw[3] = 0x00;
+        raw[4] = 0xC0;
+        for (int i = 0; i < 9; i++)
+        {
+            raw[5 + i * 3] = 0xFF;
+        }
+        raw[32] = 0x40;
+        raw[37] = 0x03;
+
+        var report = StatusDecoder.Describe(CassetteStatus.Parse(raw));
+
+        Assert.True(report.IsError);
+        Assert.Equal("カバーが開いています", report.ErrorDetail);
     }
 }

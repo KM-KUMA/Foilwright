@@ -209,6 +209,13 @@ public static class StatusDecoder
                 : "モータエラー");
         }
 
+        if ((e0 & 0x40) != 0)
+        {
+            // getstat.pl の parse_status(DOMAIN §11.4.0)。2026-08-20 に実機で確認 —
+            // カバーを開けると 0xC0 / e[0]=0x40 になり、閉じると消えた。
+            messages.Add("カバーが開いています");
+        }
+
         if ((e0 & 0x01) != 0)
         {
             messages.Add("EEPROM エラー");
