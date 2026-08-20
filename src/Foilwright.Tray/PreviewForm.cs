@@ -898,13 +898,15 @@ public sealed class PreviewForm : Form
     /// `#RRGGBB` / `RRGGBB`(先頭の `#` は省略可)と、空文字(= 色なし。そのインクを
     /// マジック判定に参加させない)。それ以外は false を返し、CellValidating が
     /// その場で拒否する。</summary>
-    private static bool TryParseColorCell(string? text, out int[]? rgb)
+    internal static bool TryParseColorCell(string? text, out int[]? rgb)
     {
         rgb = null;
         string value = (text ?? string.Empty).Trim();
-        if (value.Length == 0)
+        if (value.Length == 0 || value == NoColourCellText)
         {
-            // 空欄は「色なし」。null を入れる意思表示であり、不正入力ではない。
+            // 空欄と「(なし)」はどちらも「色なし」。null を入れる意思表示であり、
+            // 不正入力ではない。表示された文字をそのまま打ち直せるようにするため、
+            // 「(なし)」も受け付ける。
             return true;
         }
         string hex = value.StartsWith('#') ? value[1..] : value;
@@ -919,9 +921,14 @@ public sealed class PreviewForm : Form
         return true;
     }
 
-    /// <summary>D-042: RGB 3 値を「色」列の表示文字列にする(色なしは空文字)。</summary>
-    private static string FormatColorCell(int[]? rgb) =>
-        rgb is null ? string.Empty : $"#{rgb[0]:x2}{rgb[1]:x2}{rgb[2]:x2}";
+    /// <summary>D-042: 色が割り当たっていない行に出す文字列。空欄にすると
+    /// 「まだ読み込めていない」のか「色が無い」のか見分けが付かず、プロセス
+    /// インク(シアン・マゼンタ・イエロー)の行が全部空欄に見えてしまう。</summary>
+    internal const string NoColourCellText = "(なし)";
+
+    /// <summary>D-042: RGB 3 値を「色」列の表示文字列にする。</summary>
+    internal static string FormatColorCell(int[]? rgb) =>
+        rgb is null ? NoColourCellText : $"#{rgb[0]:x2}{rgb[1]:x2}{rgb[2]:x2}";
 
     /// <summary>D-042: そのインクに実際に効くマジックカラー。ジョブごとの上書きが
     /// あればそれを、無ければパレットの magic_rgb を返す(TraySettings.ResolvePasses
@@ -1000,11 +1007,20 @@ public sealed class PreviewForm : Form
         var row = _inkGrid.CurrentRow;
         if (row is null || row.Index < 0 || row.Tag is not string inkName)
         {
+            // 黙って帰るとボタンが壊れているように見える。何をすればよいか伝える。
+            MessageBox.Show(
+                this, "先に、色を戻したいインクの行をクリックして選んでください。\n" +
+                      "全部まとめて戻すなら「全部の色を既定に戻す」を押してください。",
+                "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
         if (!_magicRgbOverride.Remove(inkName))
         {
             // もともと上書きが無ければ何も変わらない(再構成もしない)。
+            // ここも黙って帰らない — 「押したのに戻らない」の正体になるため。
+            MessageBox.Show(
+                this, $"「{row.Cells["Label"].Value}」の色は、もう既定のままです(変更されていません)。",
+                "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -1017,8 +1033,16 @@ public sealed class PreviewForm : Form
     /// 上書きが 1 件も無ければ何もしない(再構成もしない)。</summary>
     private async Task ResetAllMagicRgbAsync()
     {
-        if (_busy || _current is null || _magicRgbOverride.Count == 0)
+        if (_busy || _current is null)
         {
+            return;
+        }
+        if (_magicRgbOverride.Count == 0)
+        {
+            // 黙って帰るとボタンが壊れているように見える(選択行版と同じ理由)。
+            MessageBox.Show(
+                this, "色の変更はありません。すべて palette/default.yaml の既定のままです。",
+                "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
         _magicRgbOverride.Clear();

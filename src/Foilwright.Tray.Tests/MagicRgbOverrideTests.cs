@@ -341,4 +341,51 @@ public class MagicRgbOverrideTests
     {
         Program.RejectUnknownInkNames(new Dictionary<string, int[]?>(), BuildPalette());
     }
+
+    // --- PreviewForm の「色」列の表示と入力 -----------------------------------
+    //
+    // 色が無い行を空欄にしていたため、「色を消したのか、まだ読み込めていないのか」
+    // が見分けられず、プロセスインク(シアン等)の行も全部空欄に見えていた。
+    // 表示は "(なし)" とし、その文字をそのまま打ち直しても通るようにしてある。
+
+    [Fact]
+    public void FormatColorCell_ShowsNoColourAsText()
+    {
+        Assert.Equal(PreviewForm.NoColourCellText, PreviewForm.FormatColorCell(null));
+        Assert.Equal("#e6e6e6", PreviewForm.FormatColorCell(new[] { 230, 230, 230 }));
+    }
+
+    [Fact]
+    public void TryParseColorCell_RoundTripsNoColour()
+    {
+        // 表示した文字をそのまま入力し直しても「色なし」に戻ること。
+        Assert.True(PreviewForm.TryParseColorCell(PreviewForm.NoColourCellText, out int[]? rgb));
+        Assert.Null(rgb);
+    }
+
+    [Fact]
+    public void TryParseColorCell_AcceptsEmptyAsNoColour()
+    {
+        Assert.True(PreviewForm.TryParseColorCell(string.Empty, out int[]? rgb));
+        Assert.Null(rgb);
+        Assert.True(PreviewForm.TryParseColorCell("   ", out rgb));
+        Assert.Null(rgb);
+    }
+
+    [Fact]
+    public void TryParseColorCell_ParsesHexWithAndWithoutHash()
+    {
+        Assert.True(PreviewForm.TryParseColorCell("#E1A000", out int[]? rgb));
+        Assert.Equal(new[] { 225, 160, 0 }, rgb);
+        Assert.True(PreviewForm.TryParseColorCell("e1a000", out rgb));
+        Assert.Equal(new[] { 225, 160, 0 }, rgb);
+    }
+
+    [Fact]
+    public void TryParseColorCell_RejectsMalformedInput()
+    {
+        Assert.False(PreviewForm.TryParseColorCell("#12345", out _));
+        Assert.False(PreviewForm.TryParseColorCell("なし", out _));
+        Assert.False(PreviewForm.TryParseColorCell("#gggggg", out _));
+    }
 }
