@@ -282,7 +282,10 @@ public static class JobPipeline
             })
             .ToList();
 
-        var bitmap = PreviewRenderer.Render(image.Width, image.Height, jobPlanes, PreviewMaxWidth);
+        // D-038: 1200x600 のように画素が正方形でない解像度では、縦横に同じ倍率を
+        // かけると縦に潰れて見える(PreviewRenderer 側で dpiX/dpiY を使って補正する)。
+        var bitmap = PreviewRenderer.Render(
+            image.Width, image.Height, jobPlanes, PreviewMaxWidth, resolutionEntry.DpiX, resolutionEntry.DpiY);
 
         return new PreviewResult
         {

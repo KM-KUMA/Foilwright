@@ -44,8 +44,23 @@ public sealed class PreviewForm : Form
     private readonly Button _printButton;
     private readonly Button _cancelButton;
 
+    // D-038: 送出後、印刷が終わるまでプレビューを開いたまま見張る枠。
+    private readonly GroupBox _monitorGroup;
+    private readonly Label _monitorStatusLabel;
+    private readonly Button _monitorAbortButton;
+    private readonly Button _monitorCloseButton;
+
     private PreviewResult? _current;
     private bool _busy;
+
+    /// <summary>D-038: 送出後の見張りが進行中(まだ完了/エラー/打ち切り/上限時間の
+    /// いずれにも達していない)かどうか。見張りが終わるまでプレビューを閉じない
+    /// ため、OnFormClosing がこれを見て閉じるのを止める。</summary>
+    private bool _monitoring;
+
+    /// <summary>D-038: 見張りループを打ち切るためのトークン。「見張りを中止」ボタンが
+    /// これを Cancel する — 印刷そのものは止めない。見張りをやめるだけ。</summary>
+    private CancellationTokenSource? _monitorCts;
 
     /// <summary>D-030: このジョブで使うインクの許可リスト(name の集合)。
     /// TraySettings.ResolveUsedInks で解決した既定値を初期状態とし、以後は
@@ -250,9 +265,14 @@ public sealed class PreviewForm : Form
         _inkGrid.Columns.Add("Color", "色");
         _inkGrid.Columns.Add("Label", "インク");
         _inkGrid.Columns.Add("Passes", "パス数");
+        // D-038: 「刷る前に白の量を確認する」の手段として、各インクのプレーンの
+        // 立っているビット数(ドット数)を表示する列を足す。既存の列の右に置く。
+        _inkGrid.Columns.Add("DotCount", "ドット数");
         _inkGrid.Columns["Order"]!.ReadOnly = true;
         _inkGrid.Columns["Color"]!.ReadOnly = true;
         _inkGrid.Columns["Label"]!.ReadOnly = true;
+        _inkGrid.Columns["DotCount"]!.ReadOnly = true;
+        _inkGrid.Columns["DotCount"]!.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
         // D-031: パス数(重ね塗り回数)を編集可能にする。範囲は 1〜8
         // (TraySettings.MinPasses/MaxPasses)で、CellValidating がその場で拒否する。
         var passesColumn = _inkGrid.Columns["Passes"]!;
@@ -377,6 +397,71 @@ public sealed class PreviewForm : Form
         buttonPanel.Controls.Add(_cancelButton);
         buttonPanel.Controls.Add(_printButton);
         right.Controls.Add(buttonPanel);
+
+        // D-038: 送出後、印刷が終わるまでプレビューを開いたまま見張る枠。
+        // 初期状態は非表示 — PrintAsync が送出を終えたあとに Visible = true にする
+        // (送出中は §15.2.1 により状態を読んではならないため、見張りは送出の
+        // 完了後にしか始められない)。
+        _monitorGroup = new GroupBox { Text = "印刷の完了を見張る(D-038)", Dock = DockStyle.Top, Height = 130, Visible = false };
+        var monitorLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(8) };
+        monitorLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        monitorLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        monitorLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _monitorStatusLabel = new Label
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+            Text = string.Empty,
+        };
+        monitorLayout.Controls.Add(_monitorStatusLabel, 0, 0);
+        var monitorNoteLabel = new Label
+        {
+            Dock = DockStyle.Top,
+            AutoSize = false,
+            Height = 32,
+            ForeColor = Color.DarkRed,
+            // D-038: 「中止」は見張りをやめるだけで、印刷そのものは止めない
+            // ことをボタンの近くに明記する(仕様上の要求)。
+            Text = "「見張りを中止」を押しても印刷は止まりません。見張りをやめるだけです。",
+        };
+        monitorLayout.Controls.Add(monitorNoteLabel, 0, 1);
+        var monitorButtonPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top, FlowDirection = FlowDirection.RightToLeft, Height = 36, AutoSize = false,
+        };
+        _monitorCloseButton = new Button { Text = "閉じる", AutoSize = true, Height = 28, Enabled = false };
+        _monitorCloseButton.Click += (_, _) =>
+        {
+            DialogResult = DialogResult.OK;
+            Close();
+        };
+        _monitorAbortButton = new Button { Text = "見張りを中止", AutoSize = true, Height = 28 };
+        _monitorAbortButton.Click += (_, _) =>
+        {
+            _monitorAbortButton.Enabled = false;
+            _monitorCts?.Cancel();
+        };
+        monitorButtonPanel.Controls.Add(_monitorCloseButton);
+        monitorButtonPanel.Controls.Add(_monitorAbortButton);
+        monitorLayout.Controls.Add(monitorButtonPanel, 0, 2);
+        _monitorGroup.Controls.Add(monitorLayout);
+        right.Controls.Add(_monitorGroup);
+
+        // D-038: 見張りが終わる(完了/エラー/打ち切り/上限時間)までプレビューを
+        // 閉じさせない。タイトルバーの × や Alt+F4 での即時クローズを防ぐ
+        // (印刷を止めずに窓だけ消えると、結果を見逃す)。
+        FormClosing += (_, e) =>
+        {
+            if (_monitoring)
+            {
+                e.Cancel = true;
+                MessageBox.Show(
+                    this,
+                    "印刷の完了を見張っている間は閉じられません。「見張りを中止」を押してください" +
+                    "(押しても印刷は止まりません。見張りをやめるだけです)。",
+                    "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        };
 
         Load += async (_, _) => await RefreshPreviewAsync();
     }
@@ -692,23 +777,26 @@ public sealed class PreviewForm : Form
         _inkGrid.Rows.Clear();
 
         var activeByName = result.Inks.ToDictionary(ink => ink.Name);
-        var rows = new List<(string Name, int Order, string Label, int Passes, Color Color, bool Used, bool Appeared)>();
+        var rows = new List<(string Name, int Order, string Label, int Passes, Color Color, bool Used, bool Appeared, long DotCount)>();
         foreach (var def in result.Config.Palette)
         {
             bool used = _usedInks.Contains(def.Name);
+            long dotCount = result.Planes.TryGetValue(def.Name, out var plane) ? CountSetBits(plane) : 0;
             if (activeByName.TryGetValue(def.Name, out var active))
             {
-                rows.Add((def.Name, def.Order, active.Label, active.Passes, active.Color, used, true));
+                rows.Add((def.Name, def.Order, active.Label, active.Passes, active.Color, used, true, dotCount));
             }
             else
             {
-                rows.Add((def.Name, def.Order, def.Label, 0, PreviewRenderer.ResolveDisplayColor(def), used, false));
+                rows.Add((def.Name, def.Order, def.Label, 0, PreviewRenderer.ResolveDisplayColor(def), used, false, dotCount));
             }
         }
 
         foreach (var row in rows.OrderBy(r => r.Order))
         {
-            int rowIndex = _inkGrid.Rows.Add(row.Used, row.Order, string.Empty, row.Label, row.Passes);
+            // D-038: 桁区切り(例 181,422)で表示する。
+            int rowIndex = _inkGrid.Rows.Add(
+                row.Used, row.Order, string.Empty, row.Label, row.Passes, row.DotCount.ToString("N0"));
             var gridRow = _inkGrid.Rows[rowIndex];
             gridRow.Cells["Color"].Style.BackColor = row.Color;
             gridRow.Tag = row.Name;
@@ -721,6 +809,17 @@ public sealed class PreviewForm : Form
         }
     }
 
+    /// <summary>D-038: プレーン(1 ビット = 1 ドット)の立っているビット数を数える。
+    /// 「刷る前に白の量を確認する」に使う(DOMAIN §10.5)。</summary>
+    private static long CountSetBits(byte[] plane)
+    {
+        long count = 0;
+        foreach (byte b in plane)
+        {
+            count += System.Numerics.BitOperations.PopCount(b);
+        }
+        return count;
+    }
 
     private async Task RefreshStatusAsync()
     {
@@ -846,9 +945,11 @@ public sealed class PreviewForm : Form
                     _progressBar.Value = Math.Min(done, _progressBar.Maximum);
                 })));
 
-            MessageBox.Show(this, "送出が完了しました。", "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            DialogResult = DialogResult.OK;
-            Close();
+            // D-038: 送出が終わっても印刷はまだこれから進む(プリンタは受け取った
+            // 分を溜めて刷り続ける)。ここで閉じずに見張りへ移る。送出中に状態を
+            // 読んではならない(§15.2.1)ため、見張りは Print が返った後にしか
+            // 始められない。
+            await MonitorPrintCompletionAsync(route);
         }
         catch (Exception ex) when (ex is TransportException or ConfigException)
         {
@@ -860,6 +961,107 @@ public sealed class PreviewForm : Form
             SetBusy(false, string.Empty);
         }
     }
+
+    /// <summary>D-038: 送出後、印刷が終わるまでプレビューを開いたまま見張る。
+    /// 4 秒おきに状態(`05 01`)を読み、StatusDecoder.Describe の結果を
+    /// PrintWatchDecision に渡して次の一手(継続/完了/エラー)を決める。
+    /// 上限時間・中止ボタン・猶予期間は下の定数を参照。</summary>
+    private async Task MonitorPrintCompletionAsync(MachineRoute route)
+    {
+        // D-038: 4 秒周期は純正のステータスモニタと同じ(§11.1.1 の USBPcap 採取で確認済み)。
+        const int PollIntervalMs = 4_000;
+        // D-038: 送出直後はまだ印刷が始まっておらず、状態バイトが「待機」の
+        // ことがある。いきなり「完了」と判定しないための猶予
+        // 【推測: 20 秒という具体的な長さは実測の裏付けが無い。送出〜印字開始の
+        // 遅延がこの範囲に収まるだろうという見込みで決めた値】。
+        const int GraceMs = 20_000;
+        // D-038: 上限時間。超えたら黙って待ち続けず「確認できませんでした」と出す。
+        const int TimeoutMs = 15 * 60_000;
+
+        _monitoring = true;
+        _monitorCts = new CancellationTokenSource();
+        var token = _monitorCts.Token;
+
+        _progressBar.Visible = false;
+        _monitorGroup.Visible = true;
+        _monitorAbortButton.Enabled = true;
+        _monitorCloseButton.Enabled = false;
+        _monitorStatusLabel.Text = "経過: 00:00 — 見張りを開始しました。";
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        string resultText;
+        try
+        {
+            while (true)
+            {
+                if (stopwatch.ElapsedMilliseconds >= TimeoutMs)
+                {
+                    resultText = "印刷の完了を確認できませんでした(上限の 15 分を超えました)。";
+                    break;
+                }
+                if (token.IsCancellationRequested)
+                {
+                    resultText = "見張りを中止しました。印刷そのものは止まっていません(見張りをやめただけです)。";
+                    break;
+                }
+
+                _monitorStatusLabel.Text = $"経過: {FormatElapsed(stopwatch.Elapsed)} — 状態を確認中...";
+
+                PrinterStatusReport? report = null;
+                try
+                {
+                    var status = await Task.Run(() => JobPipeline.ReadRawStatus(route, route.Vid));
+                    report = StatusDecoder.Describe(status);
+                }
+                catch (TransportException ex)
+                {
+                    // 読み取りに失敗しても見張りは続ける(一時的な通信の乱れの
+                    // 可能性がある)。次の周期でまた読み直す。
+                    _monitorStatusLabel.Text =
+                        $"経過: {FormatElapsed(stopwatch.Elapsed)} — 状態の読み取りに失敗しました: {ex.Message}";
+                }
+
+                if (report is not null)
+                {
+                    bool graceActive = stopwatch.ElapsedMilliseconds < GraceMs;
+                    var outcome = PrintWatchDecision.Evaluate(report, graceActive);
+                    if (outcome == PrintWatchOutcome.Error)
+                    {
+                        resultText = $"エラー — {report.ErrorDetail}";
+                        break;
+                    }
+                    if (outcome == PrintWatchOutcome.Completed)
+                    {
+                        resultText = "印刷が完了しました。";
+                        break;
+                    }
+                    _monitorStatusLabel.Text =
+                        $"経過: {FormatElapsed(stopwatch.Elapsed)} — 直近の状態: {report.StatusSummary}";
+                }
+
+                try
+                {
+                    await Task.Delay(PollIntervalMs, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    // ループ先頭の token.IsCancellationRequested 判定で中止として扱う。
+                }
+            }
+        }
+        finally
+        {
+            _monitoring = false;
+            _monitorAbortButton.Enabled = false;
+            _monitorCloseButton.Enabled = true;
+            _monitorCts?.Dispose();
+            _monitorCts = null;
+        }
+
+        _monitorStatusLabel.Text = $"経過: {FormatElapsed(stopwatch.Elapsed)} — {resultText}";
+    }
+
+    private static string FormatElapsed(TimeSpan elapsed) => elapsed.ToString(@"mm\:ss");
 
     private void SetBusy(bool busy, string statusMessage)
     {

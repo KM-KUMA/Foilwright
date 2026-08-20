@@ -255,7 +255,8 @@ def test_load_palette_default_field_values():
     assert white["magic_rgb"] == [230, 230, 230]
     assert white["printer_code"] == 0x0B
     assert white["auto_undercoat"] is True
-    assert white["passes"] == 2
+    # D-038: 既定を 2 から 1 に下げた(薄いほうから試せる。ジョブごとに上書き可能)
+    assert white["passes"] == 1
 
     gold = by_name["metallic_gold"]
     assert gold["magic_rgb"] == [225, 160, 0]
