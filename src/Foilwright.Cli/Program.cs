@@ -1,4 +1,4 @@
-﻿// Foilwright.Cli — トレイアプリの前身となるコンソールアプリ(Phase 2)。
+// Foilwright.Cli — トレイアプリの前身となるコンソールアプリ(Phase 2)。
 //
 // サブコマンド:
 //   status     プリンタの状態を読んで、装填カセットを人が読める形で表示する
@@ -58,6 +58,8 @@ internal static class Program
             {
                 case "status":
                     return RunStatus(args.Skip(1).ToArray());
+                case "send-control":
+                    return RunSendControl(args.Skip(1).ToArray());
                 case "print":
                     return RunPrint(args.Skip(1).ToArray());
                 case "listen":
@@ -213,6 +215,59 @@ internal static class Program
     }
 
     // --- status ------------------------------------------------------------------
+
+    /// <summary>【開発用・未検証】制御パケットを 16 進で指定して送る。
+    ///
+    /// ppmtomd 付属 getstat.pl の中断コマンド(`@RCL3`)を実機で確かめるための入口。
+    /// **未知のバイト列はインターフェースをウェッジさせうる**(DOMAIN §11.1.1)。
+    /// 誤って実行しないよう `--yes` を必須にしている。</summary>
+    private static int RunSendControl(string[] args)
+    {
+        var (route, vid, remaining) = ParseMachineArgs(args);
+
+        bool confirmed = false;
+        var positional = new List<string>();
+        foreach (string arg in remaining)
+        {
+            if (arg == "--yes")
+            {
+                confirmed = true;
+                continue;
+            }
+            positional.Add(arg);
+        }
+
+        if (positional.Count != 1)
+        {
+            Console.Error.WriteLine("使い方: Foilwright.Cli send-control <16進バイト列> --yes");
+            Console.Error.WriteLine("  例(getstat.pl の中断コマンド): 020206004052434C3301 03");
+            return 1;
+        }
+        if (!confirmed)
+        {
+            Console.Error.WriteLine("--yes が要る。未知のバイト列はインターフェースをウェッジさせうる(DOMAIN §11.1.1)");
+            return 1;
+        }
+
+        byte[] packet;
+        try
+        {
+            packet = Convert.FromHexString(positional[0].Replace(" ", "").Replace("-", ""));
+        }
+        catch (FormatException ex)
+        {
+            Console.Error.WriteLine($"16 進として読めない: {ex.Message}");
+            return 1;
+        }
+
+        Console.WriteLine($"送るバイト列 ({packet.Length} バイト): {Convert.ToHexString(packet)}");
+        using var transport = AlpsTransport.OpenDevice(vid, mode: route.Mode);
+        byte[] response = transport.SendControl(packet);
+        Console.WriteLine(response.Length == 0
+            ? "応答: 無し(タイムアウト)"
+            : $"応答 ({response.Length} バイト): {Convert.ToHexString(response)}");
+        return 0;
+    }
 
     private static int RunStatus(string[] args)
     {

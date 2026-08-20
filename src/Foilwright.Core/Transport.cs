@@ -1,4 +1,4 @@
-﻿// Foilwright.Core — L0: ALPS USB バルクプロトコルでのプリンタ送出。
+// Foilwright.Core — L0: ALPS USB バルクプロトコルでのプリンタ送出。
 //
 // DOMAIN §15(実測で確定した USB 転送プロトコル)の C# 実装。
 // 参照実装: tools/alps-send.ps1(PowerShell + インライン C#。動作実証済み)、
@@ -471,6 +471,24 @@ public sealed class AlpsTransport : IDisposable
         WriteExact(AlpsProtocol.StatusRequest, "status request");
         byte[] raw = ReadExact(AlpsProtocol.StatusResponseLength, "status response");
         return CassetteStatus.Parse(raw);
+    }
+
+    /// <summary>【開発用・未検証】制御パケットをそのまま書き、応答があれば読む。
+    ///
+    /// ppmtomd 付属の getstat.pl が中断に使うパケット
+    /// (`02 02 06 00 40 52 43 4C 33 01 03` = `@RCL3`)を実機で試すための入口。
+    /// **このコマンドはまだ実機で確認していない**(DOMAIN §11.4.0.2)。
+    /// §11.1.1 に「未知のバイト列でインターフェースがウェッジし、物理再接続以外で
+    /// 回復できなくなった」記録があるため、**通常の送出経路からは呼ばない**。
+    ///
+    /// 応答は来ないこともあるため、タイムアウト付きで読み、来た分だけ返す。</summary>
+    public byte[] SendControl(ReadOnlySpan<byte> packet, int readTimeoutMs = 2000)
+    {
+        WriteExact(packet, "control packet");
+        var buffer = new byte[64];
+        var (read, _) = TimedIo.TryReadWithTimeout(
+            _handle.Handle, buffer, readTimeoutMs, "control response");
+        return buffer[..read];
     }
 
     /// <summary>RGL ジョブを送出する。progress は送出の進捗ごとに
