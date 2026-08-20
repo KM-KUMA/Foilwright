@@ -134,14 +134,31 @@ public sealed class PreviewForm : Form
         root.Controls.Add(previewPanel, 0, 0);
 
         // --- 右: 設定・ジョブ内容・状態・操作 ---------------------------------
+        // D-039: 印刷開始・取り消しボタンは常に窓の下端に固定し、上の枠
+        // (設定・ジョブ内容・プリンタ状態・見張り)がどれだけ増えても押し出され
+        // ないようにする。ボタン以外の中身は rightScroll(AutoScroll)に収め、
+        // 窓を縮めてもスクロールで全部に到達できるようにする。
+        //
+        // WinForms の DockStyle はコントロールの追加順(の逆順)で「外側から」
+        // 領域を切り出す(MSDN: 最後に追加したコントロールが最も外側の最小領域を
+        // 占める)。rightContainer の子は rightScroll(Fill)と buttonPanel(Bottom)
+        // の 2 つだけにし、buttonPanel を後から追加することで、rightScroll の
+        // 中身がどれだけ増減しても buttonPanel が常に下端の外側に固定される
+        // ことを保証する(数字の調整に頼らない)。
+        var rightContainer = new Panel { Dock = DockStyle.Fill };
+        root.Controls.Add(rightContainer, 1, 0);
+
         var right = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
             Padding = new Padding(8),
             AutoSize = false,
+            // D-039: 中身の合計高さが窓を超えても、スクロールで設定・ジョブ内容・
+            // プリンタ状態・見張りの全部にたどり着けるようにする。
+            AutoScroll = true,
         };
-        root.Controls.Add(right, 1, 0);
+        rightContainer.Controls.Add(right);
 
         // 設定(§7.1: ジョブごとの上書き)
         // 行を 1 つ増やした分だけ高さも足す(TableLayoutPanel は Dock=Fill なので、
@@ -385,7 +402,17 @@ public sealed class PreviewForm : Form
         _progressBar = new ProgressBar { Dock = DockStyle.Top, Height = 24, Minimum = 0, Maximum = 100 };
         right.Controls.Add(_progressBar);
 
-        var buttonPanel = new FlowLayoutPanel { Dock = DockStyle.Top, FlowDirection = FlowDirection.RightToLeft, Height = 44, AutoSize = false };
+        // D-039: rightContainer の直接の子として、rightScroll(= right)の後に
+        // 追加する。DockStyle.Bottom + 「後から追加」で、常に rightContainer の
+        // 下端の外側に固定される(スクロール対象に入らない)。
+        var buttonPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            FlowDirection = FlowDirection.RightToLeft,
+            Height = 44,
+            AutoSize = false,
+            Padding = new Padding(8, 4, 8, 8),
+        };
         _cancelButton = new Button { Text = "取り消し", AutoSize = true, Height = 32 };
         _cancelButton.Click += (_, _) =>
         {
@@ -396,7 +423,7 @@ public sealed class PreviewForm : Form
         _printButton.Click += async (_, _) => await PrintAsync();
         buttonPanel.Controls.Add(_cancelButton);
         buttonPanel.Controls.Add(_printButton);
-        right.Controls.Add(buttonPanel);
+        rightContainer.Controls.Add(buttonPanel);
 
         // D-038: 送出後、印刷が終わるまでプレビューを開いたまま見張る枠。
         // 初期状態は非表示 — PrintAsync が送出を終えたあとに Visible = true にする
@@ -990,6 +1017,12 @@ public sealed class PreviewForm : Form
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         string resultText;
+        // D-039: 正常に完了したときだけ自動で閉じる(利用者からの要望 —
+        // 「正常終了したときには消えてくれないの?」。紙が出てくるので結果は
+        // 目に見えており、待たせる理由が無い)。エラー・打ち切り・上限時間の
+        // ときは見逃すと困るため、これまでどおり開いたままにし「閉じる」
+        // ボタンを待つ。
+        bool completedSuccessfully = false;
         try
         {
             while (true)
@@ -1033,6 +1066,7 @@ public sealed class PreviewForm : Form
                     if (outcome == PrintWatchOutcome.Completed)
                     {
                         resultText = "印刷が完了しました。";
+                        completedSuccessfully = true;
                         break;
                     }
                     _monitorStatusLabel.Text =
@@ -1059,6 +1093,23 @@ public sealed class PreviewForm : Form
         }
 
         _monitorStatusLabel.Text = $"経過: {FormatElapsed(stopwatch.Elapsed)} — {resultText}";
+
+        if (completedSuccessfully)
+        {
+            // D-039: すぐには閉じない — 結果の文言を読めるだけの間を置く。
+            // 【推測】3 秒: 印刷結果(紙)自体は目視できており長く待たせる理由が
+            // 無い一方、"経過: mm:ss — 印刷が完了しました。" を読み切るのに
+            // 必要な最短程度の見込みとして 3 秒とした(実測の裏付けは無い)。
+            await Task.Delay(3_000);
+            // 待っている間に利用者が「閉じる」やタイトルバーの × を押して
+            // 既に閉じている場合がある(FormClosing は _monitoring=false の
+            // 今は通す)。二重に Close すると例外になるため確認する。
+            if (!IsDisposed)
+            {
+                DialogResult = DialogResult.OK;
+                Close();
+            }
+        }
     }
 
     private static string FormatElapsed(TimeSpan elapsed) => elapsed.ToString(@"mm\:ss");
