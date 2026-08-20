@@ -42,6 +42,7 @@ public sealed class PreviewForm : Form
     // D-042: マジックカラーの選択・既定への復帰・色の重複警告。
     private readonly Button _pickColorButton;
     private readonly Button _resetColorButton;
+    private readonly Button _resetAllColorsButton;
     private readonly Label _magicRgbWarningLabel;
 
     private readonly TextBox _statusText;
@@ -454,8 +455,12 @@ public sealed class PreviewForm : Form
         {
             Dock = DockStyle.Bottom,
             FlowDirection = FlowDirection.LeftToRight,
-            Height = 34,
-            AutoSize = false,
+            // ボタンが横に収まらないときは折り返して、パネル自身が縦に伸びる。
+            // 高さを決め打ちにすると、窓を狭めたときにボタンが切れて押せなくなる
+            // (D-038 の 5.1 で印刷開始ボタンを画面外へ押し出したのと同じ失敗)。
+            WrapContents = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Padding = new Padding(4, 2, 4, 2),
         };
         _pickColorButton = new Button { Text = "色を選ぶ...", AutoSize = true };
@@ -476,8 +481,27 @@ public sealed class PreviewForm : Form
                 }
             });
         };
+        // D-042: こちらは行を選ばなくても押せる。上書きを全部捨ててパレットの
+        // 値に戻す — 何色か試したあと元へ戻すのに、行ごとに戻して回らずに済む。
+        _resetAllColorsButton = new Button { Text = "全部の色を既定に戻す", AutoSize = true };
+        _resetAllColorsButton.Click += (_, _) =>
+        {
+            BeginInvoke(async () =>
+            {
+                try
+                {
+                    await ResetAllMagicRgbAsync();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, $"色を既定に戻せませんでした: {ex.Message}", "Foilwright",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            });
+        };
         colorButtonPanel.Controls.Add(_pickColorButton);
         colorButtonPanel.Controls.Add(_resetColorButton);
+        colorButtonPanel.Controls.Add(_resetAllColorsButton);
         jobGroup.Controls.Add(colorButtonPanel);
 
         right.Controls.Add(jobGroup);
@@ -987,6 +1011,20 @@ public sealed class PreviewForm : Form
         await RebuildAfterMagicRgbChangeAsync();
     }
 
+    /// <summary>D-042: 「全部の色を既定に戻す」ボタン。上書きを全部捨てて
+    /// パレット(palette/default.yaml)の magic_rgb に戻す。行を選ばなくても
+    /// 押せる — 何色か試したあと元へ戻すのに、行ごとに戻して回らずに済む。
+    /// 上書きが 1 件も無ければ何もしない(再構成もしない)。</summary>
+    private async Task ResetAllMagicRgbAsync()
+    {
+        if (_busy || _current is null || _magicRgbOverride.Count == 0)
+        {
+            return;
+        }
+        _magicRgbOverride.Clear();
+        await RebuildAfterMagicRgbChangeAsync();
+    }
+
     /// <summary>D-042: 色の上書きを変えたあとの再構成。OnInkUseChangedAsync /
     /// OnPassesChangedAsync と同じ流儀で、Ghostscript は再実行しない。</summary>
     private async Task RebuildAfterMagicRgbChangeAsync()
@@ -1425,6 +1463,7 @@ public sealed class PreviewForm : Form
         _inkGrid.Columns["Color"]!.ReadOnly = busy;
         _pickColorButton.Enabled = !busy;
         _resetColorButton.Enabled = !busy;
+        _resetAllColorsButton.Enabled = !busy;
         _cancelButton.Enabled = !busy;
         _printButton.Enabled = !busy && _current is { Inks.Count: > 0 };
         Text = busy && statusMessage.Length > 0
