@@ -61,3 +61,6 @@ docs/Md5000.pdf
 /*.ai
 /*.psd
 /*.xcf
+
+# --- 配布物の組み立て場所(tools/make-package.ps1。D-039/D-041) ---
+/dist/
