@@ -486,6 +486,122 @@ public class JobAssemblyTests
         Assert.False(BitSet(magicByName["white"], 3));
     }
 
+    // --- 白版モード "alpha"(D-037)の検証 -----------------------------------
+    //
+    // MakeWhiteTestImage(x=2 が white 自身の magic_rgb=230,230,230 に直接
+    // 一致する)をそのまま使うと、apply_white_mode の「直接 magic_rgb 一致は
+    // 残す」規則(magic/opaque/silhouette/alpha 共通)により x=2 は alpha に
+    // 関係なく常に白版へ入ってしまい、「色を見ていない」ことの検証にならない。
+    // そのため専用の画像を使う: どの画素も white の magic_rgb に一致しない
+    // (= 直接マッチ由来のビットが立たない)色を選び、alpha だけで判定結果が
+    // 決まることを示す。
+    private static PpmImage MakeAlphaColourImage()
+    {
+        byte[] pixels =
+        {
+            255, 0, 0,     // x=0: red の magic_rgb に直接一致(white とは無関係)
+            0, 255, 255,   // x=1: cyan(プロセス)
+            10, 10, 10,    // x=2: どの特色にも一致しないほぼ黒(white の 230,230,230 とは無関係)
+            255, 255, 255, // x=3: 純白
+        };
+        return new PpmImage(4, 1, pixels);
+    }
+
+    private static PngImage MakeAlphaTestImage()
+    {
+        byte[] rgba =
+        {
+            0, 0, 0, 0,       // x=0: alpha=0 -> 対象外
+            0, 0, 0, 255,     // x=1: alpha=255 -> 対象
+            0, 0, 0, 0,       // x=2: alpha=0 -> 対象外
+            0, 0, 0, 255,     // x=3: alpha=255 -> 対象(色は純白 255,255,255)
+        };
+        return new PngImage(4, 1, rgba);
+    }
+
+    [Fact]
+    public void WhiteMode_Alpha_UsesAlphaChannelNotColour()
+    {
+        var palette = MakePaletteWithWhite();
+        var image = MakeAlphaColourImage();
+        var alphaImage = MakeAlphaTestImage();
+
+        var result = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "alpha", alphaImage: alphaImage);
+        var byName = result.ToDictionary(r => r.Ink.Name, r => r.Plane);
+
+        Assert.True(byName.ContainsKey("white"));
+        // alpha=0 の画素(x=0, x=2)は色に関係なく対象外。
+        Assert.False(BitSet(byName["white"], 0));
+        Assert.False(BitSet(byName["white"], 2));
+        // alpha>0 の画素(x=1, x=3)は色に関係なく対象(x=3 は純白でも入る --
+        // opaque/silhouette との違い)。
+        Assert.True(BitSet(byName["white"], 1));
+        Assert.True(BitSet(byName["white"], 3));
+    }
+
+    [Fact]
+    public void WhiteMode_Alpha_MissingAlphaImage_Throws()
+    {
+        var palette = MakePaletteWithWhite();
+        var image = MakeWhiteTestImage();
+
+        Assert.Throws<ArgumentException>(() =>
+            JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "alpha", alphaImage: null));
+    }
+
+    [Fact]
+    public void WhiteMode_Alpha_MismatchedDimensions_Throws()
+    {
+        var palette = MakePaletteWithWhite();
+        var image = MakeWhiteTestImage();
+        // image は 4x1 だが alphaImage は 3x1 -- 寸法不一致。
+        var mismatchedAlpha = new PngImage(3, 1, new byte[3 * 1 * 4]);
+
+        Assert.Throws<ArgumentException>(() =>
+            JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "alpha", alphaImage: mismatchedAlpha));
+    }
+
+    [Fact]
+    public void WhiteMode_Alpha_AllZeroAlpha_WhitePlaneIsEmptyAndExcluded()
+    {
+        var palette = MakePaletteWithWhite();
+        var image = MakeAlphaColourImage();
+        var alphaImage = new PngImage(4, 1, new byte[4 * 1 * 4]);
+
+        var result = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "alpha", alphaImage: alphaImage);
+        var names = result.Select(r => r.Ink.Name).ToHashSet();
+
+        Assert.DoesNotContain("white", names);
+    }
+
+    [Fact]
+    public void WhiteMode_Alpha_DoesNotChangeNoneAutoMagicOutputs()
+    {
+        // none/auto/magic の各出力が alpha 追加前と 1 ビットも変わらないことの
+        // 回帰確認。alphaImage を渡さない呼び出し(alpha 以外)では pngalpha を
+        // 一切読まない -- BuildJobPlanes 内の分岐は whiteMode == "alpha" のときだけ
+        // alphaImage を参照する(D-037 の制約: alpha 以外では pngalpha を実行しない)。
+        var palette = MakePaletteWithWhite();
+        var image = MakeWhiteTestImage();
+
+        var noneResult = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "none");
+        Assert.DoesNotContain("white", noneResult.Select(r => r.Ink.Name));
+
+        var autoResult = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "auto");
+        var autoByName = autoResult.ToDictionary(r => r.Ink.Name, r => r.Plane);
+        Assert.True(BitSet(autoByName["white"], 0));
+        Assert.True(BitSet(autoByName["white"], 1));
+        Assert.True(BitSet(autoByName["white"], 2));
+        Assert.False(BitSet(autoByName["white"], 3));
+
+        var magicResult = JobAssembly.BuildJobPlanes(image, palette, "auto", whiteMode: "magic");
+        var magicByName = magicResult.ToDictionary(r => r.Ink.Name, r => r.Plane);
+        Assert.False(BitSet(magicByName["white"], 0));
+        Assert.False(BitSet(magicByName["white"], 1));
+        Assert.True(BitSet(magicByName["white"], 2));
+        Assert.False(BitSet(magicByName["white"], 3));
+    }
+
     // --- ハーフトーン(DOMAIN §4.2.1)の選択可否の検証 ------------------------
     // Raster.cs のハーフトーン展開ロジック自体は変更していないため、ここでは
     // JobAssembly 経由で 3 モードすべてが選択でき、例外なく完了することだけを

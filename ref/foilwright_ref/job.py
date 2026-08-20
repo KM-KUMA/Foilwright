@@ -79,6 +79,15 @@ def apply_white_mode(palette: list[dict], white_mode: str) -> list[dict]:
         adds this afterwards via apply_silhouette_white_mode. The direct
         magic_rgb match is kept here so it is included too, same as
         "auto"/"magic"/"opaque".
+      - "alpha" (D-037): force the white ink's `auto_undercoat` to False
+        (same as "magic"/"opaque"/"silhouette"). Every pixel with a
+        non-zero alpha in Ghostscript's separate `pngalpha` rendering of
+        the same page becomes white -- that alpha comes from a second
+        image entirely (`alpha_image`, not `image`'s RGB), computed by
+        compute_alpha_plane and merged in by the caller
+        (build_job_planes) via apply_alpha_white_mode. The direct
+        magic_rgb match is kept here so it is included too, same as
+        "auto"/"magic"/"opaque"/"silhouette".
 
     Mirrors JobAssembly.ApplyWhiteMode. Ink mappings are never mutated in
     place; a modified copy is returned for the ink whose flag changes.
@@ -100,14 +109,14 @@ def apply_white_mode(palette: list[dict], white_mode: str) -> list[dict]:
             with_auto_undercoat(ink, True) if ink is white_ink else ink
             for ink in palette
         ]
-    if white_mode in ("magic", "opaque", "silhouette"):
+    if white_mode in ("magic", "opaque", "silhouette", "alpha"):
         return [
             with_auto_undercoat(ink, False) if ink is white_ink else ink
             for ink in palette
         ]
     raise ValueError(
         f"unknown white mode {white_mode!r}; expected one of "
-        "'none', 'auto', 'magic', 'opaque', 'silhouette'"
+        "'none', 'auto', 'magic', 'opaque', 'silhouette', 'alpha'"
     )
 
 
@@ -292,6 +301,91 @@ def apply_silhouette_white_mode(
     return result
 
 
+def compute_alpha_plane(width: int, height: int, rgba: bytes) -> bytes:
+    """Build a 1bit plane with a bit set for every pixel whose alpha
+    channel is non-zero (DOMAIN.md §7.1 / D-037).
+
+    `alpha > 0` is the whole rule: Ghostscript's `pngalpha` device
+    distinguishes "painted white" (alpha=255) from "nothing drawn"
+    (alpha=0), and D-037 treats any non-zero alpha -- including the
+    partial alpha of an anti-aliased edge -- as "print white here"
+    (deliberately generous: the white is meant to slightly overshoot the
+    colour on decals, DOMAIN.md §7.1.1's `opaque` rationale applies here
+    too).
+
+    width, height, rgba: as returned by png.read_png_rgba (rgba is
+    row-major, 4 bytes per pixel: R, G, B, A).
+
+    Returns a plane in the same packed format as
+    compute_non_white_pixel_plane / compute_silhouette_plane: each row
+    MSB-first, padded to a byte boundary (row length = ceil(width/8)
+    bytes), rows concatenated in image order. Mirrors
+    JobAssembly.ComputeAlphaPlane.
+    """
+    row_bytes = (width + 7) // 8
+    plane = bytearray(row_bytes * height)
+
+    for y in range(height):
+        row_base = y * width * 4
+        plane_row_base = y * row_bytes
+        for x in range(width):
+            alpha = rgba[row_base + x * 4 + 3]
+            if alpha == 0:
+                continue
+            byte_index = plane_row_base + (x >> 3)
+            bit_mask = 0x80 >> (x & 7)
+            plane[byte_index] |= bit_mask
+
+    return bytes(plane)
+
+
+def apply_alpha_white_mode(
+    alpha_image: tuple[int, int, bytes],
+    inks: list[dict],
+    planes: dict[str, bytes],
+) -> dict[str, bytes]:
+    """Apply the "alpha" white mode (DOMAIN.md §7.1 / D-037) on top of an
+    already-computed per-ink plane dict.
+
+    "White" is identified the same way as apply_opaque_white_mode /
+    apply_silhouette_white_mode: the (at most one) ink with
+    `auto_undercoat` set to True. If zero or more than one ink has it
+    set, `planes` is returned unchanged.
+
+    `planes` should already hold that ink's direct magic_rgb match (same
+    precondition as apply_opaque_white_mode/apply_silhouette_white_mode)
+    -- D-037 requires alpha to add the direct-match pixels too, same as
+    "auto"/"magic"/"opaque"/"silhouette".
+
+    alpha_image: (width, height, rgba) from a *separate* Ghostscript
+    `pngalpha` rendering of the same page (png.read_png_rgba's return
+    shape) -- not the `image` (ppmraw) used for colour. Only the alpha
+    channel is used; the RGB in alpha_image is discarded (D-037: mixing
+    pngalpha's RGB into colour output changes 18.4% of fully-painted
+    pixels, measured 2026-08-20).
+
+    Returns a new dict; `planes` itself is not mutated. Mirrors
+    JobAssembly.ApplyAlphaWhite.
+    """
+    undercoat_names = [ink["name"] for ink in inks if ink.get("auto_undercoat")]
+    if len(undercoat_names) != 1:
+        return planes
+
+    white_name = undercoat_names[0]
+    width, height, rgba = alpha_image
+    alpha_plane = compute_alpha_plane(width, height, rgba)
+
+    result = dict(planes)
+    if white_name in result:
+        merged = bytearray(result[white_name])
+        for i, byte in enumerate(alpha_plane):
+            merged[i] |= byte
+        result[white_name] = bytes(merged)
+    else:
+        result[white_name] = alpha_plane
+    return result
+
+
 def _build_auto_planes(
     image: tuple[int, int, bytes],
     palette: list[dict],
@@ -355,6 +449,7 @@ def build_job_planes(
     colour_correction: str = "photo",
     resolution: int = 600,
     photo_lut_path: str | None = None,
+    alpha_image: tuple[int, int, bytes] | None = None,
 ) -> tuple[list[dict], dict[str, bytes]]:
     """From an image and a palette, decide which inks actually belong in
     the job and build their planes, in the palette's execution order
@@ -370,8 +465,19 @@ def build_job_planes(
         that is not pure (255,255,255), plus direct magic_rgb matches --
         DOMAIN.md §7.1 / D-027, "opaque" is D-032) / "silhouette" (every
         pixel not reachable from the sheet's edges through pure-white
-        4-neighbours, plus direct magic_rgb matches -- D-034). Overrides
-        the palette's `auto_undercoat` flag.
+        4-neighbours, plus direct magic_rgb matches -- D-034) / "alpha"
+        (every pixel with non-zero alpha in `alpha_image`, plus direct
+        magic_rgb matches -- D-037). Overrides the palette's
+        `auto_undercoat` flag.
+
+    alpha_image: (width, height, rgba) from a separate Ghostscript
+        `pngalpha` rendering of the same page (png.read_png_rgba's return
+        shape). Only consulted when white_mode == "alpha"; ignored
+        otherwise. Required when white_mode == "alpha" (raises
+        ValueError if None), and its width/height must match `image`'s
+        (raises ValueError otherwise) -- D-037: colour comes from
+        `image` (ppmraw) and white comes from `alpha_image` (pngalpha),
+        and the two must describe the same page at the same resolution.
 
     Inks with an entirely blank plane are excluded from the result. If
     every ink ends up blank, both return values are empty.
@@ -386,6 +492,19 @@ def build_job_planes(
     for exactly those inks, in the same packed format as raster.py's
     to_planes* functions. Mirrors JobAssembly.BuildJobPlanes.
     """
+    if white_mode == "alpha":
+        # Fail fast, before any raster work: alpha_image is a second
+        # Ghostscript rendering the caller must have already produced (D-037).
+        if alpha_image is None:
+            raise ValueError("white_mode 'alpha' requires alpha_image (D-037)")
+        alpha_width, alpha_height, _ = alpha_image
+        image_width, image_height, _ = image
+        if alpha_width != image_width or alpha_height != image_height:
+            raise ValueError(
+                f"alpha_image dimensions {alpha_width}x{alpha_height} do not "
+                f"match image dimensions {image_width}x{image_height}"
+            )
+
     adjusted_palette = apply_white_mode(palette, white_mode)
 
     if ink_mode == "auto":
@@ -424,6 +543,13 @@ def build_job_planes(
         # compute_silhouette_plane (D-034) instead of
         # compute_non_white_pixel_plane.
         planes = apply_silhouette_white_mode(image, palette, planes)
+
+    if white_mode == "alpha":
+        # Same reasoning as "opaque"/"silhouette" above, but the mask
+        # comes from a *different* image entirely -- alpha_image, a
+        # separate pngalpha rendering, not `image` (D-037). Validated
+        # non-None and dimension-matched above.
+        planes = apply_alpha_white_mode(alpha_image, palette, planes)
 
     # The result always walks the *original* palette (before white-mode
     # exclusion): a "none"-excluded ink is absent from adjusted_palette

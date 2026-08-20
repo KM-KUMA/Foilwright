@@ -89,7 +89,7 @@ internal static class Program
         Console.Error.WriteLine("                      RGL バイト列ファイルを送出する");
         Console.Error.WriteLine("  listen [--ink-mode auto|per_page|spot_only] [--resolution 600|1200x600]");
         Console.Error.WriteLine("         [--paper <名前>] [--media <名前>] [--halftone none|halftone|coarse_halftone]");
-        Console.Error.WriteLine("         [--white-mode none|auto|magic|opaque|silhouette] [--colour-correction none|plain|photo]");
+        Console.Error.WriteLine("         [--white-mode none|auto|magic|opaque|silhouette|alpha] [--colour-correction none|plain|photo]");
         Console.Error.WriteLine("         [--no-curl-correction] [--machine md-5000|md-5500] [--vid XXXX]");
         Console.Error.WriteLine("                      名前付きパイプで PostScript を受け取り印刷する");
         Console.Error.WriteLine("                      --ink-mode 省略時は 'auto'(DOMAIN §6.6 / D-016)");
@@ -97,15 +97,17 @@ internal static class Program
         Console.Error.WriteLine($"                      --paper 省略時は '{DefaultPaperName}'。選べる値は用紙表(papers/{{系列}}.yaml)による(DOMAIN §5.5 / §15.10.2)");
         Console.Error.WriteLine($"                      --media 省略時は '{DefaultMediaName}'。選べる値は media.yaml による(DOMAIN §5.5.2)");
         Console.Error.WriteLine($"                      --halftone 省略時は '{DefaultHalftone}'(DOMAIN §4.2.1)");
-        Console.Error.WriteLine($"                      --white-mode 省略時は '{DefaultWhiteMode}'(DOMAIN §7.1 / D-027、opaque は D-032、silhouette は D-034)");
+        Console.Error.WriteLine($"                      --white-mode 省略時は '{DefaultWhiteMode}'(DOMAIN §7.1 / D-027、opaque は D-032、silhouette は D-034、alpha は D-037)");
+        Console.Error.WriteLine("                      --white-mode alpha を選ぶと、色(ppmraw)の変換に加えて Ghostscript を pngalpha でもう 1 回走らせる(D-037。他のモードでは走らせない)");
         Console.Error.WriteLine($"                      --colour-correction 省略時は '{DefaultColourCorrection}'(DOMAIN §7.1 / D-029)");
         Console.Error.WriteLine("                      --no-curl-correction を指定するとカール矯正を止める(デカール・フィルム用。DOMAIN §10.10.4)");
         Console.Error.WriteLine("  build-rgl <入力.ppm> <出力.bin> [--machine md-5000|md-5500] [--paper <名前>] [--media <名前>]");
         Console.Error.WriteLine("            [--resolution 600|1200x600] [--ink-mode auto|per_page|spot_only]");
-        Console.Error.WriteLine("            [--halftone none|halftone|coarse_halftone] [--white-mode none|auto|magic|opaque|silhouette]");
-        Console.Error.WriteLine("            [--colour-correction none|plain|photo]");
+        Console.Error.WriteLine("            [--halftone none|halftone|coarse_halftone] [--white-mode none|auto|magic|opaque|silhouette|alpha]");
+        Console.Error.WriteLine("            [--colour-correction none|plain|photo] [--alpha-png <入力.png>]");
         Console.Error.WriteLine("                      【開発用】PPM を直接受け取り RGL バイト列をファイルへ書き出す。実機には触れない");
         Console.Error.WriteLine("                      (D-033: ref/ の job.py との突き合わせテスト専用の決定的な入口。listen と違い Ghostscript を経由しない)");
+        Console.Error.WriteLine("                      --white-mode alpha のときは --alpha-png で PNG(pngalpha 出力)を直接渡す(D-037。Ghostscript は呼ばない。突き合わせテスト用の決定的な入口)");
         Console.Error.WriteLine("  decode-png <入力.png> <出力.raw>");
         Console.Error.WriteLine("                      【開発用】PNG(RGBA)を読み、幅・高さを標準出力へ、RGBA の生バイト列を出力.raw へ書き出す");
         Console.Error.WriteLine("                      (D-036: ref/ の png.py との突き合わせテスト専用の決定的な入口)");
@@ -525,6 +527,12 @@ internal static class Program
     {
         string psPath = Path.Combine(Path.GetTempPath(), $"foilwright_{Guid.NewGuid():n}.ps");
         string ppmPath = Path.Combine(Path.GetTempPath(), $"foilwright_{Guid.NewGuid():n}.ppm");
+        // 白版モードが "alpha" のときだけ使う(D-037)。他のモードでは
+        // 一切参照せず、pngPath も作らない -- Ghostscript を pngalpha で
+        // 走らせるのは alpha を選んだときだけという制約(D-037)をここで守る。
+        string? pngPath = options.WhiteMode == "alpha"
+            ? Path.Combine(Path.GetTempPath(), $"foilwright_{Guid.NewGuid():n}.png")
+            : null;
 
         try
         {
@@ -536,6 +544,16 @@ internal static class Program
 
             Console.WriteLine("Ghostscript で PPM へ変換中...");
             Ghostscript.ConvertToPpm(psPath, ppmPath, resolutionEntry.DpiX, resolutionEntry.DpiY);
+
+            PngImage? fullAlphaImage = null;
+            if (pngPath is not null)
+            {
+                // D-037: 白版モード alpha のときだけ、色(ppmraw)の変換に加えて
+                // pngalpha でもう 1 回変換する。他のモードではこの分岐に入らない。
+                Console.WriteLine("Ghostscript で PNG(pngalpha)へ変換中...");
+                Ghostscript.ConvertToPngAlpha(psPath, pngPath, resolutionEntry.DpiX, resolutionEntry.DpiY);
+                fullAlphaImage = PngImage.Read(pngPath);
+            }
 
             var fullImage = PpmImage.Read(ppmPath);
             Console.WriteLine($"PPM(用紙全面): {fullImage.Width}x{fullImage.Height}");
@@ -549,13 +567,19 @@ internal static class Program
             var image = fullImage.Crop(scaledPaper.LeftMargin, scaledPaper.TopMargin, scaledPaper.Width, scaledPaper.Length);
             Console.WriteLine($"PPM(印字可能領域に切り出し後): {image.Width}x{image.Height}");
 
+            // D-037: 色(image)と同じ切り出しをアルファにも適用する
+            // (制約: 切り出しを色とアルファで食い違わせない)。
+            PngImage? alphaImage = fullAlphaImage is null
+                ? null
+                : CropAlpha(fullAlphaImage, scaledPaper.LeftMargin, scaledPaper.TopMargin, scaledPaper.Width, scaledPaper.Length);
+
             // D-029: colourCorrection == "photo" のときだけ photoLutPath /
             // resolutionEntry.DpiX が参照される。ガンマの既定値は解像度で
             // 変わる(600 は 0.8、1200 は -0.9)ため、解像度を渡し忘れると色がずれる。
             string photoLutPath = Path.Combine(FindRepoRoot(), "colour", "photo_colcor.bin");
             var jobPlanes = JobAssembly.BuildJobPlanes(
                 image, config.Palette, options.InkMode, options.Halftone, options.WhiteMode,
-                options.ColourCorrection, resolutionEntry.DpiX, photoLutPath);
+                options.ColourCorrection, resolutionEntry.DpiX, photoLutPath, alphaImage);
             if (jobPlanes.Count == 0)
             {
                 Console.WriteLine("印刷する内容がありません");
@@ -594,7 +618,44 @@ internal static class Program
         {
             TryDelete(psPath);
             TryDelete(ppmPath);
+            if (pngPath is not null)
+            {
+                TryDelete(pngPath);
+            }
         }
+    }
+
+    /// <summary>PngImage(RGBA)を、色の切り出し(PpmImage.Crop)と同じ規則で
+    /// 切り出す(D-037: 切り出しを色とアルファで食い違わせない)。PngImage
+    /// 自体には Crop を持たせない(D-036 の対象外。Ghostscript の pngalpha
+    /// 出力を読むだけの最小デコーダに留める)。</summary>
+    private static PngImage CropAlpha(PngImage image, int x, int y, int width, int height)
+    {
+        if (x < 0 || y < 0)
+        {
+            throw new ArgumentException($"crop origin must be non-negative, got ({x}, {y})");
+        }
+        if (width < 0 || height < 0)
+        {
+            throw new ArgumentException($"crop size must be non-negative, got ({width}, {height})");
+        }
+
+        int availableWidth = Math.Max(0, image.Width - x);
+        int availableHeight = Math.Max(0, image.Height - y);
+        int outWidth = Math.Min(width, availableWidth);
+        int outHeight = Math.Min(height, availableHeight);
+
+        byte[] outPixels = new byte[outWidth * outHeight * 4];
+        int srcRowBytes = image.Width * 4;
+        int dstRowBytes = outWidth * 4;
+        for (int row = 0; row < outHeight; row++)
+        {
+            int srcOffset = (y + row) * srcRowBytes + x * 4;
+            int dstOffset = row * dstRowBytes;
+            Array.Copy(image.Pixels, srcOffset, outPixels, dstOffset, dstRowBytes);
+        }
+
+        return new PngImage(outWidth, outHeight, outPixels);
     }
 
     // --- build-rgl(開発用。D-033)---------------------------------------------
@@ -617,12 +678,13 @@ internal static class Program
         string halftone = DefaultHalftone;
         string whiteMode = DefaultWhiteMode;
         string colourCorrection = DefaultColourCorrection;
+        string? alphaPngPath = null;
 
         var freePositional = new List<string>();
         for (int i = 0; i < positional.Count; i++)
         {
             string opt = positional[i];
-            if (opt is "--ink-mode" or "--resolution" or "--paper" or "--media" or "--halftone" or "--white-mode" or "--colour-correction")
+            if (opt is "--ink-mode" or "--resolution" or "--paper" or "--media" or "--halftone" or "--white-mode" or "--colour-correction" or "--alpha-png")
             {
                 if (i + 1 >= positional.Count)
                 {
@@ -640,6 +702,7 @@ internal static class Program
                     case "--halftone": halftone = value; break;
                     case "--white-mode": whiteMode = value; break;
                     case "--colour-correction": colourCorrection = value; break;
+                    case "--alpha-png": alphaPngPath = value; break;
                 }
             }
             else
@@ -686,6 +749,16 @@ internal static class Program
             Console.Error.WriteLine($"ファイルなし: {inputPath}");
             return 1;
         }
+        if (whiteMode == "alpha" && alphaPngPath is null)
+        {
+            Console.Error.WriteLine("白版モード 'alpha' には --alpha-png <PNG ファイル> の指定が必要です(D-037)。");
+            return 1;
+        }
+        if (alphaPngPath is not null && !File.Exists(alphaPngPath))
+        {
+            Console.Error.WriteLine($"ファイルなし: {alphaPngPath}");
+            return 1;
+        }
 
         string repoRoot = FindRepoRoot();
         var config = LoadDefaultJobConfig(repoRoot, route, paperName, mediaName);
@@ -702,11 +775,16 @@ internal static class Program
         }
 
         var image = PpmImage.Read(inputPath);
+        // build-rgl は listen と違い Ghostscript を一切呼ばない(D-033)。
+        // alpha 用の PNG も --alpha-png で受け取った既存ファイルをそのまま
+        // 読むだけで、pngalpha を走らせない(D-037: 突き合わせテスト用の
+        // 決定的な入口。切り出しも行わない -- image と同じく寸法をそのまま扱う)。
+        PngImage? alphaImage = alphaPngPath is null ? null : PngImage.Read(alphaPngPath);
 
         string photoLutPath = Path.Combine(repoRoot, "colour", "photo_colcor.bin");
         var jobPlanes = JobAssembly.BuildJobPlanes(
             image, config.Palette, inkMode, halftone, whiteMode,
-            colourCorrection, resolutionEntry.DpiX, photoLutPath);
+            colourCorrection, resolutionEntry.DpiX, photoLutPath, alphaImage);
 
         var planes = jobPlanes.ToDictionary(jp => jp.Ink.Name, jp => jp.Plane);
         var inks = jobPlanes

@@ -141,4 +141,55 @@ public static class Ghostscript
                 $"Ghostscript reported success but did not produce '{outputPpmPath}'.\nstderr: {stderr}");
         }
     }
+
+    /// <summary>PostScript ファイルを解像度 dpi の PNG(pngalpha デバイス)へ
+    /// 変換する(正方画素。D-037)。白版モード "alpha" を選んだときだけ、
+    /// 色の変換(ConvertToPpm)に加えてこれをもう 1 回走らせる。
+    /// pngalpha の RGB は使わず、アルファチャンネルだけを読む(D-037: 色は
+    /// ppmraw のまま。pngalpha の RGB を白へ合成すると ppmraw と一致しない
+    /// ことが実測済み — D-036 補足)。</summary>
+    public static void ConvertToPngAlpha(string inputPostScriptPath, string outputPngPath, int dpi)
+        => ConvertToPngAlpha(inputPostScriptPath, outputPngPath, dpi, dpi);
+
+    /// <summary>PostScript ファイルを解像度 dpiX x dpiY の PNG(pngalpha デバイス)
+    /// へ変換する。ConvertToPpm と同じ体裁(出力先は呼び出し側が指定し、
+    /// 後始末も呼び出し側の責任)。</summary>
+    public static void ConvertToPngAlpha(string inputPostScriptPath, string outputPngPath, int dpiX, int dpiY)
+    {
+        string gs = FindExecutable();
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = gs,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("-q");
+        psi.ArgumentList.Add("-dNOPAUSE");
+        psi.ArgumentList.Add("-dBATCH");
+        psi.ArgumentList.Add("-dSAFER");
+        psi.ArgumentList.Add("-sDEVICE=pngalpha");
+        psi.ArgumentList.Add(dpiX == dpiY ? $"-r{dpiX}" : $"-r{dpiX}x{dpiY}");
+        psi.ArgumentList.Add($"-sOutputFile={outputPngPath}");
+        psi.ArgumentList.Add(inputPostScriptPath);
+
+        using var process = Process.Start(psi)
+            ?? throw new GhostscriptException($"failed to start Ghostscript process ({gs})");
+        string stderr = process.StandardError.ReadToEnd();
+        string stdout = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+
+        if (process.ExitCode != 0)
+        {
+            throw new GhostscriptException(
+                $"Ghostscript exited with code {process.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
+        }
+        if (!File.Exists(outputPngPath))
+        {
+            throw new GhostscriptException(
+                $"Ghostscript reported success but did not produce '{outputPngPath}'.\nstderr: {stderr}");
+        }
+    }
 }

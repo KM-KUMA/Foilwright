@@ -25,8 +25,8 @@ public static class JobAssembly
     public static readonly IReadOnlyList<string> ValidInkModes = new[] { "auto", "per_page", "spot_only" };
 
     /// <summary>サポートする白版モードの内部識別子(DOMAIN §7.1 / D-027、
-    /// "opaque" は D-032、"silhouette" は D-034)。既定は "auto"。</summary>
-    public static readonly IReadOnlyList<string> ValidWhiteModes = new[] { "none", "auto", "magic", "opaque", "silhouette" };
+    /// "opaque" は D-032、"silhouette" は D-034、"alpha" は D-037)。既定は "auto"。</summary>
+    public static readonly IReadOnlyList<string> ValidWhiteModes = new[] { "none", "auto", "magic", "opaque", "silhouette", "alpha" };
 
     /// <summary>サポートするハーフトーンの内部識別子(DOMAIN §4.2.1)。既定は "none"。
     /// Raster.cs 内部の同名リストと値を揃えてある(呼び出し側の入力検証・
@@ -55,14 +55,36 @@ public static class JobAssembly
     ///     と同じ)。既定は "photo"(D-029: 実物のフルカラー原稿で colcorPlain
     ///     の完全な下色除去が紫・緑・茶を黒一色に潰した実測を受けての決定)。
     /// resolution / photoLutPath: colourCorrection == "photo" のときだけ参照
-    ///     する。Raster.ToPlanes / ToPlanesAuto にそのまま渡す。</summary>
+    ///     する。Raster.ToPlanes / ToPlanesAuto にそのまま渡す。
+    ///
+    /// alphaImage: 同じページを Ghostscript の pngalpha デバイスで別途変換した
+    ///     結果(D-037)。whiteMode == "alpha" のときだけ参照する。whiteMode ==
+    ///     "alpha" で null なら ArgumentException、image と幅・高さが食い違う
+    ///     場合も ArgumentException(色は image の ppmraw、白は alphaImage の
+    ///     アルファと役割が分かれているため、同じページ・同じ解像度でなければ
+    ///     ならない)。</summary>
     public static List<(InkDefinition Ink, byte[] Plane)> BuildJobPlanes(
         PpmImage image, IReadOnlyList<InkDefinition> palette, string inkMode, string halftone = "none", string whiteMode = "auto",
-        string colourCorrection = "photo", int resolution = 600, string? photoLutPath = null)
+        string colourCorrection = "photo", int resolution = 600, string? photoLutPath = null, PngImage? alphaImage = null)
     {
         if (!ValidWhiteModes.Contains(whiteMode))
         {
             throw new ArgumentException($"unknown white mode '{whiteMode}'; expected one of {string.Join(", ", ValidWhiteModes)}");
+        }
+
+        if (whiteMode == "alpha")
+        {
+            // 早期に検証する(D-037): alphaImage は呼び出し側が別途 Ghostscript の
+            // pngalpha で作っておく必要がある。
+            if (alphaImage is null)
+            {
+                throw new ArgumentException("white mode 'alpha' requires alphaImage (D-037)");
+            }
+            if (alphaImage.Width != image.Width || alphaImage.Height != image.Height)
+            {
+                throw new ArgumentException(
+                    $"alphaImage dimensions {alphaImage.Width}x{alphaImage.Height} do not match image dimensions {image.Width}x{image.Height}");
+            }
         }
 
         var adjustedPalette = ApplyWhiteMode(palette, whiteMode);
@@ -92,6 +114,14 @@ public static class JobAssembly
             // (D-034)から得る。ComputeNonWhitePixelPlane とは別のアルゴリズム
             // (スキャンライン塗りつぶし)で計算し、突き合わせテストの網を強くする。
             planes = ApplySilhouetteWhite(image, palette, planes);
+        }
+
+        if (whiteMode == "alpha")
+        {
+            // ApplyOpaqueWhite/ApplySilhouetteWhite と同じ理屈だが、マスクは
+            // alphaImage(image とは別のページレンダリング)の alpha チャンネル
+            // から得る(D-037)。alphaImage の非 null・寸法一致は関数冒頭で検証済み。
+            planes = ApplyAlphaWhite(alphaImage!, palette, planes);
         }
 
         // 結果の一覧は常に元のパレット(白版モードで除外する前)を走査する。
@@ -146,7 +176,7 @@ public static class JobAssembly
         {
             "none" => palette.Where(ink => !ReferenceEquals(ink, whiteInk)).ToList(),
             "auto" => palette.Select(ink => ReferenceEquals(ink, whiteInk) ? WithAutoUndercoat(ink, true) : ink).ToList(),
-            "magic" or "opaque" or "silhouette" => palette.Select(ink => ReferenceEquals(ink, whiteInk) ? WithAutoUndercoat(ink, false) : ink).ToList(),
+            "magic" or "opaque" or "silhouette" or "alpha" => palette.Select(ink => ReferenceEquals(ink, whiteInk) ? WithAutoUndercoat(ink, false) : ink).ToList(),
             _ => throw new ArgumentException($"unknown white mode '{whiteMode}'; expected one of {string.Join(", ", ValidWhiteModes)}"),
         };
     }
@@ -412,6 +442,75 @@ public static class JobAssembly
                 x++;
             }
         }
+    }
+
+    /// <summary>白版モード "alpha"(DOMAIN §7.1 / D-037)を適用する。
+    ///
+    /// 「白」はパレットで auto_undercoat: true になっているインクとして
+    /// 判別する(ApplyOpaqueWhite/ApplySilhouetteWhite と同じ規則。該当が
+    /// 0 個または 2 個以上なら白版モードの適用対象が定まらないため何もしない)。
+    ///
+    /// マスクは image(色の元になった ppmraw)ではなく、別途 Ghostscript の
+    /// pngalpha で変換した alphaImage から得る(D-037: 色とアルファは別の
+    /// レンダリング結果)。</summary>
+    private static Dictionary<string, byte[]> ApplyAlphaWhite(
+        PngImage alphaImage, IReadOnlyList<InkDefinition> palette, Dictionary<string, byte[]> planes)
+    {
+        var whiteInks = palette.Where(ink => ink.AutoUndercoat).ToList();
+        if (whiteInks.Count != 1)
+        {
+            return planes;
+        }
+        var whiteInk = whiteInks[0];
+
+        byte[] alphaPlane = ComputeAlphaPlane(alphaImage);
+
+        if (planes.TryGetValue(whiteInk.Name, out var existing))
+        {
+            var merged = (byte[])existing.Clone();
+            for (int i = 0; i < merged.Length; i++)
+            {
+                merged[i] |= alphaPlane[i];
+            }
+            planes[whiteInk.Name] = merged;
+        }
+        else
+        {
+            planes[whiteInk.Name] = alphaPlane;
+        }
+
+        return planes;
+    }
+
+    /// <summary>アルファが 0 でない画素すべてにビットを立てた 1bit プレーンを
+    /// 作る(DOMAIN §7.1 / D-037)。ビット順・行バイト数は ComputeNonWhitePixelPlane/
+    /// ComputeSilhouettePlane と同じ規則(MSB 先頭、(width+7)/8 バイト/行)。
+    /// alphaImage.Pixels は行優先・1 画素あたり R/G/B/A の 4 バイト(PngImage)。</summary>
+    private static byte[] ComputeAlphaPlane(PngImage alphaImage)
+    {
+        int width = alphaImage.Width, height = alphaImage.Height;
+        byte[] pixels = alphaImage.Pixels;
+        int rowBytes = (width + 7) / 8;
+        var plane = new byte[rowBytes * height];
+
+        for (int y = 0; y < height; y++)
+        {
+            int rowBase = y * width * 4;
+            int planeRowBase = y * rowBytes;
+            for (int x = 0; x < width; x++)
+            {
+                byte alpha = pixels[rowBase + x * 4 + 3];
+                if (alpha == 0)
+                {
+                    continue;
+                }
+                int byteIndex = planeRowBase + (x >> 3);
+                int bitMask = 0x80 >> (x & 7);
+                plane[byteIndex] |= (byte)bitMask;
+            }
+        }
+
+        return plane;
     }
 
     /// <summary>InkDefinition は record ではないため with 式が使えない。

@@ -62,6 +62,13 @@ public sealed class PreviewResult : IDisposable
     /// メディア・プロファイル)。RebuildFromImage の再呼び出しに必要。</summary>
     public required JobConfig Config { get; set; }
 
+    /// <summary>白版モードが "alpha" のときだけ Ghostscript の pngalpha で
+    /// 変換し、用紙寸法で切り出し済みの画像(D-037)。alpha 以外のモードでは
+    /// null(Ghostscript を pngalpha で走らせない)。D-028 補足と同じ理屈で、
+    /// インク除外やパス数の切り替え(RebuildFromImage)では Ghostscript を
+    /// 再実行せずこれを保持したまま使い回す。</summary>
+    public PngImage? AlphaImage { get; set; }
+
     /// <summary>Bitmap(GDI ハンドル)と、切り出し済み画像・プレーン(管理ヒープ上の
     /// 大きなバイト配列。A4/600dpi で約 68MB、1200x600 で約 137MB)を解放する。
     /// 古いプレビューを差し替える際は必ずこれを呼ぶこと(DOMAIN §7.2 補足)。</summary>
@@ -71,6 +78,7 @@ public sealed class PreviewResult : IDisposable
         Planes.Clear();
         Image = null!;
         Config = null!;
+        AlphaImage = null;
     }
 }
 
@@ -138,6 +146,12 @@ public static class JobPipeline
         var config = LoadJobConfig(repoRoot, route, paperName, mediaName);
         var resolutionEntry = config.Profile.ResolveResolutionByKey(resolutionKey);
         string ppmPath = Path.Combine(Path.GetTempPath(), $"foilwright_{Guid.NewGuid():n}.ppm");
+        // 白版モードが "alpha" のときだけ使う(D-037)。他のモードではここが
+        // null のままで、pngPath も作られない -- Ghostscript を pngalpha で
+        // 走らせるのは alpha を選んだときだけという制約をここで守る。
+        string? pngPath = whiteMode == "alpha"
+            ? Path.Combine(Path.GetTempPath(), $"foilwright_{Guid.NewGuid():n}.png")
+            : null;
         try
         {
             Ghostscript.ConvertToPpm(psPath, ppmPath, resolutionEntry.DpiX, resolutionEntry.DpiY);
@@ -147,12 +161,62 @@ public static class JobPipeline
             var scaledPaper = config.Paper.ScaleToResolution(resolutionEntry.DpiX, resolutionEntry.DpiY);
             var image = fullImage.Crop(scaledPaper.LeftMargin, scaledPaper.TopMargin, scaledPaper.Width, scaledPaper.Length);
 
-            return BuildPreviewCore(image, config, resolutionEntry, inkMode, halftone, whiteMode, usedInks, passesOverride, colourCorrection);
+            PngImage? alphaImage = null;
+            if (pngPath is not null)
+            {
+                // D-037: 白版モード alpha のときだけ、色(ppmraw)の変換に加えて
+                // pngalpha でもう 1 回変換する。切り出しは色(image)と同じ
+                // scaledPaper を使う(制約: 色とアルファで食い違わせない)。
+                Ghostscript.ConvertToPngAlpha(psPath, pngPath, resolutionEntry.DpiX, resolutionEntry.DpiY);
+                var fullAlphaImage = PngImage.Read(pngPath);
+                alphaImage = CropAlpha(fullAlphaImage, scaledPaper.LeftMargin, scaledPaper.TopMargin, scaledPaper.Width, scaledPaper.Length);
+            }
+
+            return BuildPreviewCore(image, config, resolutionEntry, inkMode, halftone, whiteMode, usedInks, passesOverride, colourCorrection, alphaImage);
         }
         finally
         {
             TryDelete(ppmPath);
+            if (pngPath is not null)
+            {
+                TryDelete(pngPath);
+            }
         }
+    }
+
+    /// <summary>PngImage(RGBA)を、色の切り出し(PpmImage.Crop)と同じ規則で
+    /// 切り出す(D-037: 切り出しを色とアルファで食い違わせない)。PngImage
+    /// 自体には Crop を持たせない(D-036 の対象外。Ghostscript の pngalpha
+    /// 出力を読むだけの最小デコーダに留める)。Foilwright.Cli.Program の
+    /// 同名ヘルパーと同じ実装(別プロジェクトのため複製 -- このファイル冒頭の
+    /// コメントの流儀どおり)。</summary>
+    private static PngImage CropAlpha(PngImage image, int x, int y, int width, int height)
+    {
+        if (x < 0 || y < 0)
+        {
+            throw new ArgumentException($"crop origin must be non-negative, got ({x}, {y})");
+        }
+        if (width < 0 || height < 0)
+        {
+            throw new ArgumentException($"crop size must be non-negative, got ({width}, {height})");
+        }
+
+        int availableWidth = Math.Max(0, image.Width - x);
+        int availableHeight = Math.Max(0, image.Height - y);
+        int outWidth = Math.Min(width, availableWidth);
+        int outHeight = Math.Min(height, availableHeight);
+
+        byte[] outPixels = new byte[outWidth * outHeight * 4];
+        int srcRowBytes = image.Width * 4;
+        int dstRowBytes = outWidth * 4;
+        for (int row = 0; row < outHeight; row++)
+        {
+            int srcOffset = (y + row) * srcRowBytes + x * 4;
+            int dstOffset = row * dstRowBytes;
+            Array.Copy(image.Pixels, srcOffset, outPixels, dstOffset, dstRowBytes);
+        }
+
+        return new PngImage(outWidth, outHeight, outPixels);
     }
 
     /// <summary>切り出し済みの画像を保持したまま、ジョブ組み立て(インク割り当て・
@@ -168,9 +232,9 @@ public static class JobPipeline
         PpmImage image, JobConfig config, ResolutionEntry resolution,
         string inkMode, string halftone, string whiteMode,
         IReadOnlySet<string> usedInks, IReadOnlyDictionary<string, int> passesOverride,
-        string colourCorrection = DefaultColourCorrection)
+        string colourCorrection = DefaultColourCorrection, PngImage? alphaImage = null)
     {
-        return BuildPreviewCore(image, config, resolution, inkMode, halftone, whiteMode, usedInks, passesOverride, colourCorrection);
+        return BuildPreviewCore(image, config, resolution, inkMode, halftone, whiteMode, usedInks, passesOverride, colourCorrection, alphaImage);
     }
 
     /// <summary>BuildPreview と RebuildFromImage の共通処理(インク割り当て以降)。
@@ -187,7 +251,7 @@ public static class JobPipeline
     private static PreviewResult BuildPreviewCore(
         PpmImage image, JobConfig config, ResolutionEntry resolutionEntry,
         string inkMode, string halftone, string whiteMode, IReadOnlySet<string> usedInks,
-        IReadOnlyDictionary<string, int> passesOverride, string colourCorrection)
+        IReadOnlyDictionary<string, int> passesOverride, string colourCorrection, PngImage? alphaImage = null)
     {
         var palette = config.Palette.Where(ink => usedInks.Contains(ink.Name)).ToList();
 
@@ -195,7 +259,7 @@ public static class JobPipeline
         string photoLutPath = Path.Combine(repoRoot, "colour", "photo_colcor.bin");
 
         var jobPlanes = JobAssembly.BuildJobPlanes(
-            image, palette, inkMode, halftone, whiteMode, colourCorrection, resolutionEntry.DpiX, photoLutPath);
+            image, palette, inkMode, halftone, whiteMode, colourCorrection, resolutionEntry.DpiX, photoLutPath, alphaImage);
 
         var planes = jobPlanes.ToDictionary(jp => jp.Ink.Name, jp => jp.Plane);
         var jobInks = jobPlanes
@@ -232,6 +296,7 @@ public static class JobPipeline
             Resolution = resolutionEntry,
             Image = image,
             Config = config,
+            AlphaImage = alphaImage,
         };
     }
 

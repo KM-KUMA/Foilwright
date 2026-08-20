@@ -566,7 +566,7 @@ public sealed class PreviewForm : Form
 
             var result = await Task.Run(() => JobPipeline.RebuildFromImage(
                 previous.Image, previous.Config, previous.Resolution, inkMode, halftone, whiteMode, _usedInks,
-                _passesOverride, colourCorrection));
+                _passesOverride, colourCorrection, previous.AlphaImage));
 
             ApplyPreviewResult(result);
         }
@@ -635,7 +635,7 @@ public sealed class PreviewForm : Form
 
             var result = await Task.Run(() => JobPipeline.RebuildFromImage(
                 previous.Image, previous.Config, previous.Resolution, inkMode, halftone, whiteMode, _usedInks,
-                _passesOverride, colourCorrection));
+                _passesOverride, colourCorrection, previous.AlphaImage));
 
             ApplyPreviewResult(result);
         }

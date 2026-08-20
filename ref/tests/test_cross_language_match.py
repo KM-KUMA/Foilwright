@@ -34,6 +34,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "ref"))
 
 from foilwright_ref import config, emitter, job, raster
+from foilwright_ref import png as png_module
 
 CASES_DIR = REPO_ROOT / "tests" / "cases"
 PROFILES_DIR = REPO_ROOT / "profiles"
@@ -85,6 +86,7 @@ def _render_python(
     halftone: str,
     white_mode: str,
     colour_correction: str,
+    alpha_png_path: pathlib.Path | None = None,
 ) -> bytes:
     profile = config.load_profile(str(PROFILES_DIR / f"{machine}.yaml"))
     paper_table = config.resolve_paper_table(profile, str(PAPERS_DIR))
@@ -95,6 +97,16 @@ def _render_python(
     image = raster.read_ppm(str(ppm_path))
     width, height, _ = image
 
+    # D-037: white_mode "alpha" reads alpha from a separate pngalpha
+    # rendering (alpha_png_path), not from the ppmraw `image` above --
+    # this mirrors JobAssembly.BuildJobPlanes/build-rgl's --alpha-png,
+    # a deterministic entry point that does not invoke Ghostscript itself.
+    alpha_image = (
+        png_module.read_png_rgba(str(alpha_png_path))
+        if alpha_png_path is not None
+        else None
+    )
+
     inks, planes = job.build_job_planes(
         image,
         palette,
@@ -104,6 +116,7 @@ def _render_python(
         colour_correction=colour_correction,
         resolution=resolution,
         photo_lut_path=str(PHOTO_LUT_PATH),
+        alpha_image=alpha_image,
     )
 
     job_dict = {
@@ -136,31 +149,35 @@ def _render_csharp(
     halftone: str,
     white_mode: str,
     colour_correction: str,
+    alpha_png_path: pathlib.Path | None = None,
 ) -> bytes:
     assert _CLI_PATH is not None
+    args = [
+        str(_CLI_PATH),
+        "build-rgl",
+        str(ppm_path),
+        str(out_path),
+        "--machine",
+        machine,
+        "--paper",
+        paper_name,
+        "--media",
+        media_name,
+        "--resolution",
+        str(resolution),
+        "--ink-mode",
+        ink_mode,
+        "--halftone",
+        halftone,
+        "--white-mode",
+        white_mode,
+        "--colour-correction",
+        colour_correction,
+    ]
+    if alpha_png_path is not None:
+        args += ["--alpha-png", str(alpha_png_path)]
     result = subprocess.run(
-        [
-            str(_CLI_PATH),
-            "build-rgl",
-            str(ppm_path),
-            str(out_path),
-            "--machine",
-            machine,
-            "--paper",
-            paper_name,
-            "--media",
-            media_name,
-            "--resolution",
-            str(resolution),
-            "--ink-mode",
-            ink_mode,
-            "--halftone",
-            halftone,
-            "--white-mode",
-            white_mode,
-            "--colour-correction",
-            colour_correction,
-        ],
+        args,
         capture_output=True,
         text=True,
         timeout=60,
@@ -367,6 +384,42 @@ _CASES = [
         # same way the ring fixture's two cases pair.
         "opaque_on_maze_fixture",
         "silhouette_maze_64x48.ppm",
+        {
+            "resolution": 600,
+            "ink_mode": "spot_only",
+            "halftone": "none",
+            "white_mode": "opaque",
+            "colour_correction": "plain",
+        },
+    ),
+    (
+        # D-037: alpha_pair fixture (tools/make-alpha-fixture.py) has an
+        # explicitly white-painted square that is invisible to "opaque"
+        # (pure white is unconditionally excluded) but visible to "alpha"
+        # (alpha>0 is the only rule) -- see
+        # test_white_mode_alpha.py's build_job_planes test and the
+        # JobAssemblyTests.cs equivalent for the isolated proof that alpha
+        # and opaque differ. This case only proves ref/ and src/ agree
+        # byte-for-byte on the alpha result, including the fixture's
+        # semi-transparent (0 < alpha < 255) edge pixels from the
+        # anti-aliased circle.
+        "white_alpha",
+        "alpha_pair_200x200.ppm",
+        {
+            "resolution": 600,
+            "ink_mode": "spot_only",
+            "halftone": "none",
+            "white_mode": "alpha",
+            "colour_correction": "plain",
+            "alpha_png_path": CASES_DIR / "alpha_pair_200x200.png",
+        },
+    ),
+    (
+        # Same fixture, "opaque" mode -- pairs with "white_alpha" above the
+        # same way the silhouette/opaque pairs do, so the byte-match cases
+        # cover both branches on the same geometry.
+        "opaque_on_alpha_pair_fixture",
+        "alpha_pair_200x200.ppm",
         {
             "resolution": 600,
             "ink_mode": "spot_only",
