@@ -234,9 +234,13 @@ def test_load_palette_default_orders_metallics_by_file_order():
     inks = config.load_palette(str(PALETTE_DIR / "default.yaml"))
     names = [ink["name"] for ink in inks]
 
-    # white (order 10) first, black (order 90) last.
-    assert names[0] == "white"
-    assert names[-1] == "black"
+    # mf_ink (order 5) first, glossy_finish (order 95) last -- the two
+    # coverage inks added by D-048 bracket the colour inks, whose own
+    # ends are white (order 10) and black (order 90).
+    assert names[0] == "mf_ink"
+    assert names[-1] == "glossy_finish"
+    assert names[1] == "white"
+    assert names[-2] == "black"
 
     metallic_names = [n for n in names if n.startswith("metallic_")]
     assert metallic_names == [

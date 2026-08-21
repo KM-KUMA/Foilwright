@@ -1,7 +1,7 @@
-// Foilwright.Core.Tests — CassetteCheck(§7.3 のカセット過不足判定 / D-026)の検証。
+﻿// Foilwright.Core.Tests — CassetteCheck(§7.3 のカセット過不足判定 / D-026)の検証。
 //
 // 実機を要さない: CassetteStatus は DOMAIN §11.4 の実測 38 バイトをそのまま使う。
-// パレットは default.yaml を実際に読み、9 インクすべてに barcode があることも
+// パレットは default.yaml を実際に読み、11 インクすべてに barcode があることも
 // あわせて検証する。
 
 using Foilwright.Core;
@@ -153,12 +153,13 @@ public class CassetteCheckTests
     }
 
     [Fact]
-    public void DefaultPalette_AllNineInksHaveBarcode()
+    public void DefaultPalette_AllInksHaveBarcode()
     {
         string repoRoot = FindRepoRoot();
         var palette = ConfigLoader.LoadPalette(Path.Combine(repoRoot, "palette", "default.yaml"));
 
-        Assert.Equal(9, palette.Count);
+        // D-048 で coverage インク 2 色(mf_ink / glossy_finish)が加わって 11 になった。
+        Assert.Equal(11, palette.Count);
         foreach (var ink in palette)
         {
             Assert.True(ink.Barcode.HasValue, $"ink '{ink.Name}' is missing 'barcode'");
@@ -175,6 +176,10 @@ public class CassetteCheckTests
         Assert.Equal(1, byName["yellow"]);
         Assert.Equal(2, byName["magenta"]);
         Assert.Equal(3, byName["cyan"]);
+        // D-048 / DOMAIN §14.7: vendor/ppmtomd-1.6/mddata.h:75-76 の
+        // barVPhotoPrimer = 18 / barFinishII = 19。
+        Assert.Equal(18, byName["mf_ink"]);
+        Assert.Equal(19, byName["glossy_finish"]);
     }
 
     // GoldenTests.cs と同じ規則(実行アセンブリの場所からリポジトリ直下を探す)。

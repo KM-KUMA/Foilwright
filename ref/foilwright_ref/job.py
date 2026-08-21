@@ -29,6 +29,10 @@ The three responsibilities mirror JobAssembly.cs's module comment:
    the palette's ``auto_undercoat`` -- that flag is only a default.
    "White" is identified as whichever ink has ``auto_undercoat: true``
    in the palette (never by name).
+4. Build the planes of "coverage" inks (D-048) -- inks whose printed
+   area is chosen per job ("none"/"artwork"/"full") rather than by pixel
+   colour. Kept as a separate mechanism alongside the white mode, not
+   merged into it (D-048: the working white path is not touched).
 
 ``raster.py``'s ``to_planes`` / ``to_planes_magic`` / ``to_planes_auto``
 (golden-verified) are called as-is and never modified by this module.
@@ -386,6 +390,81 @@ def apply_alpha_white_mode(
     return result
 
 
+#: Coverage modes a coverage ink (D-048) can be given for one job:
+#: "none" (default -- build no plane at all), "artwork" (every pixel that
+#: is not pure white), "full" (every pixel). Mirrors
+#: JobAssembly.ValidCoverageModes.
+VALID_COVERAGE_MODES = ("none", "artwork", "full")
+
+
+def compute_full_coverage_plane(width: int, height: int) -> bytes:
+    """Build a 1bit plane with a bit set for every pixel of a
+    `width` x `height` sheet (D-048's "full" coverage mode).
+
+    The padding bits past `width` in each row's last byte stay zero, same
+    as every other plane builder here -- otherwise the two
+    implementations would disagree on those bits and the emitted RGL
+    would differ.
+
+    Returns a plane in the same packed format as
+    compute_non_white_pixel_plane. Mirrors
+    JobAssembly.ComputeFullCoveragePlane.
+    """
+    row_bytes = (width + 7) // 8
+    row = bytearray(row_bytes)
+    for x in range(width):
+        row[x >> 3] |= 0x80 >> (x & 7)
+    return bytes(row) * height
+
+
+def apply_coverage_modes(
+    image: tuple[int, int, bytes],
+    inks: list[dict],
+    planes: dict[str, bytes],
+    coverage_modes: dict[str, str],
+) -> dict[str, bytes]:
+    """Add a plane for each coverage ink (D-048) whose mode is not
+    "none", on top of an already-computed per-ink plane dict.
+
+    A coverage ink is one with `coverage` set to True in the palette. It
+    has neither `magic_rgb` nor `channel` (config.py rejects that
+    combination), so raster.py never builds a plane for it and there is
+    nothing to merge with -- the plane computed here is simply stored.
+
+    Inks without `coverage` are untouched, whatever `coverage_modes`
+    says about them. An ink missing from `coverage_modes`, or mapped to
+    "none", gets no plane at all -- so a caller that passes nothing
+    produces byte-identical output to before D-048.
+
+    No halftone and no colour correction are applied: a coverage ink is
+    on or off per pixel (D-048 decision 4 / ppmtomd man:564-565).
+
+    Returns a new dict; `planes` itself is not mutated. Mirrors
+    JobAssembly.ApplyCoverageModes.
+    """
+    width, height, _ = image
+
+    result = dict(planes)
+    for ink in inks:
+        if not ink.get("coverage"):
+            continue
+        mode = coverage_modes.get(ink["name"], "none")
+        if mode == "none":
+            continue
+        if mode == "artwork":
+            # Same rule as the "opaque" white mode uses, reusing the same
+            # function rather than writing the pure-white test twice.
+            result[ink["name"]] = compute_non_white_pixel_plane(image)
+        elif mode == "full":
+            result[ink["name"]] = compute_full_coverage_plane(width, height)
+        else:  # pragma: no cover - build_job_planes validates first
+            raise ValueError(
+                f"unknown coverage mode {mode!r}; expected one of "
+                "'none', 'artwork', 'full'"
+            )
+    return result
+
+
 def _build_auto_planes(
     image: tuple[int, int, bytes],
     palette: list[dict],
@@ -450,6 +529,7 @@ def build_job_planes(
     resolution: int = 600,
     photo_lut_path: str | None = None,
     alpha_image: tuple[int, int, bytes] | None = None,
+    coverage_modes: dict[str, str] | None = None,
 ) -> tuple[list[dict], dict[str, bytes]]:
     """From an image and a palette, decide which inks actually belong in
     the job and build their planes, in the palette's execution order
@@ -479,6 +559,14 @@ def build_job_planes(
         `image` (ppmraw) and white comes from `alpha_image` (pngalpha),
         and the two must describe the same page at the same resolution.
 
+    coverage_modes: ink name -> "none" / "artwork" / "full" (D-048). Only
+        consulted for inks with `coverage` set in the palette; other inks
+        are unaffected whatever this says about them. An ink that is
+        absent here, or mapped to "none", gets no plane at all -- so the
+        default (None) reproduces the pre-D-048 output byte for byte.
+        An unrecognised value raises ValueError, same as an unknown white
+        mode: it is never silently downgraded to "none".
+
     Inks with an entirely blank plane are excluded from the result. If
     every ink ends up blank, both return values are empty.
 
@@ -492,6 +580,18 @@ def build_job_planes(
     for exactly those inks, in the same packed format as raster.py's
     to_planes* functions. Mirrors JobAssembly.BuildJobPlanes.
     """
+    if coverage_modes:
+        # Fail fast, before any raster work, and check every entry --
+        # including ones naming a non-coverage ink, which are ignored
+        # later but are still a caller mistake worth surfacing (D-048:
+        # an unknown value is never silently treated as "none").
+        for ink_name, mode in coverage_modes.items():
+            if mode not in VALID_COVERAGE_MODES:
+                raise ValueError(
+                    f"unknown coverage mode {mode!r} for ink {ink_name!r}; "
+                    "expected one of 'none', 'artwork', 'full'"
+                )
+
     if white_mode == "alpha":
         # Fail fast, before any raster work: alpha_image is a second
         # Ghostscript rendering the caller must have already produced (D-037).
@@ -550,6 +650,13 @@ def build_job_planes(
         # separate pngalpha rendering, not `image` (D-037). Validated
         # non-None and dimension-matched above.
         planes = apply_alpha_white_mode(alpha_image, palette, planes)
+
+    if coverage_modes:
+        # D-048: a separate mechanism from the white mode, deliberately
+        # kept side by side with it rather than merged. Runs on the
+        # *original* palette, like the white-mode helpers above, so the
+        # coverage inks land at their own `order` in the loop below.
+        planes = apply_coverage_modes(image, palette, planes, coverage_modes)
 
     # The result always walks the *original* palette (before white-mode
     # exclusion): a "none"-excluded ink is absent from adjusted_palette

@@ -107,3 +107,31 @@ inks:
     tolerance: 8
     channel: K
     order: 90
+
+  # 「塗る範囲で決まるインク」(D-048 / DOMAIN §14.7)。magic_rgb も channel も
+  # 持たず、どこに塗るかはジョブごとに coverage_modes で選ぶ
+  # (none / artwork / full)。既定は none なので、指定しなければジョブに出ない。
+  # ハーフトーンも色補正も掛からない — 塗るか塗らないかだけ(ppmtomd man:564-565)。
+  #
+  # printer_code / barcode は ppmtomd 1.6 のソースから取った実測値であり
+  # 推測値ではない: vendor/ppmtomd-1.6/mddata.c:104,106(色 → バーコードの
+  # 対応表)と mddata.h:75-76(barVPhotoPrimer = 18 / barFinishII = 19)。
+  # 既定 9 色の 18 項目でこの読み方が正しいことを検算済み(DOMAIN §14.7)。
+  #
+  # 注意: MF インクは実機で刷って確かめていない(D-048 決定 6)。
+  # 値は検算済みの表から取っているが、実物での動作は未検証。
+  - name: mf_ink
+    label: 紙用 MF インク (MDC-PREP)
+    printer_code: 0x10
+    barcode: 18
+    order: 5            # 白(10)より前 = 下地として最初に刷る
+    coverage: true
+    passes: 1
+
+  - name: glossy_finish
+    label: 紙用光沢仕上げ2 (MDC-FRVG)
+    printer_code: 0x0E
+    barcode: 19
+    order: 95           # 黒(90)より後 = 最後に上掛けする
+    coverage: true
+    passes: 1

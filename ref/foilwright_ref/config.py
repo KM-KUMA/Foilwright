@@ -118,15 +118,33 @@ def _validate_ink(raw: dict, index: int) -> dict:
             "ASCII lowercase letters and underscores"
         )
 
-    # DOMAIN §6.1 / D-019: 種別は専用フラグではなく magic_rgb / channel の
-    # 有無で決まる。どちらも持たないインクは選択される経路が無いので不可、
-    # 両方持つ(黒)のは許容する。
+    # DOMAIN §6.1 / D-019 / D-048: 種別は専用フラグではなく magic_rgb /
+    # channel / coverage の有無で決まる。どれも持たないインクは選択される
+    # 経路が無いので不可、magic_rgb と channel の両方を持つ(黒)のは許容する。
     has_magic_rgb = "magic_rgb" in raw
     has_channel = "channel" in raw
-    if not has_magic_rgb and not has_channel:
+
+    coverage = raw.get("coverage", False)
+    if not isinstance(coverage, bool):
+        raise ConfigError(
+            f"palette ink '{name}': 'coverage' must be true or false, got {coverage!r}"
+        )
+
+    if not has_magic_rgb and not has_channel and not coverage:
         raise ConfigError(
             f"palette ink '{name}': must have 'magic_rgb' (spot ink), "
-            "'channel' (process ink), or both"
+            "'channel' (process ink), or 'coverage' (coverage ink); "
+            "'magic_rgb' and 'channel' may be combined"
+        )
+
+    # D-048: coverage インクは「どこに塗るか」をジョブごとに選ぶ種類であり、
+    # 画素の色で選ばれるものではない。組み合わせたときの意味を決めていない
+    # ので、はっきりエラーにして弾く。
+    if coverage and (has_magic_rgb or has_channel):
+        raise ConfigError(
+            f"palette ink '{name}': 'coverage' cannot be combined with "
+            "'magic_rgb' or 'channel'; a coverage ink's area is chosen per "
+            "job, not by pixel colour (D-048)"
         )
 
     if has_magic_rgb != ("tolerance" in raw):
@@ -182,6 +200,7 @@ def _validate_ink(raw: dict, index: int) -> dict:
     ink.setdefault("auto_undercoat", False)
     ink.setdefault("magic_rgb", None)
     ink.setdefault("channel", None)
+    ink["coverage"] = coverage
     _require_int("passes", ink["passes"], 1)
 
     if not isinstance(ink["auto_undercoat"], bool):

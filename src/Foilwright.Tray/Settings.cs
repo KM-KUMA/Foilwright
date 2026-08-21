@@ -70,7 +70,20 @@ public sealed class TraySettings
     /// パレット全体から動的に導出するため、パレットにインクが増減しても
     /// コード変更なしで追従する。</summary>
     public static HashSet<string> DefaultUsedInks(IReadOnlyList<InkDefinition> palette) =>
-        palette.Where(ink => !IsMetallic(ink)).Select(ink => ink.Name).ToHashSet();
+        palette.Where(ink => !IsOffByDefault(ink)).Select(ink => ink.Name).ToHashSet();
+
+    /// <summary>既定で無効にするインクか。**カセットが刺さっていないのが普通のインク**を
+    /// 外すのが狙いで、2 種類ある:
+    ///
+    ///   メタリック 4 色(D-030)— 特別な用途にしか使わない。
+    ///   塗る範囲で決まるインク(D-048: 光沢仕上げ2 / MF インク)— 同上。加えて、
+    ///     **これらは「塗る範囲」を選ばないとそもそもプレーンが作られない**ので、
+    ///     チェックだけ入った 0 ドットの行が並んでも意味が無い。
+    ///
+    /// **この判定を忘れると、新しいインクをパレットに足した瞬間に
+    /// 「新規インストールでは既定で有効」になる**(既存の利用者は settings.json に
+    /// UsedInks が保存済みなので気づけない)。2026-08-22 に D-048 の 2 色で実際に起きた。</summary>
+    private static bool IsOffByDefault(InkDefinition ink) => IsMetallic(ink) || ink.Coverage;
 
     /// <summary>このジョブで実際に使えるインク名の集合を解決する。UsedInks が
     /// 設定済みならそれをそのまま使い(空集合も含めて尊重する)、null なら

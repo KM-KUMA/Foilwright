@@ -111,6 +111,12 @@ public sealed class InkDefinition
     /// として扱う(CassetteCheck)。</summary>
     public int? Barcode { get; init; }
 
+    /// <summary>「塗る範囲で決まるインク」かどうか(D-048 / DOMAIN §14.7)。
+    /// true のインクは magic_rgb も channel も持てず、どこに塗るかは
+    /// ジョブごとに JobAssembly.BuildJobPlanes の coverageModes で選ぶ
+    /// (none / artwork / full)。省略時は false。</summary>
+    public bool Coverage { get; init; }
+
     public bool AutoUndercoat { get; init; }
     public int Passes { get; init; } = 1;
 }
@@ -356,12 +362,29 @@ public static class ConfigLoader
                 $"palette ink #{index} ('{name}'): 'name' must contain only ASCII lowercase letters and underscores");
         }
 
+        // DOMAIN §6.1 / D-019 / D-048: 種別は専用フラグではなく magic_rgb /
+        // channel / coverage の有無で決まる。
         bool hasMagicRgb = raw.ContainsKey("magic_rgb") && raw["magic_rgb"] is not null;
         bool hasChannel = raw.ContainsKey("channel") && raw["channel"] is not null;
-        if (!hasMagicRgb && !hasChannel)
+
+        bool coverage = raw.TryGetValue("coverage", out var coverageRaw) && coverageRaw is not null
+            && ParseBool(coverageRaw, $"palette ink '{name}'.coverage");
+
+        if (!hasMagicRgb && !hasChannel && !coverage)
         {
             throw new ConfigException(
-                $"palette ink '{name}': must have 'magic_rgb' (spot ink), 'channel' (process ink), or both");
+                $"palette ink '{name}': must have 'magic_rgb' (spot ink), 'channel' (process ink), " +
+                "or 'coverage' (coverage ink); 'magic_rgb' and 'channel' may be combined");
+        }
+
+        // D-048: coverage インクは「どこに塗るか」をジョブごとに選ぶ種類であり、
+        // 画素の色で選ばれるものではない。組み合わせたときの意味を決めていない
+        // ので、はっきりエラーにして弾く。
+        if (coverage && (hasMagicRgb || hasChannel))
+        {
+            throw new ConfigException(
+                $"palette ink '{name}': 'coverage' cannot be combined with 'magic_rgb' or 'channel'; " +
+                "a coverage ink's area is chosen per job, not by pixel colour (D-048)");
         }
 
         bool hasTolerance = raw.ContainsKey("tolerance") && raw["tolerance"] is not null;
@@ -423,6 +446,7 @@ public static class ConfigLoader
             Tolerance = tolerance,
             Channel = channel,
             Barcode = barcode,
+            Coverage = coverage,
             AutoUndercoat = autoUndercoat,
             Passes = passes,
         };

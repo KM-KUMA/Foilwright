@@ -13,6 +13,10 @@
 //      auto_undercoat を上書きする — パレット側のフラグはあくまで既定値。
 //      「白」がどのインクかは、パレットで auto_undercoat: true になっている
 //      インクとして判別する(名前を決め打ちしない)。
+//   4. 「塗る範囲で決まるインク」(D-048)のプレーンを作る。パレットで
+//      coverage: true のインクだけが対象で、どこに塗るか(none/artwork/full)は
+//      ジョブごとに coverageModes で決まる。白版モードとは別の仕組みとして
+//      併存させる(D-048: 動いている白の経路を触らない)。
 //
 // Raster.cs の既存関数(ToPlanes* 系)のシグネチャ・挙動は一切変更しない
 // (golden 検証の対象のため)。本ファイルはそれらを呼び出す側。
@@ -32,6 +36,12 @@ public static class JobAssembly
     /// Raster.cs 内部の同名リストと値を揃えてある(呼び出し側の入力検証・
     /// エラーメッセージ用。Raster.cs 自体は変更しない)。</summary>
     public static readonly IReadOnlyList<string> ValidHalftones = new[] { "none", "halftone", "coarse_halftone" };
+
+    /// <summary>「塗る範囲で決まるインク」(D-048)に、ジョブごとに指定できる
+    /// 塗る範囲の識別子。"none"(既定。プレーンを作らない)/ "artwork"
+    /// (純白 255,255,255 でない画素すべて)/ "full"(全画素)。
+    /// 参照実装は ref/foilwright_ref/job.py の VALID_COVERAGE_MODES。</summary>
+    public static readonly IReadOnlyList<string> ValidCoverageModes = new[] { "none", "artwork", "full" };
 
     /// <summary>画像とパレットから、実際にジョブへ含めるインクとその
     /// プレーンを、パレットの実行順(order 昇順、同値は記述順 — DOMAIN §4.3 /
@@ -62,14 +72,37 @@ public static class JobAssembly
     ///     "alpha" で null なら ArgumentException、image と幅・高さが食い違う
     ///     場合も ArgumentException(色は image の ppmraw、白は alphaImage の
     ///     アルファと役割が分かれているため、同じページ・同じ解像度でなければ
-    ///     ならない)。</summary>
+    ///     ならない)。
+    ///
+    /// coverageModes: インク名 → "none" / "artwork" / "full"(D-048)。パレットで
+    ///     coverage: true になっているインクだけに効き、それ以外のインクは
+    ///     ここに何が書かれていても一切影響を受けない。辞書に無いインク、
+    ///     および "none" のインクはプレーンを作らない — したがって既定
+    ///     (null)なら D-048 以前と出力バイトが完全に一致する。知らない値は
+    ///     白版モードと同じく ArgumentException(黙って "none" に落とさない)。</summary>
     public static List<(InkDefinition Ink, byte[] Plane)> BuildJobPlanes(
         PpmImage image, IReadOnlyList<InkDefinition> palette, string inkMode, string halftone = "none", string whiteMode = "auto",
-        string colourCorrection = "photo", int resolution = 600, string? photoLutPath = null, PngImage? alphaImage = null)
+        string colourCorrection = "photo", int resolution = 600, string? photoLutPath = null, PngImage? alphaImage = null,
+        IReadOnlyDictionary<string, string>? coverageModes = null)
     {
         if (!ValidWhiteModes.Contains(whiteMode))
         {
             throw new ArgumentException($"unknown white mode '{whiteMode}'; expected one of {string.Join(", ", ValidWhiteModes)}");
+        }
+
+        if (coverageModes is not null && coverageModes.Count > 0)
+        {
+            // ラスタ処理の前に、辞書の全項目を検証する。coverage でないインクを
+            // 指す項目(後で無視される)も含めて弾く — 呼び出し側の書き間違いで
+            // あり、黙って "none" に落とさない(D-048)。
+            foreach (var (inkName, mode) in coverageModes)
+            {
+                if (!ValidCoverageModes.Contains(mode))
+                {
+                    throw new ArgumentException(
+                        $"unknown coverage mode '{mode}' for ink '{inkName}'; expected one of {string.Join(", ", ValidCoverageModes)}");
+                }
+            }
         }
 
         if (whiteMode == "alpha")
@@ -122,6 +155,14 @@ public static class JobAssembly
             // alphaImage(image とは別のページレンダリング)の alpha チャンネル
             // から得る(D-037)。alphaImage の非 null・寸法一致は関数冒頭で検証済み。
             planes = ApplyAlphaWhite(alphaImage!, palette, planes);
+        }
+
+        if (coverageModes is not null && coverageModes.Count > 0)
+        {
+            // D-048: 白版モードとは別の仕組みとして併存させる(統合しない)。
+            // 白版モードの補助関数と同じく、元のパレットを走査するので
+            // coverage インクは下の一覧化で自分の order の位置に入る。
+            planes = ApplyCoverageModes(image, palette, planes, coverageModes);
         }
 
         // 結果の一覧は常に元のパレット(白版モードで除外する前)を走査する。
@@ -525,9 +566,79 @@ public static class JobAssembly
         Tolerance = ink.Tolerance,
         Channel = ink.Channel,
         Barcode = ink.Barcode,
+        Coverage = ink.Coverage,
         AutoUndercoat = autoUndercoat,
         Passes = ink.Passes,
     };
+
+    /// <summary>「塗る範囲で決まるインク」(D-048)のうち、モードが "none" 以外の
+    /// ものにプレーンを足す。
+    ///
+    /// coverage インクは magic_rgb も channel も持てない(ConfigLoader が弾く)ため
+    /// Raster.cs は一切プレーンを作っておらず、合成する相手がいない — ここで
+    /// 計算したものをそのまま入れる。
+    ///
+    /// coverage でないインクは coverageModes に何が書かれていても触らない。
+    /// 辞書に無いインク・"none" のインクはプレーンを作らない(何も渡さなければ
+    /// D-048 以前と 1 バイトも変わらない、の実体がここ)。
+    ///
+    /// ハーフトーンも色補正も掛けない — 画素ごとにオンかオフだけ
+    /// (D-048 決定 4 / ppmtomd man:564-565)。</summary>
+    private static Dictionary<string, byte[]> ApplyCoverageModes(
+        PpmImage image, IReadOnlyList<InkDefinition> palette, Dictionary<string, byte[]> planes,
+        IReadOnlyDictionary<string, string> coverageModes)
+    {
+        foreach (var ink in palette)
+        {
+            if (!ink.Coverage)
+            {
+                continue;
+            }
+            if (!coverageModes.TryGetValue(ink.Name, out var mode))
+            {
+                mode = "none";
+            }
+            switch (mode)
+            {
+                case "none":
+                    break;
+                case "artwork":
+                    // 白版モード "opaque" と同じ判定。純白の判定を 2 か所に
+                    // 書かないよう、同じ関数を使い回す。
+                    planes[ink.Name] = ComputeNonWhitePixelPlane(image);
+                    break;
+                case "full":
+                    planes[ink.Name] = ComputeFullCoveragePlane(image.Width, image.Height);
+                    break;
+                default:
+                    // BuildJobPlanes が先に検証しているのでここへは来ない。
+                    throw new ArgumentException(
+                        $"unknown coverage mode '{mode}' for ink '{ink.Name}'; expected one of {string.Join(", ", ValidCoverageModes)}");
+            }
+        }
+        return planes;
+    }
+
+    /// <summary>width x height の全画素にビットを立てた 1bit プレーンを作る
+    /// (D-048 の "full")。行末の余りビット(width 以降)は 0 のままにする —
+    /// 他のプレーン生成と同じ規則であり、ここを埋めると ref/ と出力バイトが
+    /// 食い違う。</summary>
+    private static byte[] ComputeFullCoveragePlane(int width, int height)
+    {
+        int rowBytes = (width + 7) / 8;
+        var row = new byte[rowBytes];
+        for (int x = 0; x < width; x++)
+        {
+            row[x >> 3] |= (byte)(0x80 >> (x & 7));
+        }
+
+        var plane = new byte[rowBytes * height];
+        for (int y = 0; y < height; y++)
+        {
+            Array.Copy(row, 0, plane, y * rowBytes, rowBytes);
+        }
+        return plane;
+    }
 
     /// <summary>"auto" 方式のプレーンを組み立てる。cmyk_map はコードに
     /// 埋め込まず、パレットの channel フィールドから導出する(D-019 / DOMAIN
