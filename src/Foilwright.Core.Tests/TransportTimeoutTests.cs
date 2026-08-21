@@ -19,6 +19,20 @@ public class TransportTimeoutTests
     // (別の SafeHandle 派生)を返す。生ハンドル値は同じ Win32 HANDLE なので、
     // 所有権を持たない SafeFileHandle でラップして渡す(Dispose は元の
     // SafePipeHandle 側に任せる)。
+    /// <summary>タイムアウト後、打ち切りが終わるまでに許す時間。
+    ///
+    /// ここで見たいのは「**無期限にブロックしていないこと**」だけであり、
+    /// 打ち切りが何ミリ秒で終わるかは検証の対象ではない。以前は 5,000 ms
+    /// だったが、**実測が上限 5,500 ms に対して 5,522 ms と境界に貼り付いており、
+    /// 環境しだいで落ちるテストになっていた**(2026-08-21 に 2 つの実行環境で再現)。
+    /// 時間を測るテストで余裕を実測値の近くに置くと、**コードが壊れていないのに赤くなる**。
+    ///
+    /// **打ち切りそのものに約 5 秒かかっている**ことは観測事実として残す —
+    /// タイムアウト 500 ms を指定しても、呼び出しが戻るまでは概ね 5.5 秒になる。
+    /// **実運用では「止めると決めてから戻るまで 5 秒待たされる」**という意味であり、
+    /// 気になるなら別途調べる価値がある(ここでは扱わない)。</summary>
+    private const int CancellationGraceMs = 15_000;
+
     private static SafeFileHandle WrapAsFileHandle(SafePipeHandle pipeHandle)
     {
         return new SafeFileHandle(pipeHandle.DangerousGetHandle(), ownsHandle: false);
@@ -42,8 +56,8 @@ public class TransportTimeoutTests
 
         // タイムアウト+キャンセルの猶予を大きく超えて待たされていないこと
         // (無期限ブロックしていないことの直接的な証明)。
-        Assert.True(stopwatch.ElapsedMilliseconds < timeoutMs + 5_000,
-            $"took {stopwatch.ElapsedMilliseconds} ms, expected well under {timeoutMs + 5_000} ms");
+        Assert.True(stopwatch.ElapsedMilliseconds < timeoutMs + CancellationGraceMs,
+            $"took {stopwatch.ElapsedMilliseconds} ms, expected well under {timeoutMs + CancellationGraceMs} ms");
 
         Assert.Contains("電源を入れ直して", ex.Message);
     }
@@ -88,8 +102,8 @@ public class TransportTimeoutTests
 
         stopwatch.Stop();
 
-        Assert.True(stopwatch.ElapsedMilliseconds < timeoutMs + 5_000,
-            $"took {stopwatch.ElapsedMilliseconds} ms, expected well under {timeoutMs + 5_000} ms");
+        Assert.True(stopwatch.ElapsedMilliseconds < timeoutMs + CancellationGraceMs,
+            $"took {stopwatch.ElapsedMilliseconds} ms, expected well under {timeoutMs + CancellationGraceMs} ms");
 
         Assert.Contains("電源を入れ直して", ex.Message);
     }

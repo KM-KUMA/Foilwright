@@ -60,6 +60,13 @@ public sealed class PreviewForm : Form
 
     private readonly TextBox _statusText;
     private readonly Button _statusRefreshButton;
+
+    /// <summary>リボン消費の記録(usage.jsonl)を見る窓を開くボタン。プリンタの
+    /// 残量応答は意味が未解明で当てにならない(DOMAIN §11.4.3)ため、刷ったドット数を
+    /// 自分で数えて貯めたものを見せる。状態の枠に置くのは、利用者にとって
+    /// 「あとどれだけ刷れるか」を考える場面が同じだから。</summary>
+    private readonly Button _usageButton;
+
     private readonly ProgressBar _progressBar;
     private readonly Button _printButton;
     private readonly Button _cancelButton;
@@ -665,9 +672,28 @@ public sealed class PreviewForm : Form
         var statusLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(8) };
         statusLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         statusLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        // ボタンは 2 つ並ぶ(状態を読む / リボン消費を見る)。D-044 改訂で下端の
+        // ボタン列を高さ決め打ちにしていて窓の外へ押し出した失敗があるため、
+        // ここも折り返し + 自動サイズにして、増えたぶんは横に流れるようにする。
+        var statusButtonPanel = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0),
+        };
         _statusRefreshButton = new Button { Text = "状態を読む(05 01)", AutoSize = true };
         _statusRefreshButton.Click += async (_, _) => await RefreshStatusAsync();
-        statusLayout.Controls.Add(_statusRefreshButton, 0, 0);
+        statusButtonPanel.Controls.Add(_statusRefreshButton);
+        // リボンは生産終了品で残量が最大の制約だが、プリンタに残量を尋ねる経路
+        // (05 01 の応答の low / high)は意味が未解明である(DOMAIN §11.4.3)。
+        // そこで自分で数えたぶんを見せる。
+        _usageButton = new Button { Text = "リボン消費を見る", AutoSize = true };
+        _usageButton.Click += (_, _) => ShowUsageDialog();
+        statusButtonPanel.Controls.Add(_usageButton);
+        statusLayout.Controls.Add(statusButtonPanel, 0, 0);
         _statusText = new TextBox
         {
             Multiline = true,
@@ -1773,6 +1799,169 @@ public sealed class PreviewForm : Form
         return count;
     }
 
+    /// <summary>1 部ぶんのリボン消費の記録を組み立てる(インク 1 色につき 1 レコード)。
+    /// ドット数は「刷る前に量を確認する」のと同じ数え方(<see cref="CountSetBits"/>)を
+    /// そのまま使う — 数え方を二重に書くと、片方だけ直したときに記録が黙って嘘になる。
+    ///
+    /// **プレーンが空(ドット 0)のインクは記録しない。** 選択コマンドは出ても点は
+    /// 打っていないため、消費として数える意味がない。</summary>
+    private static List<UsageRecord> BuildUsageRecords(
+        PreviewResult current, int copy, int copies,
+        string paper, string media, string resolution, string outcome)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var records = new List<UsageRecord>();
+        foreach (var ink in current.JobInks)
+        {
+            if (!current.Planes.TryGetValue(ink.Name, out var plane))
+            {
+                continue;
+            }
+            long dots = CountSetBits(plane);
+            if (dots == 0)
+            {
+                continue;
+            }
+            records.Add(new UsageRecord
+            {
+                Timestamp = now,
+                Ink = ink.Name,
+                Dots = dots,
+                // D-031: 重ね塗りの回数。消費は Dots × Passes で効く。
+                Passes = ink.Passes,
+                Copy = copy,
+                Copies = copies,
+                Paper = paper,
+                Media = media,
+                Resolution = resolution,
+                Outcome = outcome,
+            });
+        }
+        return records;
+    }
+
+    /// <summary>リボン消費の記録(usage.jsonl)をインクごとに集計して見せる小さな窓。
+    ///
+    /// **「カセットを新品に替えた」を記録する機能はまだ無い。** 履歴が貯まってから
+    /// どういう形がよいかを決めたいので、まず記録を取り始めることを優先している
+    /// (UsageLog の冒頭コメント)。そのあいだ手で区切りたい人のために、
+    /// 記録ファイルの場所をこの窓に出しておく。</summary>
+    private void ShowUsageDialog()
+    {
+        var summaries = UsageLog.Summarise(UsageLog.Load());
+
+        // インクの表示名(label)は、いま読み込んでいるパレットから引く。引けない
+        // ものは記録に入っている識別子をそのまま出す — 古い記録や、いまのパレットに
+        // 無いインクを落とさないため。
+        var labels = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (_current is not null)
+        {
+            foreach (var def in _current.Config.Palette)
+            {
+                labels[def.Name] = def.Label;
+            }
+        }
+
+        using var dialog = new Form
+        {
+            Text = "Foilwright — リボン消費の記録",
+            StartPosition = FormStartPosition.CenterParent,
+            ClientSize = new Size(720, 360),
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ShowInTaskbar = false,
+        };
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(8),
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        if (summaries.Count == 0)
+        {
+            layout.Controls.Add(
+                new Label
+                {
+                    Dock = DockStyle.Fill,
+                    Text = "まだ記録がありません。印刷すると貯まります。",
+                },
+                0,
+                0);
+        }
+        else
+        {
+            var grid = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                ReadOnly = true,
+                RowHeadersVisible = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            };
+            grid.Columns.Add("Ink", "インク");
+            grid.Columns.Add("TotalDots", "累計ドット");
+            grid.Columns.Add("TotalPasses", "パス数");
+            grid.Columns.Add("Jobs", "ジョブ数");
+            grid.Columns.Add("FirstUsed", "最初");
+            grid.Columns.Add("LastUsed", "最後");
+            foreach (var summary in summaries)
+            {
+                grid.Rows.Add(
+                    labels.TryGetValue(summary.Ink, out string? label) ? label : summary.Ink,
+                    // 「ドット数」列と同じ桁区切り(例 181,422)で表示する。
+                    summary.TotalDots.ToString("N0"),
+                    summary.TotalPasses.ToString("N0"),
+                    summary.Jobs.ToString("N0"),
+                    FormatUsageDate(summary.FirstUsed),
+                    FormatUsageDate(summary.LastUsed));
+            }
+            layout.Controls.Add(grid, 0, 0);
+        }
+
+        layout.Controls.Add(
+            new TextBox
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                BorderStyle = BorderStyle.None,
+                BackColor = dialog.BackColor,
+                // 中身を見たり、カセットを替えたときに手で編集したりできるよう、
+                // 場所を出しておく(選択してコピーできるよう TextBox にする)。
+                Text = "記録ファイル: " + UsageLog.FilePath,
+            },
+            0,
+            1);
+
+        var closeButtonPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        };
+        var closeButton = new Button { Text = "閉じる", AutoSize = true, Height = 28 };
+        closeButton.Click += (_, _) => dialog.Close();
+        closeButtonPanel.Controls.Add(closeButton);
+        layout.Controls.Add(closeButtonPanel, 0, 2);
+
+        dialog.Controls.Add(layout);
+        dialog.AcceptButton = closeButton;
+        dialog.CancelButton = closeButton;
+        dialog.ShowDialog(this);
+    }
+
+    /// <summary>記録の時刻(UTC)を現地時間の日付にして出す。利用者が見るのは
+    /// 「いつごろ使ったか」なので、時分までは出さない。</summary>
+    private static string FormatUsageDate(DateTimeOffset? timestamp) =>
+        timestamp is null ? string.Empty : timestamp.Value.ToLocalTime().ToString("yyyy-MM-dd");
+
     private async Task RefreshStatusAsync()
     {
         if (_busy)
@@ -1872,6 +2061,10 @@ public sealed class PreviewForm : Form
             string machine = (string)_machineCombo.SelectedItem!;
             string paperName = ((PaperItem)_paperCombo.SelectedItem!).Name;
             string mediaName = ((MediaItem)_mediaCombo.SelectedItem!).Name;
+            // 消費の記録に残す解像度も、送出に使う値(コンボの選択値)から取る。
+            // _settings.ResolutionKey(保存済みの既定値)から取ると、切り替えた
+            // ときに記録だけが古い値のままになる — §15.10.2 と同じ理由。
+            string resolutionKey = (string)_resolutionCombo.SelectedItem!;
             var route = MachineRoute.Resolve(machine);
             // §15.10.2: 送出する用紙は必ずコンボの選択値と一致させる。ここが
             // _settings.PaperName(保存済みの既定値)のままだと、プレビューで
@@ -1903,13 +2096,27 @@ public sealed class PreviewForm : Form
                 _progressBar.Value = 0;
                 _progressBar.Visible = true;
 
-                await Task.Run(() => JobPipeline.Print(
-                    planes, job, route, route.Vid,
-                    (done, total) => BeginInvoke(() =>
-                    {
-                        _progressBar.Maximum = Math.Max(total, 1);
-                        _progressBar.Value = Math.Min(done, _progressBar.Maximum);
-                    })));
+                try
+                {
+                    await Task.Run(() => JobPipeline.Print(
+                        planes, job, route, route.Vid,
+                        (done, total) => BeginInvoke(() =>
+                        {
+                            _progressBar.Maximum = Math.Max(total, 1);
+                            _progressBar.Value = Math.Min(done, _progressBar.Maximum);
+                        })));
+                }
+                catch
+                {
+                    // 送出の途中で落ちても、**そこまでに送ったぶんは刷られている**
+                    // 可能性がある(プリンタは受け取った分を溜めて刷り続ける。
+                    // §15.2.2)。記録を残さないと、その消費が帳簿から消えてしまう。
+                    // 記録してから、例外はそのまま外の catch へ通す。
+                    UsageLog.Append(BuildUsageRecords(
+                        _current, copy, copies, paperName, mediaName, resolutionKey,
+                        UsageLog.OutcomeFailed));
+                    throw;
+                }
 
                 // D-038: 送出が終わっても印刷はまだこれから進む(プリンタは受け取った
                 // 分を溜めて刷り続ける)。ここで閉じずに見張りへ移る。送出中に状態を
@@ -1917,6 +2124,16 @@ public sealed class PreviewForm : Form
                 // 始められない。
                 // D-044: 最後の部だけ従来どおり自動で閉じる(D-039)。
                 bool ok = await MonitorPrintCompletionAsync(route, isLastCopy: copy == copies);
+
+                // リボン消費の記録。**成功でも失敗でも書く** — 途中で止まっても
+                // リボンは減っているため(DOMAIN §11.4.3: プリンタの残量応答は
+                // 意味が未解明で当てにならないので、自分で数えたものだけが頼り)。
+                // 中止・エラーで break する前に置くこと。書き込みで例外が出ても
+                // UsageLog.Append の中で握りつぶすので、印刷は止まらない。
+                UsageLog.Append(BuildUsageRecords(
+                    _current, copy, copies, paperName, mediaName, resolutionKey,
+                    ok ? UsageLog.OutcomeCompleted : UsageLog.OutcomeFailed));
+
                 if (!ok)
                 {
                     // D-044 決定 4: 途中でエラー(や打ち切り・上限時間)が出たら残りを中止する。
@@ -2179,6 +2396,8 @@ public sealed class PreviewForm : Form
         _savePresetButton.Enabled = !busy;
         _deletePresetButton.Enabled = !busy;
         _statusRefreshButton.Enabled = !busy;
+        // リボン消費の窓も他の操作と同じ扱い(送出・再構成の最中は開かせない)。
+        _usageButton.Enabled = !busy;
         // D-028: 再構成中はチェック列(除外の切り替え)を編集不可にする。
         _inkGrid.Columns["Use"]!.ReadOnly = busy;
         // D-031: 再構成中はパス数列も編集不可にする(Use 列と同じ扱い)。
