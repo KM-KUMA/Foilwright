@@ -49,6 +49,29 @@ public sealed class PreviewForm : Form
     private readonly CheckBox _noCurlCheck;
     private readonly Button _saveDefaultsButton;
     private readonly PictureBox _previewBox;
+
+    /// <summary>プレビューにインクを 1 つだけ表示するための選択(DOMAIN §7.2)。
+    /// 全インクが重なったままでは「白がどこに乗るのか」「金が意図しない所を
+    /// 拾っていないか」が見えず、マジックカラーの誤爆を発見できない。
+    /// **見せ方だけの機能であり、ジョブの中身は 1 バイトも変わらない。**</summary>
+    private readonly ComboBox _inkFilterCombo;
+
+    /// <summary>表示を 1 インクに絞っているあいだだけ出す注意文。絞ったまま印刷ボタンを
+    /// 押した利用者が「これだけ刷られる」と誤解すると、代替入手の困難なリボンと用紙を
+    /// 失う(§7.2)。文言は BuildInkFilterNotice(純粋な処理)が作る。</summary>
+    private readonly Label _inkFilterNoticeLabel;
+
+    /// <summary>1 インクだけを描き直した画像。この画面が所有する。
+    /// **二重破棄を避けるため、ここに _current.Preview(PreviewResult が所有し
+    /// PreviewResult.Dispose が捨てるもの)を絶対に入れない。**
+    /// 全インク表示へ戻すときは、これを破棄して null にしたうえで
+    /// _previewBox.Image に _current.Preview を入れ直す。</summary>
+    private Bitmap? _filteredPreview;
+
+    /// <summary>インクの選択肢を作り直している最中かどうか(_applyingPreset と同じ流儀)。
+    /// 項目の入れ替えは SelectedIndexChanged を発火させるため、そのあいだは描き直さない。</summary>
+    private bool _populatingInkFilter;
+
     private readonly Label _jobSummaryLabel;
     private readonly DataGridView _inkGrid;
 
@@ -112,6 +135,18 @@ public sealed class PreviewForm : Form
     /// (先頭の「(選択なし)」だけ Preset が null)。名前をそのままコンボへ入れると、
     /// 「(選択なし)」という名前のプリセットと見分けが付かなくなるため包む。</summary>
     private sealed record PresetItem(SettingsPreset? Preset, string Text)
+    {
+        public override string ToString() => Text;
+    }
+
+    /// <summary>表示するインクのコンボの先頭に置く項目(= 絞り込みなし)。
+    /// プレビューを組み直すたびにここへ戻す。</summary>
+    private const string AllInksText = "すべてのインク";
+
+    /// <summary>表示するインクのコンボの 1 項目。表示は label、実体はインク名
+    /// (先頭の「すべてのインク」だけ Name が null)。label をそのままコンボへ
+    /// 入れると選択からインク名を引き直せなくなるため包む(PresetItem と同じ流儀)。</summary>
+    private sealed record InkFilterItem(string? Name, string Text)
     {
         public override string ToString() => Text;
     }
@@ -234,8 +269,47 @@ public sealed class PreviewForm : Form
             BorderStyle = BorderStyle.FixedSingle,
             BackColor = Color.Gray,
         };
+        // 表示するインクの絞り込み(§7.2)。DockStyle は「後から追加したものほど
+        // 外側」なので、_previewBox(Fill)→ 注意文(Bottom)→ 選択行(Top)の順に
+        // 追加し、画像の上下に 1 行ずつ挟む形にする(数字の調整に頼らない)。
+        _inkFilterCombo = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 240,
+        };
+        _inkFilterCombo.SelectedIndexChanged += (_, _) => UpdatePreviewImage();
+        var inkFilterRow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            FlowDirection = FlowDirection.LeftToRight,
+            // 窓を狭めたときはコンボが折り返して、行そのものが縦に伸びる。
+            // 高さを決め打ちにすると選べなくなる(D-038 5.1 と同じ失敗を避ける)。
+            WrapContents = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        };
+        inkFilterRow.Controls.Add(new Label
+        {
+            Text = "表示:",
+            AutoSize = true,
+            Padding = new Padding(0, 6, 0, 0),
+        });
+        inkFilterRow.Controls.Add(_inkFilterCombo);
+
+        _inkFilterNoticeLabel = new Label
+        {
+            Dock = DockStyle.Bottom,
+            // 1 行に収まらないことがあるため、内容にあわせて伸びるようにする
+            // (_magicRgbWarningLabel と同じ扱い。切れて読めないと意味が無い)。
+            AutoSize = true,
+            ForeColor = Color.Red,
+            Text = string.Empty,
+        };
+
         var previewPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8) };
         previewPanel.Controls.Add(_previewBox);
+        previewPanel.Controls.Add(_inkFilterNoticeLabel);
+        previewPanel.Controls.Add(inkFilterRow);
         root.Controls.Add(previewPanel, 0, 0);
 
         // --- 右: 設定・ジョブ内容・状態・操作 ---------------------------------
@@ -1706,10 +1780,14 @@ public sealed class PreviewForm : Form
     {
         _current?.Dispose();
         _current = result;
+        // 1 インクだけの画像は前のジョブのもの。ここで捨てる(この画面が自分で作った
+        // Bitmap であり、いま捨てた _current.Preview とは別物 = 二重破棄にならない)。
+        DisposeFilteredPreview();
         _previewBox.Image = result.Preview;
         _jobSummaryLabel.Text =
             $"パス数: {result.Inks.Count} / 解像度: {result.Resolution.Key} / サイズ: {result.Width}x{result.Height}";
 
+        PopulateInkFilter(result);
         PopulateInkGrid(result);
 
         if (result.Inks.Count == 0)
@@ -1718,6 +1796,84 @@ public sealed class PreviewForm : Form
                 this, "印刷する内容がありません(全プレーンが空です)。", "Foilwright",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    /// <summary>表示するインクの選択肢を作り直す。**必ず「すべてのインク」へ戻す** —
+    /// インクの構成はプレビューを組み直すたびに変わるため、古い選択が残ると
+    /// もう存在しないインクを指しうる。並びは result.Inks の順(= 印刷順)。</summary>
+    private void PopulateInkFilter(PreviewResult result)
+    {
+        _populatingInkFilter = true;
+        try
+        {
+            _inkFilterCombo.Items.Clear();
+            _inkFilterCombo.Items.Add(new InkFilterItem(null, AllInksText));
+            foreach (var ink in result.Inks)
+            {
+                _inkFilterCombo.Items.Add(new InkFilterItem(ink.Name, ink.Label));
+            }
+            _inkFilterCombo.SelectedIndex = 0;
+        }
+        finally
+        {
+            _populatingInkFilter = false;
+        }
+
+        // 「すべてのインク」へ戻したので注意文も消す。画像は ApplyPreviewResult が
+        // 入れた全インクのものがそのまま正しい(描き直す必要は無い)。
+        _inkFilterNoticeLabel.Text = BuildInkFilterNotice(null);
+    }
+
+    /// <summary>表示の絞り込みを画像へ反映する。**描き直すだけ** —
+    /// Ghostscript もジョブ組み立ても走らせず、ジョブの中身(Planes / JobInks /
+    /// RequiredInks)は変わらない(JobPipeline.RenderPreviewBitmap)。
+    /// したがって、絞った状態で印刷しても刷られるものは全インクのままである。</summary>
+    private void UpdatePreviewImage()
+    {
+        if (_populatingInkFilter || _current is null)
+        {
+            return;
+        }
+
+        if (_inkFilterCombo.SelectedItem is not InkFilterItem item || item.Name is null)
+        {
+            // 全インク表示。描き直さず、ジョブが持っている画像へ戻す。
+            _previewBox.Image = _current.Preview;
+            DisposeFilteredPreview();
+            _inkFilterNoticeLabel.Text = BuildInkFilterNotice(null);
+            return;
+        }
+
+        var bitmap = JobPipeline.RenderPreviewBitmap(_current, item.Name);
+        // 画面が新しい方を指してから、古い 1 インク画像を捨てる。
+        _previewBox.Image = bitmap;
+        DisposeFilteredPreview();
+        _filteredPreview = bitmap;
+        _inkFilterNoticeLabel.Text = BuildInkFilterNotice(item.Text);
+    }
+
+    /// <summary>1 インクだけの画像を捨てる。捨てるのはこの画面が自分で作ったものだけで、
+    /// PreviewResult が所有する _current.Preview には触れない(二重破棄の防止)。</summary>
+    private void DisposeFilteredPreview()
+    {
+        _filteredPreview?.Dispose();
+        _filteredPreview = null;
+    }
+
+    /// <summary>表示を 1 インクに絞っているときの注意文(画面に触らない純粋な処理。
+    /// BuildMagicRgbWarning / BuildPrintConfirmText と同じ流儀で切り出してある)。
+    /// 絞っていなければ空文字。
+    ///
+    /// **「印刷はすべてのインクで行われます」の一文を消してはならない。**
+    /// 絞った状態で印刷ボタンを押した利用者が「これだけ刷られる」と誤解すると、
+    /// 代替入手の困難なリボンと用紙を失う(DOMAIN §7.2)。</summary>
+    internal static string BuildInkFilterNotice(string? onlyInkLabel)
+    {
+        if (string.IsNullOrEmpty(onlyInkLabel))
+        {
+            return string.Empty;
+        }
+        return $"※ 表示を「{onlyInkLabel}」だけに絞っています。印刷はすべてのインクで行われます。";
     }
 
     /// <summary>ジョブ内容のグリッドを作り直す。D-030: パレット全体を常に表示する
@@ -2393,6 +2549,8 @@ public sealed class PreviewForm : Form
         _saveDefaultsButton.Enabled = !busy;
         // プリセットも他の設定と同じ扱い(送出・再構成の最中は触らせない)。
         _presetCombo.Enabled = !busy;
+        // 表示の絞り込みも他の操作と同じ扱い(送出・再構成の最中は触らせない)。
+        _inkFilterCombo.Enabled = !busy;
         _savePresetButton.Enabled = !busy;
         _deletePresetButton.Enabled = !busy;
         _statusRefreshButton.Enabled = !busy;
@@ -2420,6 +2578,7 @@ public sealed class PreviewForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        DisposeFilteredPreview();
         _current?.Dispose();
         base.OnFormClosed(e);
     }

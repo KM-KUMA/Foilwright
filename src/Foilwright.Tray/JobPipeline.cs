@@ -280,9 +280,8 @@ public static class JobPipeline
 
         // D-042: 描画にも上書き前のインクを使う(色の対応付けを変えない)。
         // プレーンそのものは上書き後の照合結果であり、差し替えるのは Ink だけ。
-        var displayPlanes = jobPlanes
-            .Select(jp => (Ink: RawInkOf(jp.Ink, rawByName), jp.Plane))
-            .ToList();
+        // 並びの組み立ては RenderPreviewBitmap と共有する(同じ処理を 2 箇所に書かない)。
+        var displayPlanes = BuildDisplayPlanes(jobPlanes, rawByName, onlyInk: null);
 
         // D-038: 1200x600 のように画素が正方形でない解像度では、縦横に同じ倍率を
         // かけると縦に潰れて見える(PreviewRenderer 側で dpiX/dpiY を使って補正する)。
@@ -303,6 +302,63 @@ public static class JobPipeline
             Config = config,
             AlphaImage = alphaImage,
         };
+    }
+
+    /// <summary>できあがった PreviewResult から、プレビュー画像だけを描き直す。
+    /// Ghostscript もジョブ組み立て(JobAssembly.BuildJobPlanes)も走らせない
+    /// (プレーンは既にあるものをそのまま使い、描き直すだけである)。
+    ///
+    /// onlyInk が null なら全インク、インク名を指定するとそのインクだけを描く。
+    /// 全インクが重なったままでは「白がどこに乗るのか」「金が意図しない所を
+    /// 拾っていないか」が見えず、マジックカラーの誤爆を発見できない
+    /// (DOMAIN §7.2: 誤爆を見つける手段はプレビューしかない)。
+    ///
+    /// **ジョブの中身(Planes / JobInks / RequiredInks)は一切変えない** —
+    /// これは見せ方だけの機能であり、表示を絞ったまま印刷しても刷られるものは
+    /// 全インクのままである(その旨の注意文は UI 側の PreviewForm.BuildInkFilterNotice)。
+    ///
+    /// 戻り値は新しい Bitmap。呼び出し側が古いものを破棄すること。</summary>
+    public static System.Drawing.Bitmap RenderPreviewBitmap(PreviewResult result, string? onlyInk)
+    {
+        // D-042: 表示色は上書き前のパレットから引く(BuildPreviewCore と同じ規則)。
+        var rawByName = result.Config.Palette.ToDictionary(ink => ink.Name);
+
+        // 並びは RequiredInks の順(= 印刷順)をそのまま保つ。順を崩すと重なりの
+        // 見え方(後に刷ったものが上の層)が変わってしまう(DOMAIN §4.3)。
+        var source = new List<(InkDefinition Ink, byte[] Plane)>();
+        foreach (var ink in result.RequiredInks)
+        {
+            if (result.Planes.TryGetValue(ink.Name, out var plane))
+            {
+                source.Add((ink, plane));
+            }
+        }
+
+        var displayPlanes = BuildDisplayPlanes(source, rawByName, onlyInk);
+
+        // D-038: 画素が正方形でない解像度の補正も、通常の描画とまったく同じ引数で行う。
+        return PreviewRenderer.Render(
+            result.Width, result.Height, displayPlanes, PreviewMaxWidth,
+            result.Resolution.DpiX, result.Resolution.DpiY);
+    }
+
+    /// <summary>描画へ渡す (Ink, Plane) の並びを組み立てる。BuildPreviewCore と
+    /// RenderPreviewBitmap の共通部分(同じ処理を 2 箇所に書かないため)。
+    ///
+    /// D-042: Ink は必ず上書き前(rawByName)のものへ差し替える — プレーンそのものは
+    /// 上書き後の照合結果であり、差し替えるのは Ink だけ。
+    /// onlyInk が指定されていれば、その名前のものだけを残す。該当が無ければ
+    /// 空の並びを返す(例外にしない — 背景だけの絵になる)。
+    /// 元の並び(印刷順)は崩さない。</summary>
+    private static List<(InkDefinition Ink, byte[] Plane)> BuildDisplayPlanes(
+        IEnumerable<(InkDefinition Ink, byte[] Plane)> source,
+        IReadOnlyDictionary<string, InkDefinition> rawByName,
+        string? onlyInk)
+    {
+        return source
+            .Where(item => onlyInk is null || item.Ink.Name == onlyInk)
+            .Select(item => (Ink: RawInkOf(item.Ink, rawByName), item.Plane))
+            .ToList();
     }
 
     /// <summary>D-031: 指定したインクについて、上書きがあればそれを、無ければ
