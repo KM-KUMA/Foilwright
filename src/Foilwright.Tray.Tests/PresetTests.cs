@@ -4,8 +4,9 @@
 //   PresetStore.IsValidPresetName / Upsert / Remove — 名前と一覧の扱い(純粋な処理)
 //   SettingsPreset の JSON 往復                     — 写し漏れの検出器
 //
-// 往復のテストが検出器になる理由: UsedInks / PassesOverride / MagicRgbOverride は
-// **null と空を区別する**ことに意味がある(D-030 / D-031 / D-042)。プロパティを
+// 往復のテストが検出器になる理由: UsedInks / PassesOverride / MagicRgbOverride /
+// CoverageModes は **null と空を区別する**ことに意味がある(D-030 / D-031 / D-042 /
+// D-048)。プロパティを
 // 足したのに写し忘れる・区別を潰す、といった壊れ方はここで赤くなる。
 //
 // UI もプリンタも Ghostscript も要らない。
@@ -147,8 +148,8 @@ public class PresetTests
     // --- JSON の往復 ---------------------------------------------------------
 
     /// <summary>すべてのプロパティが JSON を通っても保たれること。
-    /// **null と空を区別したまま**往復することを、3 つの上書き項目それぞれで確かめる
-    /// (D-030 / D-031 / D-042。ここが写し漏れの検出器)。</summary>
+    /// **null と空を区別したまま**往復することを、4 つの上書き項目それぞれで確かめる
+    /// (D-030 / D-031 / D-042 / D-048。ここが写し漏れの検出器)。</summary>
     [Fact]
     public void PresetSurvivesAJsonRoundTrip()
     {
@@ -172,6 +173,13 @@ public class PresetTests
                 // D-042: 値の null は「そのインクの色を明示的に外す」。
                 ["gold"] = null,
             },
+            // D-048: 塗る範囲。プリセットに入っていないと「光沢仕上げ付きデカール」を
+            // 保存できない(用途ごとの設定一式にならない)。
+            CoverageModes = new Dictionary<string, string>
+            {
+                ["glossy_finish"] = "artwork",
+                ["mf_ink"] = "full",
+            },
         };
 
         var restored = RoundTrip(original);
@@ -191,11 +199,13 @@ public class PresetTests
         Assert.Equal(new[] { 0, 0, 0 }, restored.MagicRgbOverride!["white"]);
         Assert.True(restored.MagicRgbOverride.ContainsKey("gold"));
         Assert.Null(restored.MagicRgbOverride["gold"]);
+        Assert.Equal("artwork", restored.CoverageModes!["glossy_finish"]);
+        Assert.Equal("full", restored.CoverageModes["mf_ink"]);
     }
 
     /// <summary>null(一度も触っていない)は往復しても null のまま。
     /// 空に化けると「全インクを無効にした」「上書き無しを明示した」に意味が
-    /// すり替わる(D-030 / D-031 / D-042)。</summary>
+    /// すり替わる(D-030 / D-031 / D-042 / D-048)。</summary>
     [Fact]
     public void NullOverridesStayNullThroughJson()
     {
@@ -204,6 +214,7 @@ public class PresetTests
         Assert.Null(restored.UsedInks);
         Assert.Null(restored.PassesOverride);
         Assert.Null(restored.MagicRgbOverride);
+        Assert.Null(restored.CoverageModes);
     }
 
     /// <summary>空(明示的に空にした)は往復しても空のまま。null に化けないこと。</summary>
@@ -216,6 +227,7 @@ public class PresetTests
             UsedInks = new HashSet<string>(),
             PassesOverride = new Dictionary<string, int>(),
             MagicRgbOverride = new Dictionary<string, int[]?>(),
+            CoverageModes = new Dictionary<string, string>(),
         });
 
         Assert.NotNull(restored.UsedInks);
@@ -224,6 +236,8 @@ public class PresetTests
         Assert.Empty(restored.PassesOverride!);
         Assert.NotNull(restored.MagicRgbOverride);
         Assert.Empty(restored.MagicRgbOverride!);
+        Assert.NotNull(restored.CoverageModes);
+        Assert.Empty(restored.CoverageModes!);
     }
 
     /// <summary>一覧まるごと(PresetStore.Save が書く形)でも往復すること。</summary>

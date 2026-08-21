@@ -72,6 +72,11 @@ public sealed class PreviewForm : Form
     /// 項目の入れ替えは SelectedIndexChanged を発火させるため、そのあいだは描き直さない。</summary>
     private bool _populatingInkFilter;
 
+    /// <summary>ジョブ内容のグリッドを作り直している最中かどうか(_populatingInkFilter と
+    /// 同じ流儀)。行を足してセルへ値を入れる操作は CellValueChanged を発火させるが、
+    /// それは利用者の操作ではないので組み直しの引き金にしてはならない。</summary>
+    private bool _populatingInkGrid;
+
     private readonly Label _jobSummaryLabel;
     private readonly DataGridView _inkGrid;
 
@@ -80,6 +85,10 @@ public sealed class PreviewForm : Form
     private readonly Button _resetColorButton;
     private readonly Button _resetAllColorsButton;
     private readonly Label _magicRgbWarningLabel;
+
+    /// <summary>警告ラベルの Control.Name。レイアウトの検出器から
+    /// Controls.Find で引くためだけの名前(画面には出ない)。</summary>
+    internal const string WarningLabelName = "WarningLabel";
 
     private readonly TextBox _statusText;
     private readonly Button _statusRefreshButton;
@@ -210,6 +219,13 @@ public sealed class PreviewForm : Form
     /// 反映しない。ここに項目が無いインクはパレットの magic_rgb をそのまま使う。</summary>
     private readonly Dictionary<string, int[]?> _magicRgbOverride;
 
+    /// <summary>D-048: 塗る範囲のジョブごとの指定(ink 名 → "none" / "artwork" / "full")。
+    /// TraySettings.CoverageModes を初期状態とし(null なら空辞書、= どのインクも
+    /// 塗らない)、以後はプレビューの「塗る範囲」列が書き換える。SaveAsDefaults を
+    /// 押さない限り TraySettings には反映しない。ここに無いインクは既定の
+    /// "none"(= プレーンを作らない)として扱う。</summary>
+    private readonly Dictionary<string, string> _coverageModes;
+
     /// <summary>_usedInks の既定値を解決するために先読みしたパレット
     /// (palette/default.yaml)。機種・メディア・用紙を変えても不変
     /// (パレットはこれらに依存しない)。</summary>
@@ -247,6 +263,11 @@ public sealed class PreviewForm : Form
         _magicRgbOverride = settings.MagicRgbOverride is { } magicRgbOverride
             ? new Dictionary<string, int[]?>(magicRgbOverride)
             : new Dictionary<string, int[]?>();
+        // D-048: パス数・色の上書きと同じ扱い(null = 一度も触っていない → 空辞書)。
+        // 空辞書は「どの coverage インクも塗らない」であり、D-048 以前と同じ出力になる。
+        _coverageModes = settings.CoverageModes is { } coverageModes
+            ? new Dictionary<string, string>(coverageModes)
+            : new Dictionary<string, string>();
         // プリセット: ファイルが無い・壊れているときは空(印刷そのものは止めない)。
         _presets = PresetStore.Load();
 
@@ -552,11 +573,19 @@ public sealed class PreviewForm : Form
         var colorColumn = _inkGrid.Columns["Color"]!;
         colorColumn.ReadOnly = false;
         colorColumn.HeaderText = "色(#RRGGBB)";
+        // D-048: 「塗る範囲」列は「パス数」の右隣に置く(どちらも「そのインクを
+        // どう刷るか」の指定であり、隣り合っていたほうが見つけやすい)。
+        // coverage インクの行だけがコンボで選べる — それ以外の行は
+        // PopulateInkGrid が読み取り専用のテキストセルへ差し替える。
+        var coverageColumn = CreateCoverageColumn();
+        _inkGrid.Columns.Insert(passesColumn.Index + 1, coverageColumn);
         // チェックボックス列は確定(コミット)が 1 セル遅れる既知の挙動があるため、
         // CurrentCellDirtyStateChanged で即座にコミットしてから CellValueChanged を拾う。
+        // D-048: コンボボックスのセルも同じ挙動なので、同じ扱いにする。
         _inkGrid.CurrentCellDirtyStateChanged += (_, _) =>
         {
-            if (_inkGrid.IsCurrentCellDirty && _inkGrid.CurrentCell is DataGridViewCheckBoxCell)
+            if (_inkGrid.IsCurrentCellDirty
+                && _inkGrid.CurrentCell is DataGridViewCheckBoxCell or DataGridViewComboBoxCell)
             {
                 _inkGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
             }
@@ -607,6 +636,14 @@ public sealed class PreviewForm : Form
         _inkGrid.CellValueChanged += (_, e) =>
         {
             if (e.RowIndex < 0)
+            {
+                return;
+            }
+            // D-048: グリッドを作り直している最中の値の書き込み(「塗る範囲」列に
+            // いま効いている値を入れる操作)は、利用者の操作ではない。ここで
+            // 弾かないと **組み直す → 値を書く → また組み直す** の無限ループになる
+            // (下の BeginInvoke は _busy が下りたあとに走るため、_busy では防げない)。
+            if (_populatingInkGrid)
             {
                 return;
             }
@@ -668,6 +705,21 @@ public sealed class PreviewForm : Form
                     }
                 });
             }
+            else if (e.ColumnIndex == coverageColumn.Index)
+            {
+                BeginInvoke(async () =>
+                {
+                    try
+                    {
+                        await OnCoverageModeChangedAsync(rowIndex);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this, $"塗る範囲の変更に失敗しました: {ex.Message}", "Foilwright",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                });
+            }
         };
         jobGroup.Controls.Add(_inkGrid);
         jobGroup.Controls.Add(_jobSummaryLabel);
@@ -677,11 +729,16 @@ public sealed class PreviewForm : Form
         _magicRgbWarningLabel = new Label
         {
             Dock = DockStyle.Bottom,
-            // 警告は 2 行になることがある(色の重複 + 白版モード)。高さを決め打ちに
-            // すると 2 行目が切れて読めなくなるため、内容にあわせて伸びるようにする。
+            // 警告は 2 行になることがある(色の重複 + 白版モード)。D-048 で
+            // 「塗る範囲が none のまま」の警告も同じラベルに相乗りするため、
+            // 3 行以上になることもある。高さを決め打ちにすると下の行が切れて
+            // 読めなくなるため、内容にあわせて伸びるようにする。
             AutoSize = true,
             ForeColor = Color.Red,
             Text = string.Empty,
+            // レイアウトの検出器(PreviewFormLayoutTests)から Controls.Find で
+            // 引けるようにする。警告文は空のことが多く、文字列では探せない。
+            Name = WarningLabelName,
         };
         jobGroup.Controls.Add(_magicRgbWarningLabel);
 
@@ -1029,6 +1086,8 @@ public sealed class PreviewForm : Form
         _settings.PassesOverride = new Dictionary<string, int>(_passesOverride);
         // D-042: マジックカラーの上書きも同様に、このジョブの状態をそのまま既定値へ保存する。
         _settings.MagicRgbOverride = new Dictionary<string, int[]?>(_magicRgbOverride);
+        // D-048: 塗る範囲も同様に、このジョブの状態をそのまま既定値へ保存する。
+        _settings.CoverageModes = new Dictionary<string, string>(_coverageModes);
         _settings.Save();
         MessageBox.Show(this, "既定値として保存しました。", "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
@@ -1121,7 +1180,7 @@ public sealed class PreviewForm : Form
             }
             _noCurlCheck.Checked = preset.NoCurlCorrection;
 
-            // D-030 / D-031 / D-042: null と空を区別する。null は「このプリセットは
+            // D-030 / D-031 / D-042 / D-048: null と空を区別する。null は「このプリセットは
             // 触っていない」であり、既定(パレットから導出 / 上書き無し)へ戻す。
             _usedInks.Clear();
             foreach (string name in preset.UsedInks ?? TraySettings.DefaultUsedInks(_palette))
@@ -1137,6 +1196,12 @@ public sealed class PreviewForm : Form
             foreach (var (name, rgb) in preset.MagicRgbOverride ?? new Dictionary<string, int[]?>())
             {
                 _magicRgbOverride[name] = rgb;
+            }
+            // D-048: 塗る範囲も同じ扱い(null なら「指定無し」= どの coverage インクも塗らない)。
+            _coverageModes.Clear();
+            foreach (var (name, mode) in preset.CoverageModes ?? new Dictionary<string, string>())
+            {
+                _coverageModes[name] = mode;
             }
         }
         finally
@@ -1179,6 +1244,7 @@ public sealed class PreviewForm : Form
         UsedInks = new HashSet<string>(_usedInks),
         PassesOverride = new Dictionary<string, int>(_passesOverride),
         MagicRgbOverride = new Dictionary<string, int[]?>(_magicRgbOverride),
+        CoverageModes = new Dictionary<string, string>(_coverageModes),
     };
 
     /// <summary>「保存...」ボタン。名前を尋ね(既定でいま選ばれているプリセット名)、
@@ -1376,7 +1442,7 @@ public sealed class PreviewForm : Form
             // そのまま持ち越す(許可されていないインクがもう現れなければ自然に消える)。
             var result = await Task.Run(() => JobPipeline.BuildPreview(
                 _psPath, _assetRoot, route, inkMode, paperName, mediaName, resolutionKey, halftone, whiteMode,
-                _usedInks, _passesOverride, colourCorrection, _magicRgbOverride));
+                _usedInks, _passesOverride, colourCorrection, _magicRgbOverride, _coverageModes));
 
             ApplyPreviewResult(result);
         }
@@ -1432,7 +1498,7 @@ public sealed class PreviewForm : Form
 
             var result = await Task.Run(() => JobPipeline.RebuildFromImage(
                 previous.Image, previous.Config, previous.Resolution, inkMode, halftone, whiteMode, _usedInks,
-                _passesOverride, colourCorrection, previous.AlphaImage, _magicRgbOverride));
+                _passesOverride, colourCorrection, previous.AlphaImage, _magicRgbOverride, _coverageModes));
 
             ApplyPreviewResult(result);
         }
@@ -1501,7 +1567,7 @@ public sealed class PreviewForm : Form
 
             var result = await Task.Run(() => JobPipeline.RebuildFromImage(
                 previous.Image, previous.Config, previous.Resolution, inkMode, halftone, whiteMode, _usedInks,
-                _passesOverride, colourCorrection, previous.AlphaImage, _magicRgbOverride));
+                _passesOverride, colourCorrection, previous.AlphaImage, _magicRgbOverride, _coverageModes));
 
             ApplyPreviewResult(result);
         }
@@ -1590,6 +1656,91 @@ public sealed class PreviewForm : Form
         _magicRgbOverride[inkName] = rgb;
 
         await RebuildFromCurrentImageAsync();
+    }
+
+    /// <summary>D-048: 「塗る範囲」列を変えたときのハンドラ。Ghostscript を再実行せず、
+    /// 切り出し済みの画像を保持したまま JobPipeline.RebuildFromImage でジョブ組み立て
+    /// だけをやり直す(色・パス数の変更とまったく同じ経路。新しい分岐を作らない)。
+    ///
+    /// coverage でない行のセルは PopulateInkGrid が読み取り専用のテキストセルへ
+    /// 差し替えてあるため、そもそもここへ来ない。それでも来た場合(将来の変更で
+    /// 差し替えが漏れた場合)は、内部値へ直せない文字列として弾かれる。</summary>
+    private async Task OnCoverageModeChangedAsync(int rowIndex)
+    {
+        if (_busy || _current is null)
+        {
+            return;
+        }
+        if (rowIndex < 0 || rowIndex >= _inkGrid.Rows.Count)
+        {
+            return;
+        }
+        var row = _inkGrid.Rows[rowIndex];
+        if (row.Tag is not string inkName)
+        {
+            return;
+        }
+        // 知らない文字列は黙って "none" に落とさない(D-048)。
+        if (!TryParseCoverageModeLabel(row.Cells["Coverage"].Value?.ToString(), out string mode))
+        {
+            return;
+        }
+        // "none" も明示的に記録する(D-042 が「色を外す」を null として記録するのと
+        // 同じ。JobAssembly 側は "none" のインクのプレーンを作らない)。
+        _coverageModes[inkName] = mode;
+
+        await RebuildFromCurrentImageAsync();
+    }
+
+    /// <summary>D-048: 「塗る範囲」列を作る。選択肢は 3 つで、画面には日本語で出す
+    /// (内部値との対応は <see cref="CoverageModeLabel"/> /
+    /// <see cref="TryParseCoverageModeLabel"/> が持つ)。
+    ///
+    /// 列そのものはコンボだが、**coverage でない行のセルは PopulateInkGrid が
+    /// 読み取り専用のテキストセルへ差し替える**(<see cref="ApplyCoverageCell"/>)。
+    /// 列を丸ごとコンボにしたまま「選ばせない」を色や有効・無効で表現すると、
+    /// クリックでドロップダウンが開いてしまい「選べそうなのに効かない」になる。</summary>
+    internal static DataGridViewComboBoxColumn CreateCoverageColumn()
+    {
+        var column = new DataGridViewComboBoxColumn
+        {
+            Name = "Coverage",
+            HeaderText = "塗る範囲",
+            // 三角ボタンを常時出さない(選べない行と見分けが付くようにする)。
+            DisplayStyle = DataGridViewComboBoxDisplayStyle.ComboBox,
+            FlatStyle = FlatStyle.Flat,
+        };
+        foreach (string mode in TraySettings.CoverageModeValues)
+        {
+            column.Items.Add(CoverageModeLabel(mode));
+        }
+        return column;
+    }
+
+    /// <summary>D-048: 1 行ぶんの「塗る範囲」セルを整える。
+    ///
+    /// coverage インクの行 — コンボのまま、いま効いている値を日本語で入れる。
+    /// それ以外の行   — 読み取り専用のテキストセルへ差し替え、"—" を出す。
+    ///     **セルの型そのものを変える**ので、クリックしてもドロップダウンは開かない
+    ///     (ReadOnly を立てるだけではセルの編集開始を止められるが、コンボの
+    ///     見た目は残る)。空欄にしないのは D-042 と同じ理由 — 空欄だと
+    ///     「まだ読み込めていない」のか「選べない」のか状態が読めない。
+    ///
+    /// PopulateInkGrid とテストの両方から呼ぶ(選べない行の作り方を 2 箇所に
+    /// 書かないため)。</summary>
+    internal static void ApplyCoverageCell(DataGridViewRow row, bool isCoverage, string mode)
+    {
+        var cell = row.Cells["Coverage"];
+        if (isCoverage)
+        {
+            cell.Value = CoverageModeLabel(mode);
+            cell.ReadOnly = false;
+            return;
+        }
+        var textCell = new DataGridViewTextBoxCell { Value = NotCoverageCellText };
+        row.Cells["Coverage"] = textCell;
+        textCell.ReadOnly = true;
+        textCell.Style.ForeColor = Color.Gray;
     }
 
     /// <summary>D-042: 「色を選ぶ...」ボタン。選択中の行に対して ColorDialog を開き、
@@ -1692,7 +1843,7 @@ public sealed class PreviewForm : Form
 
             var result = await Task.Run(() => JobPipeline.RebuildFromImage(
                 previous.Image, previous.Config, previous.Resolution, inkMode, halftone, whiteMode, _usedInks,
-                _passesOverride, colourCorrection, previous.AlphaImage, _magicRgbOverride));
+                _passesOverride, colourCorrection, previous.AlphaImage, _magicRgbOverride, _coverageModes));
 
             ApplyPreviewResult(result);
         }
@@ -1723,8 +1874,32 @@ public sealed class PreviewForm : Form
                 HasColourOverride: _magicRgbOverride.TryGetValue(def.Name, out int[]? o) && o is not null))
             .ToList();
 
-        _magicRgbWarningLabel.Text = BuildMagicRgbWarning(inks, _whiteModeCombo.SelectedItem as string);
+        // D-048: 塗る範囲の警告も同じラベルへ相乗りさせる(警告の置き場所を
+        // 2 つに増やさない)。両方出るときは 2 行以上になるが、ラベルは AutoSize
+        // なので伸びて全部読める。
+        var coverageInks = _palette
+            .Select(def => (
+                def.Name,
+                def.Label,
+                IsCoverage: def.Coverage,
+                Used: _usedInks.Contains(def.Name),
+                Mode: ResolveCoverageMode(def.Name)))
+            .ToList();
+
+        string[] warnings =
+        {
+            BuildMagicRgbWarning(inks, _whiteModeCombo.SelectedItem as string),
+            BuildCoverageWarning(coverageInks),
+        };
+        _magicRgbWarningLabel.Text = string.Join(
+            Environment.NewLine, warnings.Where(text => text.Length > 0));
     }
+
+    /// <summary>D-048: そのインクに実際に効く塗る範囲。ジョブごとの指定があれば
+    /// それを、無ければ既定の "none"(= プレーンを作らない)を返す
+    /// (<see cref="ResolveMagicRgb"/> と同じ流儀)。</summary>
+    private string ResolveCoverageMode(string inkName) =>
+        _coverageModes.TryGetValue(inkName, out string? mode) ? mode : TraySettings.DefaultCoverageMode;
 
     /// <summary>D-042: 「色」の割り当てから警告文を組み立てる(画面に触らない純粋な処理。
     /// ここが検出器になるよう Form から切り出してある)。警告が無ければ空文字。
@@ -1770,6 +1945,63 @@ public sealed class PreviewForm : Form
                     "(1 ドットも刷られません)。白版モードを magic にしてください。");
             }
         }
+
+        return string.Join(Environment.NewLine, messages);
+    }
+
+    /// <summary>D-048: 「塗る範囲」列に出す文字列(グリッドで編集できない行に出す)。
+    /// 空欄にすると「まだ読み込めていない」のか「そもそも選べない」のか見分けが
+    /// 付かない(D-042 の「(なし)」と同じ理由)。</summary>
+    internal const string NotCoverageCellText = "—";
+
+    /// <summary>D-048: 塗る範囲の内部値 → 画面に出す日本語。知らない値は
+    /// そのまま返す(黙って「なし」に化けさせない — 化けると
+    /// 「指定したのに何も出ない」を利用者が追えなくなる)。</summary>
+    internal static string CoverageModeLabel(string mode) => mode switch
+    {
+        "none" => "なし",
+        "artwork" => "絵のあるところ",
+        "full" => "全面",
+        _ => mode,
+    };
+
+    /// <summary>D-048: 画面に出した日本語 → 内部値。知らない文字列は
+    /// **"none" に落とさず false を返し、呼び出し側に拒否させる** —
+    /// 黙って既定へ落とすと「選んだのに何も出ない」という追いにくい失敗になる
+    /// (この案件では白版モード none と --magic-rgb の綴り間違いで 2 回作っている)。</summary>
+    internal static bool TryParseCoverageModeLabel(string? label, out string mode)
+    {
+        mode = TraySettings.DefaultCoverageMode;
+        string value = (label ?? string.Empty).Trim();
+        foreach (string candidate in TraySettings.CoverageModeValues)
+        {
+            if (string.Equals(CoverageModeLabel(candidate), value, StringComparison.Ordinal))
+            {
+                mode = candidate;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>D-048: 塗る範囲が「なし」のまま使われている coverage インクの警告
+    /// (画面に触らない純粋な処理。BuildMagicRgbWarning と同じ流儀で切り出してある)。
+    /// 該当が無ければ空文字。
+    ///
+    /// **これが要る理由:** coverage インクは magic_rgb も channel も持たないため、
+    /// 「塗る範囲」を選ばない限り**チェックを入れても 1 ドットも刷られない**。
+    /// 白版モードの none(D-042)とまったく同じ形の、気づきにくい失敗である。
+    ///
+    /// チェックの外れているインク(Used == false)と、coverage でないインクは
+    /// 警告しない — 前者は刷らない意思表示であり、後者はこの列と無関係。
+    /// **印刷は止めない**(警告のみ。D-042 と同じ方針)。</summary>
+    internal static string BuildCoverageWarning(
+        IReadOnlyList<(string Name, string Label, bool IsCoverage, bool Used, string Mode)> inks)
+    {
+        var messages = inks
+            .Where(ink => ink.IsCoverage && ink.Used && ink.Mode == TraySettings.DefaultCoverageMode)
+            .Select(ink => $"⚠ {ink.Label} は「塗る範囲」が「{CoverageModeLabel(TraySettings.DefaultCoverageMode)}」のため刷られません。")
+            .ToList();
 
         return string.Join(Environment.NewLine, messages);
     }
@@ -1889,52 +2121,68 @@ public sealed class PreviewForm : Form
         // 行を作り直す前に必ず編集を終了させておく。
         _inkGrid.EndEdit();
 
-        // Rows.Add/Clear は CellValueChanged を発火させうるが、この呼び出しは
-        // 常に SetBusy(true) の内側(RefreshPreviewAsync / OnInkUseChangedAsync)
-        // で行われるため、OnInkUseChangedAsync 先頭の _busy ガードで再入を防げる。
-        _inkGrid.Rows.Clear();
-
-        var activeByName = result.Inks.ToDictionary(ink => ink.Name);
-        var rows = new List<(string Name, int Order, string Label, int Passes, Color Color, bool Used, bool Appeared, long DotCount, string MagicText)>();
-        foreach (var def in result.Config.Palette)
+        // Rows.Add/Clear と「塗る範囲」セルへの値の書き込みは CellValueChanged を
+        // 発火させる。_busy だけでは足りない(ハンドラは BeginInvoke で後回しにされ、
+        // そのときには _busy が下りている)ので、作り直しの間は専用のフラグで抑える。
+        _populatingInkGrid = true;
+        try
         {
-            bool used = _usedInks.Contains(def.Name);
-            long dotCount = result.Planes.TryGetValue(def.Name, out var plane) ? CountSetBits(plane) : 0;
-            // D-042: 「色」列にはそのインクに実際に効くマジックカラーを出す
-            // (上書きがあれば上書き後、無ければパレットの magic_rgb。色なしは空文字)。
-            string magicText = FormatColorCell(ResolveMagicRgb(def));
-            if (activeByName.TryGetValue(def.Name, out var active))
+            _inkGrid.Rows.Clear();
+
+            var activeByName = result.Inks.ToDictionary(ink => ink.Name);
+            var rows = new List<(string Name, int Order, string Label, int Passes, Color Color, bool Used, bool Appeared, long DotCount, string MagicText, bool IsCoverage, string CoverageMode)>();
+            foreach (var def in result.Config.Palette)
             {
-                rows.Add((def.Name, def.Order, active.Label, active.Passes, active.Color, used, true, dotCount, magicText));
+                bool used = _usedInks.Contains(def.Name);
+                long dotCount = result.Planes.TryGetValue(def.Name, out var plane) ? CountSetBits(plane) : 0;
+                // D-042: 「色」列にはそのインクに実際に効くマジックカラーを出す
+                // (上書きがあれば上書き後、無ければパレットの magic_rgb。色なしは空文字)。
+                string magicText = FormatColorCell(ResolveMagicRgb(def));
+                // D-048: coverage インクかどうかはパレットの印から取る(名前で判定しない。
+                // DOMAIN §4.5)。塗る範囲はジョブごとの指定、無ければ既定の "none"。
+                string coverageMode = ResolveCoverageMode(def.Name);
+                if (activeByName.TryGetValue(def.Name, out var active))
+                {
+                    rows.Add((def.Name, def.Order, active.Label, active.Passes, active.Color, used, true, dotCount, magicText, def.Coverage, coverageMode));
+                }
+                else
+                {
+                    rows.Add((def.Name, def.Order, def.Label, 0, PreviewRenderer.ResolveDisplayColor(def), used, false, dotCount, magicText, def.Coverage, coverageMode));
+                }
             }
-            else
+
+            foreach (var row in rows.OrderBy(r => r.Order))
             {
-                rows.Add((def.Name, def.Order, def.Label, 0, PreviewRenderer.ResolveDisplayColor(def), used, false, dotCount, magicText));
+                // D-038: 桁区切り(例 181,422)で表示する。
+                // D-048: 「塗る範囲」の値はセルの型ごと決まるため、ここでは空のまま
+                // 足して ApplyCoverageCell に任せる(コンボの選択肢に無い値を先に
+                // 入れると DataError になる)。
+                int rowIndex = _inkGrid.Rows.Add(
+                    row.Used, row.Order, row.MagicText, row.Label, row.Passes, null!, row.DotCount.ToString("N0"));
+                var gridRow = _inkGrid.Rows[rowIndex];
+                ApplyCoverageCell(gridRow, row.IsCoverage, row.CoverageMode);
+                // D-042: セルの背景色は「プレビューでそのインクを描いている色」のまま
+                // にする(凡例としての役割。上書きしても変えない — JobPipeline が
+                // 表示色を上書き前のパレットから引くのと揃える)。文字は背景に埋もれ
+                // ないよう明暗で反転させる。
+                gridRow.Cells["Color"].Style.BackColor = row.Color;
+                gridRow.Cells["Color"].Style.ForeColor = ContrastingTextColor(row.Color);
+                gridRow.Tag = row.Name;
+                // ジョブに現れないインク(D-030: チェックが外れている、または内容が
+                // 空)の行は灰色で並べる。パス数は 0。
+                if (!row.Appeared)
+                {
+                    gridRow.DefaultCellStyle.ForeColor = Color.Gray;
+                }
             }
         }
-
-        foreach (var row in rows.OrderBy(r => r.Order))
+        finally
         {
-            // D-038: 桁区切り(例 181,422)で表示する。
-            int rowIndex = _inkGrid.Rows.Add(
-                row.Used, row.Order, row.MagicText, row.Label, row.Passes, row.DotCount.ToString("N0"));
-            var gridRow = _inkGrid.Rows[rowIndex];
-            // D-042: セルの背景色は「プレビューでそのインクを描いている色」のまま
-            // にする(凡例としての役割。上書きしても変えない — JobPipeline が
-            // 表示色を上書き前のパレットから引くのと揃える)。文字は背景に埋もれ
-            // ないよう明暗で反転させる。
-            gridRow.Cells["Color"].Style.BackColor = row.Color;
-            gridRow.Cells["Color"].Style.ForeColor = ContrastingTextColor(row.Color);
-            gridRow.Tag = row.Name;
-            // ジョブに現れないインク(D-030: チェックが外れている、または内容が
-            // 空)の行は灰色で並べる。パス数は 0。
-            if (!row.Appeared)
-            {
-                gridRow.DefaultCellStyle.ForeColor = Color.Gray;
-            }
+            _populatingInkGrid = false;
         }
 
         // D-042: 色の重複警告は、グリッドを作り直すたびに出し直す。
+        // D-048: 塗る範囲の警告も同じラベルへ相乗りする。
         UpdateMagicRgbWarning();
     }
 
@@ -2562,6 +2810,15 @@ public sealed class PreviewForm : Form
         _inkGrid.Columns["Passes"]!.ReadOnly = busy;
         // D-042: 再構成中は「色」列と色の操作ボタンも触れなくする(Use 列と同じ扱い)。
         _inkGrid.Columns["Color"]!.ReadOnly = busy;
+        // D-048: 「塗る範囲」列も同じ扱い。ただし列の ReadOnly を false に戻すと
+        // **各セルの ReadOnly も一括で false に戻る**ため、coverage でない行の
+        // 「選べない」を必ず付け直す(付け直さないと再構成のたびに全行が選べる
+        // ようになり、選べないはずの行でドロップダウンが開く)。
+        _inkGrid.Columns["Coverage"]!.ReadOnly = busy;
+        if (!busy)
+        {
+            RestoreCoverageCellReadOnly();
+        }
         _pickColorButton.Enabled = !busy;
         _resetColorButton.Enabled = !busy;
         _resetAllColorsButton.Enabled = !busy;
@@ -2574,6 +2831,25 @@ public sealed class PreviewForm : Form
             ? $"Foilwright — 印刷プレビュー ({statusMessage})"
             : "Foilwright — 印刷プレビュー";
         Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
+    }
+
+    /// <summary>D-048: coverage でない行の「塗る範囲」セルを読み取り専用に戻す。
+    /// 列全体の ReadOnly を false にすると各セルの ReadOnly も一括で解除されるため、
+    /// SetBusy(false) のたびに呼ぶ。セルの型(テキストセルへの差し替え)は
+    /// PopulateInkGrid が済ませているので、ここでは ReadOnly だけを付け直す。</summary>
+    private void RestoreCoverageCellReadOnly()
+    {
+        foreach (DataGridViewRow row in _inkGrid.Rows)
+        {
+            if (row.Cells["Coverage"] is not DataGridViewComboBoxCell cell)
+            {
+                row.Cells["Coverage"].ReadOnly = true;
+            }
+            else
+            {
+                cell.ReadOnly = false;
+            }
+        }
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)

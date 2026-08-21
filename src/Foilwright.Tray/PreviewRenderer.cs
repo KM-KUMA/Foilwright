@@ -243,13 +243,28 @@ public static class PreviewRenderer
         {
             return Color.FromArgb(ink.MagicRgb[0], ink.MagicRgb[1], ink.MagicRgb[2]);
         }
+        // D-048: 塗る範囲で決まるインク(光沢仕上げ・MF インク)は magic_rgb も
+        // channel も持たない。**紙の上ではほぼ無色**(上掛け・下地)なので、
+        // 薄い色を当てて市松模様で見えるようにする(IsHardToSeeOnBackground が拾う)。
+        //
+        // **同種のインクは同じ色になる。** 2 色を重ねたときに見分けるには
+        // 「表示: インクを 1 つだけ」(D-047)を使う。ここで名前ごとに色を
+        // 振り分けないのは、**インク名をコードに書かない**という約束(§4.5)を
+        // 守るため。
+        if (ink.Coverage)
+        {
+            return Color.FromArgb(214, 224, 238);
+        }
         return ink.Channel switch
         {
             "C" => Color.FromArgb(0, 255, 255),
             "M" => Color.FromArgb(255, 0, 255),
             "Y" => Color.FromArgb(255, 255, 0),
             "K" => Color.FromArgb(30, 30, 30),
-            _ => Color.FromArgb(255, 0, 128), // 到達しないはず(palette 検証で弾かれる)
+            // magic_rgb / channel / coverage のいずれも持たないインクは
+            // パレットの検証(D-019 / D-048)で弾かれるため、ここへは来ない。
+            // 来たときに黙って白く塗ると誤爆に気づけないので、目立つ色を出す。
+            _ => Color.FromArgb(255, 0, 128),
         };
     }
 

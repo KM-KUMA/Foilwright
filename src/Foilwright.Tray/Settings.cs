@@ -120,6 +120,36 @@ public sealed class TraySettings
     public int ResolvePasses(InkDefinition ink) =>
         PassesOverride is { } overrides && overrides.TryGetValue(ink.Name, out int passes) ? passes : ink.Passes;
 
+    /// <summary>D-048: 塗る範囲(ink 名 → "none" / "artwork" / "full")。パレットで
+    /// coverage: true になっているインク(紙用光沢仕上げ2 / 紙用 MF インク)だけに効く。
+    /// D-031 のパス数と同じ形の下層(既定値)であり、プレビューの「塗る範囲」列が
+    /// ジョブごとの上書きを持つ。
+    ///
+    /// null と空辞書を区別する: null は「利用者が一度も触っていない(または旧
+    /// settings.json に項目が無い)」を表し、空辞書は「利用者が一度は編集したが、
+    /// 結局どのインクにも塗る範囲を指定しなかった」状態である。どちらの場合も
+    /// JobAssembly.BuildJobPlanes には空(または null)が渡り、coverage インクの
+    /// プレーンは作られない — **既定は none であり、何もしなければ D-048 以前と
+    /// 出力バイトが完全に一致する**(D-048 決定 3)。
+    ///
+    /// 値は <see cref="CoverageModeValues"/> のいずれかでなければならない。範囲外の
+    /// 値を入れてはならない — 検証は呼び出し側(PreviewForm の列と Program の
+    /// --coverage 解析)が担い、JobAssembly も受け取った値を再検証する。</summary>
+    public Dictionary<string, string>? CoverageModes { get; set; }
+
+    /// <summary>D-048: 塗る範囲として受け付ける値。JobAssembly 側と必ず同じ並びにする。</summary>
+    public static readonly string[] CoverageModeValues = { "none", "artwork", "full" };
+
+    /// <summary>D-048: 塗る範囲の既定値。「なし」= プレーンを作らない。</summary>
+    public const string DefaultCoverageMode = "none";
+
+    /// <summary>指定したインクについて、このジョブで実際に使う塗る範囲を解決する。
+    /// CoverageModes にそのインクの指定があればそれを使い、無ければ
+    /// <see cref="DefaultCoverageMode"/>(none)を返す(<see cref="ResolvePasses"/> と
+    /// 同じ流儀)。</summary>
+    public string ResolveCoverageMode(InkDefinition ink) =>
+        CoverageModes is { } modes && modes.TryGetValue(ink.Name, out string? mode) ? mode : DefaultCoverageMode;
+
     /// <summary>D-042: マジックカラー(magic_rgb)のジョブごとの上書き(ink 名 → RGB 3 値)。
     /// D-030(使うインク)・D-031(パス数)と同じ形の下層(既定値)であり、プレビューの
     /// 「色」列がジョブごとの上書きを持つ。
@@ -303,6 +333,11 @@ public sealed class SettingsPreset
     /// <summary>D-042: マジックカラーの上書き。null と空辞書を区別し、値の null は
     /// 「そのインクの色を明示的に外す」を表す(TraySettings と同じ)。</summary>
     public Dictionary<string, int[]?>? MagicRgbOverride { get; set; }
+
+    /// <summary>D-048: 塗る範囲。null と空辞書を区別する(TraySettings と同じ)。
+    /// **プリセットに入れる理由:** プリセットは「用途ごとの設定一式」であり、
+    /// 「光沢仕上げ付きデカール」を保存できないとプリセットの意味がない。</summary>
+    public Dictionary<string, string>? CoverageModes { get; set; }
 }
 
 /// <summary>プリセットの保存と読み出し(%AppData%\Foilwright\presets.json)。

@@ -121,6 +121,11 @@ internal static class Program
             // D-042: UI 無しでマジックカラーの上書きを検証するための隠しオプション
             // (カンマ区切りの ink=#RRGGBB / ink=none。PreviewForm の「色」列と同義)。
             Dictionary<string, int[]?>? magicRgbArg = null;
+            // D-048: UI 無しで塗る範囲を検証するための隠しオプション
+            // (カンマ区切りの ink=none|artwork|full。PreviewForm の「塗る範囲」列と同義)。
+            // **実機での確認に使う経路**であり、RGL 側とプレビュー PNG 側の両方で
+            // 同じように解決する(片方だけ直すと動作がずれる)。
+            Dictionary<string, string>? coverageArg = null;
             for (int i = 0; i < extraArgs.Length - 1; i++)
             {
                 switch (extraArgs[i])
@@ -152,6 +157,10 @@ internal static class Program
                         passesArg = ParsePassesArg(extraArgs[i + 1]);
                         i++;
                         break;
+                    case "--coverage":
+                        coverageArg = ParseCoverageArg(extraArgs[i + 1]);
+                        i++;
+                        break;
                 }
             }
             if (Array.IndexOf(extraArgs, "--no-curl-correction") >= 0)
@@ -181,15 +190,27 @@ internal static class Program
             // D-042: 打ち間違いはその場で止める。
             if (magicRgbArg is not null) { RejectUnknownInkNames(magicRgbArg, config.Palette); }
 
+            // D-048: --coverage が指定されていればそれを使い、無ければ TraySettings の
+            // 既定(保存済みの指定)を使う。どちらも無ければ空 = coverage インクは刷られない。
+            var coverageModes = coverageArg ?? settings.CoverageModes ?? new Dictionary<string, string>();
+            // D-048: 打ち間違い(綴り・coverage でないインク)はその場で止める。
+            if (coverageArg is not null)
+            {
+                RejectUnknownInkNames(coverageArg, config.Palette, "--coverage", "D-048");
+                RejectNonCoverageInks(coverageArg, config.Palette);
+            }
+
             Console.WriteLine($"使うインク(D-030): {string.Join(", ", usedInks.OrderBy(n => n, StringComparer.Ordinal))}");
             Console.WriteLine($"色補正(D-029): {colourCorrection}");
             Console.WriteLine(
                 $"パス数の上書き(D-031): {(passesOverride.Count == 0 ? "(なし。パレットの既定値を使用)" : string.Join(", ", passesOverride.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value}")))}");
             Console.WriteLine($"マジックカラーの上書き(D-042): {FormatMagicRgbOverride(magicRgbOverride)}");
+            Console.WriteLine($"塗る範囲(D-048): {FormatCoverageModes(coverageModes)}");
 
             var result = JobPipeline.BuildPreview(
                 psPath, assetRoot, route, settings.InkMode, paperName, mediaName,
-                resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection, magicRgbOverride);
+                resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection, magicRgbOverride,
+                coverageModes);
             var job = new PrintJob
             {
                 // Emitter.EmitJob は Paper を常に 600dpi 基準で受け取り、
@@ -253,6 +274,11 @@ internal static class Program
             Dictionary<string, int>? passesArg = null;
             // D-042: RunDebugRgl と同じ隠しオプション(ink=#RRGGBB / ink=none)。
             Dictionary<string, int[]?>? magicRgbArg = null;
+            // D-048: UI 無しで塗る範囲を検証するための隠しオプション
+            // (カンマ区切りの ink=none|artwork|full。PreviewForm の「塗る範囲」列と同義)。
+            // **実機での確認に使う経路**であり、RGL 側とプレビュー PNG 側の両方で
+            // 同じように解決する(片方だけ直すと動作がずれる)。
+            Dictionary<string, string>? coverageArg = null;
             for (int i = 0; i < extraArgs.Length - 1; i++)
             {
                 switch (extraArgs[i])
@@ -283,6 +309,10 @@ internal static class Program
                         passesArg = ParsePassesArg(extraArgs[i + 1]);
                         i++;
                         break;
+                    case "--coverage":
+                        coverageArg = ParseCoverageArg(extraArgs[i + 1]);
+                        i++;
+                        break;
                 }
             }
 
@@ -298,15 +328,27 @@ internal static class Program
             // D-042: 打ち間違いはその場で止める。
             if (magicRgbArg is not null) { RejectUnknownInkNames(magicRgbArg, config.Palette); }
 
+            // D-048: --coverage が指定されていればそれを使い、無ければ TraySettings の
+            // 既定(保存済みの指定)を使う。どちらも無ければ空 = coverage インクは刷られない。
+            var coverageModes = coverageArg ?? settings.CoverageModes ?? new Dictionary<string, string>();
+            // D-048: 打ち間違い(綴り・coverage でないインク)はその場で止める。
+            if (coverageArg is not null)
+            {
+                RejectUnknownInkNames(coverageArg, config.Palette, "--coverage", "D-048");
+                RejectNonCoverageInks(coverageArg, config.Palette);
+            }
+
             Console.WriteLine($"使うインク(D-030): {string.Join(", ", usedInks.OrderBy(n => n, StringComparer.Ordinal))}");
             Console.WriteLine($"色補正(D-029): {colourCorrection}");
             Console.WriteLine(
                 $"パス数の上書き(D-031): {(passesOverride.Count == 0 ? "(なし。パレットの既定値を使用)" : string.Join(", ", passesOverride.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value}")))}");
             Console.WriteLine($"マジックカラーの上書き(D-042): {FormatMagicRgbOverride(magicRgbOverride)}");
+            Console.WriteLine($"塗る範囲(D-048): {FormatCoverageModes(coverageModes)}");
 
             var result = JobPipeline.BuildPreview(
                 psPath, assetRoot, route, settings.InkMode, paperName, mediaName,
-                resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection, magicRgbOverride);
+                resolutionKey, halftone, whiteMode, usedInks, passesOverride, colourCorrection, magicRgbOverride,
+                coverageModes);
 
             result.Preview.Save(outputPngPath, System.Drawing.Imaging.ImageFormat.Png);
 
@@ -424,9 +466,13 @@ internal static class Program
     ///
     /// 判定するのはコマンドラインで渡された分だけで、settings.json に保存された
     /// 上書きは対象にしない — パレットからインクが消えた古い設定が残っていても、
-    /// 印刷そのものを止めてしまわないようにするため(該当項目は無視される)。</summary>
-    internal static void RejectUnknownInkNames(
-        IReadOnlyDictionary<string, int[]?> overrides, IReadOnlyList<InkDefinition> palette)
+    /// 印刷そのものを止めてしまわないようにするため(該当項目は無視される)。
+    ///
+    /// D-048 で --coverage からも使うため、値の型を問わない形(ジェネリック)に
+    /// してある。option の既定値は "--magic-rgb" で、既存の呼び出しと文言は変わらない。</summary>
+    internal static void RejectUnknownInkNames<TValue>(
+        IReadOnlyDictionary<string, TValue> overrides, IReadOnlyList<InkDefinition> palette,
+        string option = "--magic-rgb", string decision = "D-042")
     {
         var known = palette.Select(ink => ink.Name).ToHashSet(StringComparer.Ordinal);
         var unknown = overrides.Keys
@@ -436,10 +482,75 @@ internal static class Program
         if (unknown.Count > 0)
         {
             throw new ConfigException(
-                $"--magic-rgb にパレットへ無いインク名があります(D-042): {string.Join(", ", unknown)} / " +
+                $"{option} にパレットへ無いインク名があります({decision}): {string.Join(", ", unknown)} / " +
                 $"使えるインク名: {string.Join(", ", known.OrderBy(name => name, StringComparer.Ordinal))}");
         }
     }
+
+    /// <summary>D-048: `--coverage glossy_finish=artwork,mf_ink=full` の形式を解析する。
+    /// 値は none / artwork / full(TraySettings.CoverageModeValues)。知らないモードは
+    /// 黙って既定へ落とさずその場で拒否する(ParsePassesArg / ParseMagicRgbArg と同じ方針)。
+    ///
+    /// **インク名がパレットにあるか、そのインクが coverage かはここでは見ない** —
+    /// パレットを読む前でも解析できるようにするため。名前の検証は
+    /// <see cref="RejectUnknownInkNames{TValue}"/>、coverage かどうかの検証は
+    /// <see cref="RejectNonCoverageInks"/> が担う(呼び出し側が両方を通す)。</summary>
+    internal static Dictionary<string, string> ParseCoverageArg(string arg)
+    {
+        var result = new Dictionary<string, string>();
+        foreach (string entry in arg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string[] parts = entry.Split('=', 2);
+            if (parts.Length != 2 || parts[0].Length == 0)
+            {
+                throw new ConfigException(
+                    $"--coverage の形式が不正です(ink=none|artwork|full の形式にしてください): '{entry}'");
+            }
+            string inkName = parts[0];
+            string mode = parts[1];
+            if (!TraySettings.CoverageModeValues.Contains(mode, StringComparer.Ordinal))
+            {
+                throw new ConfigException(
+                    $"--coverage '{inkName}' の値が不正です。{string.Join(" / ", TraySettings.CoverageModeValues)} " +
+                    $"のいずれかで指定してください(D-048): '{mode}'");
+            }
+            result[inkName] = mode;
+        }
+        return result;
+    }
+
+    /// <summary>D-048: --coverage に coverage でないインク(パレットで coverage: true が
+    /// 付いていないインク)が混じっていたら、その場で止める。JobAssembly は
+    /// coverage でないインクの指定を黙って無視するため、放置すると
+    /// 「指定したのに何も出ない」という追いにくい形になる(--magic-rgb の綴り間違いと
+    /// まったく同じ罠)。
+    ///
+    /// 名前がパレットに無い場合はここでは何も言わない — それは
+    /// <see cref="RejectUnknownInkNames{TValue}"/> の担当であり、先に呼ぶ。</summary>
+    internal static void RejectNonCoverageInks(
+        IReadOnlyDictionary<string, string> coverageModes, IReadOnlyList<InkDefinition> palette)
+    {
+        var coverageInks = palette.Where(ink => ink.Coverage).Select(ink => ink.Name).ToHashSet(StringComparer.Ordinal);
+        var known = palette.Select(ink => ink.Name).ToHashSet(StringComparer.Ordinal);
+        var wrong = coverageModes.Keys
+            .Where(name => known.Contains(name) && !coverageInks.Contains(name))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+        if (wrong.Count > 0)
+        {
+            throw new ConfigException(
+                $"--coverage は「塗る範囲で決まるインク」にしか指定できません(D-048): {string.Join(", ", wrong)} / " +
+                $"指定できるインク名: {string.Join(", ", coverageInks.OrderBy(name => name, StringComparer.Ordinal))}");
+        }
+    }
+
+    /// <summary>D-048: 塗る範囲をログ 1 行にまとめる(--passes と同じ調子)。</summary>
+    private static string FormatCoverageModes(IReadOnlyDictionary<string, string> coverageModes) =>
+        coverageModes.Count == 0
+            ? "(なし。coverage インクは刷られない)"
+            : string.Join(", ", coverageModes
+                .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                .Select(kv => $"{kv.Key}={kv.Value}"));
 
     /// <summary>D-042: マジックカラーの上書きをログ 1 行にまとめる(--passes と同じ調子)。</summary>
     private static string FormatMagicRgbOverride(IReadOnlyDictionary<string, int[]?> overrides) =>
