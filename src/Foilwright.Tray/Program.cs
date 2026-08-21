@@ -342,9 +342,15 @@ internal static class Program
     {
         if (ex is PpmFormatException { IsMultiPage: true })
         {
-            return ex.Message + Environment.NewLine
-                + "複数ページの原稿には対応していません。1 ページずつ印刷してください。" + Environment.NewLine
-                + "(印刷ダイアログの「部数」を 2 以上にした場合も、ドライバによってはこうなります)";
+            // 日本語を先に、英語の原文は「詳細:」として後ろへ回す。英語が先頭だと
+            // 利用者は自分に関係のある行(何をすればよいか)にたどり着く前に読むのを
+            // やめてしまう。ページ数は英語側の文言が持っているので、詳細を残すことで
+            // 「何ページ検出したか」も読める — 数を日本語側へ写すには文言を解析する
+            // ことになり、IsMultiPage を目印にした意味が無くなる。
+            return "複数ページの原稿には対応していません。1 ページずつ印刷してください。" + Environment.NewLine
+                + "(印刷ダイアログの「部数」を 2 以上にすると、ドライバが複数ページの原稿を作るためこうなります)"
+                + Environment.NewLine + Environment.NewLine
+                + $"詳細: {ex.Message}";
         }
         return ex.Message;
     }

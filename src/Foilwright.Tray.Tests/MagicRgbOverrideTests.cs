@@ -441,6 +441,42 @@ public class MagicRgbOverrideTests
         Assert.Equal(string.Empty, text);
     }
 
+    // --- Program.DescribeUserError -------------------------------------------
+    //
+    // 複数ページのエラーは実機で出る(印刷ダイアログの部数を 2 にすると
+    // ドライバが 2 ページの原稿を作るため)。利用者が最初に読む行が
+    // 「何をすればよいか」になっていること。
+
+    [Fact]
+    public void DescribeUserError_PutsTheJapaneseAdviceFirstForMultiPage()
+    {
+        var ex = new PpmFormatException("multi-page PPM: ... (found 2 pages)", isMultiPage: true);
+        string text = PreviewFormTestAccess.Describe(ex);
+
+        Assert.StartsWith("複数ページの原稿には対応していません。", text);
+        // 英語の原文は残す(ページ数を読み取れるようにするため)。
+        Assert.Contains("found 2 pages", text);
+        // 日本語が英語より前にあること。
+        Assert.True(text.IndexOf("1 ページずつ", StringComparison.Ordinal)
+                    < text.IndexOf("multi-page PPM", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void DescribeUserError_LeavesOtherErrorsUntouched()
+    {
+        // 複数ページ以外は文言をそのまま出す(勝手に飾らない)。
+        var plain = new PpmFormatException("truncated PPM data: expected 10, got 4");
+        Assert.Equal("truncated PPM data: expected 10, got 4", PreviewFormTestAccess.Describe(plain));
+
+        var other = new ConfigException("paper 'zzz' not found");
+        Assert.Equal("paper 'zzz' not found", PreviewFormTestAccess.Describe(other));
+    }
+
+    private static class PreviewFormTestAccess
+    {
+        public static string Describe(Exception ex) => Program.DescribeUserError(ex);
+    }
+
     [Fact]
     public void TryParseColorCell_RejectsMalformedInput()
     {
