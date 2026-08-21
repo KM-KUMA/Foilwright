@@ -760,7 +760,7 @@ public sealed class PreviewForm : Form
         {
             _current?.Dispose();
             _current = null;
-            MessageBox.Show(this, $"プレビューの作成に失敗しました: {ex.Message}", "Foilwright",
+            MessageBox.Show(this, $"プレビューの作成に失敗しました: {Program.DescribeUserError(ex)}", "Foilwright",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
@@ -820,7 +820,7 @@ public sealed class PreviewForm : Form
             // と同じ流儀でここでも捕まえて見せる。_usedInks は変更済みのままにする
             // (グリッドの再構成に失敗しても、利用者が付けた/外したチェックの意思は
             // 次回の操作までそのまま保持する)。
-            MessageBox.Show(this, $"ジョブの再構成に失敗しました: {ex.Message}", "Foilwright",
+            MessageBox.Show(this, $"ジョブの再構成に失敗しました: {Program.DescribeUserError(ex)}", "Foilwright",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
@@ -886,7 +886,7 @@ public sealed class PreviewForm : Form
             // OnInkUseChangedAsync と同じ流儀。_passesOverride は変更済みのまま
             // にする(グリッドの再構成に失敗しても、利用者が入力した値は
             // 次回の操作までそのまま保持する)。
-            MessageBox.Show(this, $"ジョブの再構成に失敗しました: {ex.Message}", "Foilwright",
+            MessageBox.Show(this, $"ジョブの再構成に失敗しました: {Program.DescribeUserError(ex)}", "Foilwright",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
@@ -1073,7 +1073,7 @@ public sealed class PreviewForm : Form
         {
             // OnPassesChangedAsync と同じ流儀。_magicRgbOverride は変更済みのまま
             // にする(利用者が選んだ色は次回の操作までそのまま保持する)。
-            MessageBox.Show(this, $"ジョブの再構成に失敗しました: {ex.Message}", "Foilwright",
+            MessageBox.Show(this, $"ジョブの再構成に失敗しました: {Program.DescribeUserError(ex)}", "Foilwright",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally

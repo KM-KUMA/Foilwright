@@ -521,7 +521,17 @@ def _ht_row_positions(
 
 
 class PPMError(ValueError):
-    """Raised when a file is not a supported binary (P6) PPM."""
+    """Raised when a file is not a supported binary (P6) PPM.
+
+    ``is_multi_page`` is True only when the cause is a multi-page (i.e.
+    concatenated) PPM. Callers switch on this flag rather than on the
+    message text, which would break whenever the wording changes.
+    Mirrors Foilwright.Core's PpmFormatException.IsMultiPage (src/).
+    """
+
+    def __init__(self, message: str, is_multi_page: bool = False) -> None:
+        super().__init__(message)
+        self.is_multi_page = is_multi_page
 
 
 def read_ppm(path: str) -> tuple[int, int, bytes]:
@@ -553,6 +563,51 @@ def read_ppm(path: str) -> tuple[int, int, bytes]:
             p += 1
         return data[start:p], p
 
+    def _starts_with_ppm_magic(p: int) -> bool:
+        # Does a concatenated next image start here? Used only together
+        # with the header walk below, so a "P6" that happens to occur
+        # inside pixel data is never picked up.
+        return (
+            p + 2 < len(data)
+            and data[p : p + 2] == b"P6"
+            and data[p + 2 : p + 3].isspace()
+        )
+
+    def _count_concatenated_images(p: int) -> tuple[int, bool]:
+        # Count the images concatenated from p onwards. The second element
+        # of the result says whether the whole chain could be walked
+        # consistently; when it could not, the count is a lower bound and
+        # the caller says "at least" rather than reporting a false number.
+        count = 0
+        while p < len(data):
+            if not _starts_with_ppm_magic(p):
+                return count, False
+
+            q = p
+            _, q = _read_token(q)  # "P6" (already checked)
+            w_tok, q = _read_token(q)
+            h_tok, q = _read_token(q)
+            maxval_tok_next, q = _read_token(q)
+            try:
+                image_width = int(w_tok)
+                image_height = int(h_tok)
+                int(maxval_tok_next)
+            except ValueError:
+                return count, False
+            if image_width < 0 or image_height < 0:
+                return count, False
+            if q >= len(data) or not data[q : q + 1].isspace():
+                return count, False
+            q += 1
+
+            count += 1
+            image_bytes = image_width * image_height * 3
+            if q + image_bytes > len(data):
+                # The last page is cut short; treat the count as a lower bound.
+                return count, False
+            p = q + image_bytes
+        return count, True
+
     magic, pos = _read_token(pos)
     if magic != b"P6":
         raise PPMError(f"unsupported PPM magic {magic!r}; only P6 is supported")
@@ -575,12 +630,46 @@ def read_ppm(path: str) -> tuple[int, int, bytes]:
     pos += 1
 
     pixel_bytes = width * height * 3
-    pixels = data[pos : pos + pixel_bytes]
-    if len(pixels) != pixel_bytes:
+    remaining = len(data) - pos
+
+    if remaining < pixel_bytes:
         raise PPMError(
-            f"truncated PPM data: expected {pixel_bytes} bytes, got {len(pixels)}"
+            f"truncated PPM data: expected {pixel_bytes} bytes, got {max(0, remaining)}"
         )
-    return width, height, pixels
+
+    if remaining > pixel_bytes:
+        # Ghostscript concatenates every page into one ppmraw file when
+        # -sOutputFile has no %d. If the leftover starts with the header of
+        # a further image this is a multi-page document, which is a
+        # different problem (caused by how the job was submitted) from
+        # arbitrary trailing junk (a corrupt file). Never silently print
+        # just the first page -- the user would not notice.
+        trailing_start = pos + pixel_bytes
+        if _starts_with_ppm_magic(trailing_start):
+            # Count the pages exactly by walking each image's header to
+            # work out where the next one begins. Scanning the pixel data
+            # for "P6" would count byte sequences that merely look like a
+            # header; the header walk costs only a few dozen bytes per page
+            # and never touches the ~100MB of pixel data.
+            following_count, exact = _count_concatenated_images(trailing_start)
+            page_count = 1 + following_count  # 1 = the page just read
+            found = (
+                f"found {page_count} pages"
+                if exact
+                else f"found at least {page_count} pages"
+            )
+            raise PPMError(
+                "multi-page PPM: the document has more than one page; "
+                f"Foilwright prints one page per job ({found})",
+                is_multi_page=True,
+            )
+
+        raise PPMError(
+            f"unexpected trailing data after PPM image: expected {pixel_bytes} bytes, "
+            f"got {remaining}"
+        )
+
+    return width, height, data[pos : pos + pixel_bytes]
 
 
 def to_planes(

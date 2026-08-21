@@ -9,7 +9,15 @@ namespace Foilwright.Core;
 /// </summary>
 public sealed class PpmFormatException : Exception
 {
-    public PpmFormatException(string message) : base(message) { }
+    /// <summary>複数ページ (PPM が連結されている) が原因のときだけ true。
+    /// 呼び出し側 (トレイアプリ) が利用者向けの補足を出し分けるための目印。
+    /// 文言そのものを見て判定しない — 文言を変えたら壊れるため。</summary>
+    public bool IsMultiPage { get; }
+
+    public PpmFormatException(string message, bool isMultiPage = false) : base(message)
+    {
+        IsMultiPage = isMultiPage;
+    }
 }
 
 /// <summary>
@@ -68,6 +76,54 @@ public sealed class PpmImage
             return System.Text.Encoding.ASCII.GetString(data, start, p - start);
         }
 
+        // p が「P6 + 空白」で始まるか。連結された次の PPM の始まりを見分ける
+        // ためだけに使う(ヘッダの読み進めと組で使うので、画素データ中の
+        // 偶然の "P6" を拾うことはない)。
+        bool StartsWithPpmMagic(int p) =>
+            p + 2 < data.Length && data[p] == (byte)'P' && data[p + 1] == (byte)'6' && IsWhitespace(data[p + 2]);
+
+        // p 以降に連結されている PPM の数を数える。戻り値の exact は
+        // 「最後まで矛盾なくヘッダを読み切れたか」。読み切れなかった場合は
+        // 数えられた分だけを下限として返し、呼び出し側が「以上」と表示する
+        // (嘘の枚数を出さない)。
+        (int Count, bool Exact) CountConcatenatedImages(int p)
+        {
+            int count = 0;
+            while (p < data.Length)
+            {
+                if (!StartsWithPpmMagic(p))
+                {
+                    return (count, false);
+                }
+
+                int q = p;
+                ReadToken(ref q); // "P6"(StartsWithPpmMagic で確認済み)
+                string w = ReadToken(ref q);
+                string h = ReadToken(ref q);
+                string mv = ReadToken(ref q);
+                if (!int.TryParse(w, out int imageWidth) || !int.TryParse(h, out int imageHeight)
+                    || !int.TryParse(mv, out _) || imageWidth < 0 || imageHeight < 0)
+                {
+                    return (count, false);
+                }
+                if (q >= data.Length || !IsWhitespace(data[q]))
+                {
+                    return (count, false);
+                }
+                q += 1;
+
+                count++;
+                long bytes = (long)imageWidth * imageHeight * 3;
+                if (q + bytes > data.Length)
+                {
+                    // 末尾のページが途中で切れている。枚数は下限として扱う。
+                    return (count, false);
+                }
+                p = (int)(q + bytes);
+            }
+            return (count, true);
+        }
+
         string magic = ReadToken(ref pos);
         if (magic != "P6")
         {
@@ -95,10 +151,39 @@ public sealed class PpmImage
         pos += 1;
 
         int pixelBytes = width * height * 3;
-        if (data.Length - pos != pixelBytes)
+        int remaining = data.Length - pos;
+
+        if (remaining < pixelBytes)
         {
             throw new PpmFormatException(
-                $"truncated PPM data: expected {pixelBytes} bytes, got {Math.Max(0, data.Length - pos)}");
+                $"truncated PPM data: expected {pixelBytes} bytes, got {Math.Max(0, remaining)}");
+        }
+
+        if (remaining > pixelBytes)
+        {
+            // Ghostscript は -sOutputFile に %d が無いと複数ページを 1 つの
+            // ppmraw ファイルへ連結して書く。余りの先頭がそのまま次の PPM の
+            // ヘッダなら「複数ページ」であり、単なるゴミの付着とは区別する
+            // (前者は利用者の操作が原因、後者は壊れたファイルが原因)。
+            int trailingStart = pos + pixelBytes;
+            if (StartsWithPpmMagic(trailingStart))
+            {
+                // ページ数は正確に数える。画素データを走査して "P6" を探すと
+                // 偶然一致するバイト列を数えてしまうため、各画像のヘッダを
+                // 読んで「次の画像の開始位置」を計算しながら進む。この方法は
+                // ページ数に比例するだけの手間(数十バイトの読み取り x ページ数)
+                // で済み、100MB 級の画素データには一切触れない。
+                var (followingCount, exact) = CountConcatenatedImages(trailingStart);
+                int pageCount = 1 + followingCount; // 1 は今読んだ先頭ページ
+                string found = exact ? $"found {pageCount} pages" : $"found at least {pageCount} pages";
+                throw new PpmFormatException(
+                    "multi-page PPM: the document has more than one page; " +
+                    $"Foilwright prints one page per job ({found})",
+                    isMultiPage: true);
+            }
+
+            throw new PpmFormatException(
+                $"unexpected trailing data after PPM image: expected {pixelBytes} bytes, got {remaining}");
         }
 
         byte[] pixels = new byte[pixelBytes];

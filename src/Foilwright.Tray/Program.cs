@@ -219,7 +219,7 @@ internal static class Program
         }
         catch (Exception ex) when (ex is GhostscriptException or ConfigException or PpmFormatException or MachineRouteException)
         {
-            Console.Error.WriteLine($"エラー: {ex.Message}");
+            Console.Error.WriteLine($"エラー: {DescribeUserError(ex)}");
             Environment.ExitCode = 1;
         }
     }
@@ -325,9 +325,28 @@ internal static class Program
         }
         catch (Exception ex) when (ex is GhostscriptException or ConfigException or PpmFormatException or MachineRouteException)
         {
-            Console.Error.WriteLine($"エラー: {ex.Message}");
+            Console.Error.WriteLine($"エラー: {DescribeUserError(ex)}");
             Environment.ExitCode = 1;
         }
+    }
+
+    /// <summary>例外を利用者向けの文言にする。PPM が複数ページだったとき
+    /// (PpmFormatException.IsMultiPage)だけ日本語の補足を添える。判定は
+    /// 必ず IsMultiPage で行う — 文言の一致で判定すると、文言を変えた
+    /// 途端に黙って補足が出なくなるため。
+    ///
+    /// PpmFormatException を捕まえる箇所は Program と PreviewForm の両方に
+    /// あり(合計 6 箇所)、片方だけ直すと表示がずれる。共通化してここ 1 箇所
+    /// に集約する。</summary>
+    internal static string DescribeUserError(Exception ex)
+    {
+        if (ex is PpmFormatException { IsMultiPage: true })
+        {
+            return ex.Message + Environment.NewLine
+                + "複数ページの原稿には対応していません。1 ページずつ印刷してください。" + Environment.NewLine
+                + "(印刷ダイアログの「部数」を 2 以上にした場合も、ドライバによってはこうなります)";
+        }
+        return ex.Message;
     }
 
     /// <summary>D-031: `--passes white=4,black=2` の形式を解析する。範囲外
