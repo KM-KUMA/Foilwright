@@ -36,7 +36,7 @@ public class PreviewFormLayoutTests(Xunit.Abstractions.ITestOutputHelper output)
 
             var client = form.ClientRectangle;
             report.Add($"ClientRectangle = {client}");
-            foreach (string caption in new[] { "印刷開始", "取り消し", "部数:" })
+            foreach (string caption in new[] { "印刷開始", "取り消し", "部数:", "1 部ずつ確認する" })
             {
                 var control = FindByText(form, caption);
                 if (control is null)
@@ -84,7 +84,7 @@ public class PreviewFormLayoutTests(Xunit.Abstractions.ITestOutputHelper output)
     {
         foreach (Control child in parent.Controls)
         {
-            if (child.Text == text && child is Button or Label)
+            if (child.Text == text && child is Button or Label or CheckBox)
             {
                 return child;
             }

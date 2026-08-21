@@ -58,6 +58,10 @@ public sealed class PreviewForm : Form
     /// 下端のボタン列に置くことで、構造的に保存の対象にならないようにしてある。</summary>
     private readonly NumericUpDown _copiesUpDown;
 
+    /// <summary>D-044 改訂: 1 部刷り終わるたびに止まって人の確認を待つか。
+    /// 既定は ON。OFF にすると部数ぶん続けて送る(自動給紙が使えるとき向け)。</summary>
+    private readonly CheckBox _stopBetweenCopiesCheck;
+
     // D-038: 送出後、印刷が終わるまでプレビューを開いたまま見張る枠。
     private readonly GroupBox _monitorGroup;
     private readonly Label _monitorStatusLabel;
@@ -79,7 +83,11 @@ public sealed class PreviewForm : Form
     /// <summary>D-044: 部数として受け付ける範囲。打ち間違いで生産終了品のリボンを
     /// 大量に失わないよう上限を設ける(パス数の 1〜8 と同じ方針)。</summary>
     private const int MinCopies = 1;
-    private const int MaxCopies = 20;
+
+    /// <summary>D-044 改訂(2026-08-21): 部数の上限は設けない。当初は打ち間違い対策に
+    /// 20 を上限としていたが、利用者の判断で撤廃した。歯止めは確認ダイアログが
+    /// 部数を読み上げること(BuildPrintConfirmText)と、既定で 1 部ごとに止まることに任せる。</summary>
+    private const int MaxCopies = int.MaxValue;
 
     /// <summary>D-044: 今何部目を刷っているか(1 始まり)と、全部で何部か。
     /// 見張りの表示に「N 部目 / 全 M 部」を出すためだけに使う。部数が 1 のときは
@@ -569,8 +577,14 @@ public sealed class PreviewForm : Form
         {
             Dock = DockStyle.Bottom,
             FlowDirection = FlowDirection.RightToLeft,
-            Height = 44,
-            AutoSize = false,
+            // D-044 改訂: 中身が横に収まらないときは折り返し、パネル自身が縦に伸びる。
+            // 高さを 44 で決め打ちにしていたため、「1 部ずつ確認する」を足した途端に
+            // 部数とチェックが 2 行目へ回り、窓の外(Y=566 > 高さ 561)へ消えていた
+            // ― D-038 5.1 と同じ失敗。レイアウトの検出器
+            // (PreviewFormLayoutTests)がこれを捕まえた。
+            WrapContents = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Padding = new Padding(8, 4, 8, 8),
         };
         _cancelButton = new Button { Text = "取り消し", AutoSize = true, Height = 32 };
@@ -591,11 +605,24 @@ public sealed class PreviewForm : Form
             Minimum = MinCopies,
             Maximum = MaxCopies,
             Value = MinCopies,
-            Width = 56,
+            Width = 72,
             // ボタン(Height = 32)と高さを揃えると縦位置が揃って見える。
             Margin = new Padding(3, 6, 3, 3),
         };
         buttonPanel.Controls.Add(_copiesUpDown);
+        // D-044 改訂: 1 部ごとに止まるかどうかを選べるようにする。**既定は ON。**
+        // この機械は手差し運用(給紙レバー M)で自動給紙は過去に失敗しており
+        // (§11.1.1)、OFF にすると紙が無い状態で次の部が送られて給紙エラーになり、
+        // 機構が動いて詰まる危険がある。OFF は「自動給紙が使える」と分かっている
+        // 人が明示的に選ぶもの、という位置づけにする。
+        _stopBetweenCopiesCheck = new CheckBox
+        {
+            Text = "1 部ずつ確認する",
+            Checked = true,
+            AutoSize = true,
+            Margin = new Padding(3, 9, 3, 3),
+        };
+        buttonPanel.Controls.Add(_stopBetweenCopiesCheck);
         buttonPanel.Controls.Add(new Label
         {
             Text = "部数:",
@@ -1390,10 +1417,11 @@ public sealed class PreviewForm : Form
 
         // D-044: 部数はこのジョブ限りの量であり、保存しない(毎回 1 に戻る)。
         int copies = (int)_copiesUpDown.Value;
+        bool stopBetweenCopies = _stopBetweenCopiesCheck.Checked;
 
         var confirm = MessageBox.Show(
             this,
-            BuildPrintConfirmText(copies),
+            BuildPrintConfirmText(copies, stopBetweenCopies),
             "Foilwright — 印刷確認",
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Question);
@@ -1470,7 +1498,10 @@ public sealed class PreviewForm : Form
                     break;
                 }
 
-                if (copy < copies)
+                // D-044 改訂: 確認が OFF のときは止まらずに次の部を送る。
+                // 手差しのままこれを選ぶと紙が無い状態で機構が動くため、
+                // 危険は確認ダイアログで先に伝えてある(BuildPrintConfirmText)。
+                if (copy < copies && stopBetweenCopies)
                 {
                     // D-044 決定 2: この機械は手差し運用(給紙レバー M)であり、紙が無い状態で
                     // 連続送出すると給紙エラーで機構が動き、詰まる危険がある。次の紙が
@@ -1657,7 +1688,7 @@ public sealed class PreviewForm : Form
     /// 2 部以上のときは、部数・1 部ごとに止まること・カセット交換が部数ぶん増えることを
     /// 伝える(D-044 補足: 5 部刷れば交換も 5 回。機械の摩耗としては安くない)。
     /// 画面に触らない純粋な処理として切り出してあり、ここが検出器になる。</summary>
-    internal static string BuildPrintConfirmText(int copies)
+    internal static string BuildPrintConfirmText(int copies, bool stopBetweenCopies = true)
     {
         const string baseText =
             "プレビューのとおりに印刷します。よろしいですか?\n" +
@@ -1667,11 +1698,19 @@ public sealed class PreviewForm : Form
             return baseText;
         }
 
+        // D-044 改訂: 止まらない設定のときは、そのことと危険をはっきり伝える。
+        // 手差しのままこれを選ぶと、紙が無い状態で次の部が送られて給紙エラーに
+        // なり、機構が動いて詰まる(§11.1.1 / D-044)。
+        string mode = stopBetweenCopies
+            ? "1 部ごとに止まります。次の紙を入れてから続きを進めてください。"
+            : "1 部ずつの確認は行いません。続けて " + copies + " 部を送ります。\n" +
+              "紙が自動で送られない場合は給紙エラーになり、紙詰まりの危険があります。";
+
         return
             $"プレビューのとおりに {copies} 部印刷します。よろしいですか?\n" +
             "(マジックカラー方式は誤爆するとリボンと用紙を失います。プレビューを確認してください)\n" +
             "\n" +
-            "1 部ごとに止まります。次の紙を入れてから続きを進めてください。\n" +
+            mode + "\n" +
             $"カセットの交換も {copies} 回ぶん増えます。";
     }
 
@@ -1715,6 +1754,7 @@ public sealed class PreviewForm : Form
         _cancelButton.Enabled = !busy;
         // D-044: 送出中に部数を変えられると、途中で刷る枚数が変わって混乱する。
         _copiesUpDown.Enabled = !busy;
+        _stopBetweenCopiesCheck.Enabled = !busy;
         _printButton.Enabled = !busy && _current is { Inks.Count: > 0 };
         Text = busy && statusMessage.Length > 0
             ? $"Foilwright — 印刷プレビュー ({statusMessage})"

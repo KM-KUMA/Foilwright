@@ -15,6 +15,50 @@ namespace Foilwright.Tray.Tests;
 
 public class CopiesTests
 {
+    // --- 「1 部ずつ確認する」の ON / OFF --------------------------------------
+    //
+    // 既定は ON。OFF にすると止まらずに続けて送る。この機械は手差し運用で
+    // 自動給紙は過去に失敗しているため、OFF では紙が無い状態で機構が動く
+    // 危険がある。確認ダイアログがその危険を必ず伝えること。
+
+    [Fact]
+    public void BuildPrintConfirmText_StoppingModeSaysItWillStop()
+    {
+        string text = PreviewForm.BuildPrintConfirmText(3, stopBetweenCopies: true);
+        Assert.Contains("3 部", text);
+        Assert.Contains("1 部ごとに止まります", text);
+    }
+
+    [Fact]
+    public void BuildPrintConfirmText_ContinuousModeWarnsAboutTheFeedRisk()
+    {
+        string text = PreviewForm.BuildPrintConfirmText(3, stopBetweenCopies: false);
+        Assert.Contains("3 部", text);
+        // 止まらないことをはっきり言うこと。
+        Assert.DoesNotContain("1 部ごとに止まります", text);
+        // 危険を伝えること — これが無いと利用者は紙を用意せずに押してしまう。
+        Assert.Contains("給紙エラー", text);
+        Assert.Contains("紙詰まり", text);
+    }
+
+    [Fact]
+    public void BuildPrintConfirmText_SingleCopyIsUnaffectedByTheCheckbox()
+    {
+        // 1 部だけのときは、チェックの有無で文言が変わらない(従来どおり)。
+        Assert.Equal(
+            PreviewForm.BuildPrintConfirmText(1, stopBetweenCopies: true),
+            PreviewForm.BuildPrintConfirmText(1, stopBetweenCopies: false));
+    }
+
+    [Fact]
+    public void BuildPrintConfirmText_DefaultsToStopping()
+    {
+        // 既定は「止まる」側。危険な側を既定にしない。
+        Assert.Equal(
+            PreviewForm.BuildPrintConfirmText(3, stopBetweenCopies: true),
+            PreviewForm.BuildPrintConfirmText(3));
+    }
+
     // --- PreviewForm.HasRemainingCopiesFor -----------------------------------
     //
     // これが true のあいだは窓を閉じさせない(部と部のあいだに閉じられると、
