@@ -72,6 +72,31 @@ _SKIP_REASON = (
 _ERROR_PREFIX = "エラー: "
 
 
+def _decode_cli_stderr(raw: bytes) -> str:
+    """Decode Foilwright.Cli's stderr without assuming the console code page.
+
+    .NET picks the encoding for a redirected stderr from the console code
+    page, so the same executable emits cp932 on a stock Japanese Windows
+    and UTF-8 when the code page has been switched to 65001. Decoding with
+    a fixed cp932 mangles the Japanese `エラー: ` prefix under 65001, and
+    the caller then reports "no recognisable error line" -- a test failure
+    that says nothing about the code under test. Try both and keep the
+    first decoding that actually carries the prefix.
+    """
+    candidates = []
+    for encoding in ("cp932", "utf-8"):
+        try:
+            candidates.append(raw.decode(encoding))
+        except UnicodeDecodeError:
+            continue
+    for text in candidates:
+        if any(line.startswith(_ERROR_PREFIX) for line in text.splitlines()):
+            return text
+    # Neither decoding found the prefix: fall back to a lossy read so the
+    # caller can still show something useful in its failure message.
+    return raw.decode("cp932", errors="replace")
+
+
 def _classify_python(ppm_path: pathlib.Path) -> str:
     try:
         read_ppm(str(ppm_path))
@@ -90,7 +115,7 @@ def _classify_csharp(ppm_path: pathlib.Path, out_path: pathlib.Path) -> str:
     )
     if result.returncode == 0:
         return "ok"
-    stderr = result.stderr.decode("cp932", errors="replace")
+    stderr = _decode_cli_stderr(result.stderr)
     for line in stderr.splitlines():
         if line.startswith(_ERROR_PREFIX):
             return line[len(_ERROR_PREFIX) :]

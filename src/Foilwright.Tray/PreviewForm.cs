@@ -25,6 +25,19 @@ public sealed class PreviewForm : Form
     private readonly TraySettings _settings;
     private readonly string _assetRoot;
 
+    // 設定のプリセット: 用途ごとに「設定一式」へ名前を付けて保存し、一発で呼び出す。
+    // 「この設定を既定値として保存」(_saveDefaultsButton)とは別物として併存する —
+    // 既定値は「何も選ばなかったときの初期値」で 1 組しか持てないが、プリセットは
+    // 何組でも持てる(用途を行き来しても上書きにならない)。
+    private readonly ComboBox _presetCombo;
+    private readonly Button _savePresetButton;
+    private readonly Button _deletePresetButton;
+
+    /// <summary>プリセットと既定値の違いを画面上で伝えるためのツールチップ。
+    /// フィールドに持つのは、Component をローカル変数のままにすると回収されて
+    /// ツールチップが出なくなるため。</summary>
+    private readonly ToolTip _presetToolTip;
+
     private readonly ComboBox _machineCombo;
     private readonly ComboBox _inkModeCombo;
     private readonly ComboBox _resolutionCombo;
@@ -70,6 +83,31 @@ public sealed class PreviewForm : Form
 
     private PreviewResult? _current;
     private bool _busy;
+
+    /// <summary>保存済みのプリセット一覧(presets.json の中身)。名前順。
+    /// 追加・削除のたびに <see cref="PresetStore"/> の純粋関数で作り直した
+    /// 新しいリストを入れ直す(その場で書き換えない)。</summary>
+    private List<SettingsPreset> _presets;
+
+    /// <summary>プリセットの中身をコンボ群へ流し込んでいる最中かどうか。
+    /// コンボを 1 つ書き換えるたびに SelectedIndexChanged が
+    /// RefreshPreviewAsync(Ghostscript の再実行を含む)を呼んでしまうため、
+    /// 流し込みのあいだは抑え、全部書き終えてから**一度だけ**再構成する。
+    /// プリセットのコンボ自身を作り直すときにも使う(作り直しで「選ばれた」と
+    /// みなして適用が走らないようにするため)。</summary>
+    private bool _applyingPreset;
+
+    /// <summary>プリセットのコンボの先頭に置く項目。起動時はこれが選ばれている
+    /// (= プリセットを一度も使わない人の画面と挙動は今までどおり)。</summary>
+    private const string NoPresetText = "(選択なし)";
+
+    /// <summary>プリセットのコンボの 1 項目。表示は名前、実体はプリセット
+    /// (先頭の「(選択なし)」だけ Preset が null)。名前をそのままコンボへ入れると、
+    /// 「(選択なし)」という名前のプリセットと見分けが付かなくなるため包む。</summary>
+    private sealed record PresetItem(SettingsPreset? Preset, string Text)
+    {
+        public override string ToString() => Text;
+    }
 
     /// <summary>D-038: 送出後の見張りが進行中(まだ完了/エラー/打ち切り/上限時間の
     /// いずれにも達していない)かどうか。見張りが終わるまでプレビューを閉じない
@@ -167,6 +205,8 @@ public sealed class PreviewForm : Form
         _magicRgbOverride = settings.MagicRgbOverride is { } magicRgbOverride
             ? new Dictionary<string, int[]?>(magicRgbOverride)
             : new Dictionary<string, int[]?>();
+        // プリセット: ファイルが無い・壊れているときは空(印刷そのものは止めない)。
+        _presets = PresetStore.Load();
 
         Text = "Foilwright — 印刷プレビュー";
         Width = 1200;
@@ -221,7 +261,8 @@ public sealed class PreviewForm : Form
         // 設定(§7.1: ジョブごとの上書き)
         // 行を 1 つ増やした分だけ高さも足す(TableLayoutPanel は Dock=Fill なので、
         // ここを据え置くと最下段の保存ボタンが押し出されて見えなくなる)。
-        var settingsGroup = new GroupBox { Text = "設定(このジョブに適用)", Dock = DockStyle.Top, Height = 355 };
+        // プリセットの行(1 行)を枠の中のいちばん上に足したぶん、高さも足す。
+        var settingsGroup = new GroupBox { Text = "設定(このジョブに適用)", Dock = DockStyle.Top, Height = 395 };
         var settingsLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 10, Padding = new Padding(8) };
         settingsLayout.Controls.Add(new Label { Text = "機種:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
         _machineCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
@@ -290,6 +331,78 @@ public sealed class PreviewForm : Form
         settingsLayout.SetColumnSpan(_saveDefaultsButton, 2);
 
         settingsGroup.Controls.Add(settingsLayout);
+
+        // プリセットの行。settingsLayout(Dock=Fill)を先に、この行(Dock=Top)を
+        // 後に足すことで、DockStyle の切り出し順により**必ず枠の中のいちばん上**
+        // (「機種:」の行より上)に来る(D-039 のコメントと同じ理屈。位置を数字で
+        // 調整しない)。
+        var presetPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            FlowDirection = FlowDirection.LeftToRight,
+            // 横に収まらないときは折り返してパネル自身が縦に伸びる。高さを決め打ちに
+            // すると窓を狭めたときにボタンが切れて押せなくなる(D-044 改訂と同じ失敗)。
+            WrapContents = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Padding = new Padding(8, 6, 8, 0),
+        };
+        var presetLabel = new Label
+        {
+            Text = "プリセット:",
+            AutoSize = true,
+            Margin = new Padding(0, 7, 6, 3),
+        };
+        _presetCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
+        _savePresetButton = new Button { Text = "保存...", AutoSize = true };
+        _deletePresetButton = new Button { Text = "削除", AutoSize = true };
+        presetPanel.Controls.Add(presetLabel);
+        presetPanel.Controls.Add(_presetCombo);
+        presetPanel.Controls.Add(_savePresetButton);
+        presetPanel.Controls.Add(_deletePresetButton);
+        settingsGroup.Controls.Add(presetPanel);
+
+        // 「既定値として保存」との違いを画面上で伝える(2 つ並んでいると、どちらが
+        // 何をするのか名前だけでは分からない)。
+        _presetToolTip = new ToolTip { AutoPopDelay = 20_000, InitialDelay = 400, ReshowDelay = 200 };
+        const string presetHelp =
+            "用途ごとに設定一式を保存して呼び出せます(例: 目デカール(フィルム)/ はがきテスト)。\n" +
+            "「この設定を既定値として保存」は 1 組だけで、何も選ばなかったときの初期値になります。\n" +
+            "部数と「1 部ずつ確認する」はプリセットに含みません(そのジョブ限りの指定のため)。";
+        _presetToolTip.SetToolTip(presetLabel, presetHelp);
+        _presetToolTip.SetToolTip(_presetCombo, presetHelp);
+        _presetToolTip.SetToolTip(_savePresetButton, "いまの設定に名前を付けて保存します。");
+        _presetToolTip.SetToolTip(_deletePresetButton, "選んでいるプリセットを削除します。");
+
+        PopulatePresetCombo(null);
+        _presetCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (_applyingPreset)
+            {
+                return;
+            }
+            if (_presetCombo.SelectedItem is not PresetItem { Preset: { } preset })
+            {
+                // 「(選択なし)」に戻しただけ。今の設定はそのままにする
+                // (勝手に既定値へ戻すと、直前の手直しが黙って消える)。
+                return;
+            }
+            BeginInvoke(async () =>
+            {
+                try
+                {
+                    await ApplyPresetAsync(preset);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, $"プリセットの適用に失敗しました: {ex.Message}", "Foilwright",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            });
+        };
+        _savePresetButton.Click += (_, _) => SaveCurrentAsPreset();
+        _deletePresetButton.Click += (_, _) => DeleteSelectedPreset();
+
         right.Controls.Add(settingsGroup);
 
         PopulateResolutionCombo(settings.Machine, settings.ResolutionKey);
@@ -820,12 +933,329 @@ public sealed class PreviewForm : Form
         MessageBox.Show(this, "既定値として保存しました。", "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
+    /// <summary>プリセットのコンボを作り直す(先頭は必ず「(選択なし)」)。
+    /// 作り直しで SelectedIndexChanged が発火しても適用が走らないよう、
+    /// _applyingPreset を立てたまま行う。</summary>
+    private void PopulatePresetCombo(string? selectName)
+    {
+        _applyingPreset = true;
+        try
+        {
+            _presetCombo.Items.Clear();
+            var none = new PresetItem(null, NoPresetText);
+            _presetCombo.Items.Add(none);
+            PresetItem? selected = null;
+            foreach (var preset in _presets)
+            {
+                var item = new PresetItem(preset, preset.Name);
+                _presetCombo.Items.Add(item);
+                if (selectName is not null && PresetStore.NameComparer.Equals(preset.Name, selectName))
+                {
+                    selected = item;
+                }
+            }
+            _presetCombo.SelectedItem = selected ?? none;
+        }
+        finally
+        {
+            _applyingPreset = false;
+        }
+    }
+
+    /// <summary>いま選ばれているプリセット(「(選択なし)」なら null)。</summary>
+    private SettingsPreset? SelectedPreset() =>
+        (_presetCombo.SelectedItem as PresetItem)?.Preset;
+
+    /// <summary>プリセットの中身を画面へ反映し、プレビューを組み直す。
+    ///
+    /// **どの経路で組み直すかは、既存のコンボの挙動にそのまま合わせる** —
+    /// 機種・用紙・解像度・メディア種別を変えるコンボの SelectedIndexChanged は
+    /// いずれも RefreshPreviewAsync(Ghostscript の再実行を含む)を呼んでいる。
+    /// 切り出し範囲や JobConfig そのものが変わるためで(DOMAIN §3.6.1 / §15.10.2)、
+    /// 切り出し済みの画像を使い回す RebuildFromImage では反映できない。
+    /// そこでこの 4 つのどれかが変わるときだけ再変換し、変わらないとき
+    /// (ハーフトーン・白版モード・色補正・インク指定方式・使うインク・パス数・色だけの
+    /// 違い)は RebuildFromImage で済ませる — D-028 補足のとおり Ghostscript を
+    /// 走らせ直さないぶん即座に返る。</summary>
+    private async Task ApplyPresetAsync(SettingsPreset preset)
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        string previousMachine = (string)_machineCombo.SelectedItem!;
+        string? previousResolution = _resolutionCombo.SelectedItem as string;
+        string? previousPaper = (_paperCombo.SelectedItem as PaperItem)?.Name;
+        string? previousMedia = (_mediaCombo.SelectedItem as MediaItem)?.Name;
+
+        _applyingPreset = true;
+        try
+        {
+            if (_machineCombo.Items.Contains(preset.Machine))
+            {
+                _machineCombo.SelectedItem = preset.Machine;
+            }
+            string machine = (string)_machineCombo.SelectedItem!;
+            // 機種で選べる解像度・用紙表が変わりうる(DOMAIN §5.1 / §5.5)ため、
+            // 機種のコンボと同じ手順で作り直してからプリセットの値を選ぶ。
+            PopulateResolutionCombo(machine, preset.ResolutionKey);
+            PopulatePaperCombo(machine, preset.PaperName);
+            PopulateMediaCombo(preset.MediaName);
+
+            if (_inkModeCombo.Items.Contains(preset.InkMode))
+            {
+                _inkModeCombo.SelectedItem = preset.InkMode;
+            }
+            if (_halftoneCombo.Items.Contains(preset.Halftone))
+            {
+                _halftoneCombo.SelectedItem = preset.Halftone;
+            }
+            if (_whiteModeCombo.Items.Contains(preset.WhiteMode))
+            {
+                _whiteModeCombo.SelectedItem = preset.WhiteMode;
+            }
+            if (_colourCorrectionCombo.Items.Contains(preset.ColourCorrection))
+            {
+                _colourCorrectionCombo.SelectedItem = preset.ColourCorrection;
+            }
+            _noCurlCheck.Checked = preset.NoCurlCorrection;
+
+            // D-030 / D-031 / D-042: null と空を区別する。null は「このプリセットは
+            // 触っていない」であり、既定(パレットから導出 / 上書き無し)へ戻す。
+            _usedInks.Clear();
+            foreach (string name in preset.UsedInks ?? TraySettings.DefaultUsedInks(_palette))
+            {
+                _usedInks.Add(name);
+            }
+            _passesOverride.Clear();
+            foreach (var (name, passes) in preset.PassesOverride ?? new Dictionary<string, int>())
+            {
+                _passesOverride[name] = passes;
+            }
+            _magicRgbOverride.Clear();
+            foreach (var (name, rgb) in preset.MagicRgbOverride ?? new Dictionary<string, int[]?>())
+            {
+                _magicRgbOverride[name] = rgb;
+            }
+        }
+        finally
+        {
+            _applyingPreset = false;
+        }
+
+        bool needsReconvert =
+            _current is null
+            || !string.Equals(previousMachine, (string)_machineCombo.SelectedItem!, StringComparison.Ordinal)
+            || previousResolution != _resolutionCombo.SelectedItem as string
+            || previousPaper != (_paperCombo.SelectedItem as PaperItem)?.Name
+            || previousMedia != (_mediaCombo.SelectedItem as MediaItem)?.Name;
+
+        if (needsReconvert)
+        {
+            await RefreshPreviewAsync();
+        }
+        else
+        {
+            await RebuildFromCurrentImageAsync();
+        }
+    }
+
+    /// <summary>いまの画面の設定一式を <see cref="SettingsPreset"/> にする
+    /// (SaveAsDefaults が既定値へ写しているのと同じ項目。部数と
+    /// 「1 部ずつ確認する」は**意図的に含めない** — D-044 決定 3)。</summary>
+    private SettingsPreset BuildPresetFromUi(string name) => new()
+    {
+        Name = name,
+        Machine = (string)_machineCombo.SelectedItem!,
+        InkMode = (string)_inkModeCombo.SelectedItem!,
+        ResolutionKey = (string)_resolutionCombo.SelectedItem!,
+        PaperName = ((PaperItem)_paperCombo.SelectedItem!).Name,
+        MediaName = ((MediaItem)_mediaCombo.SelectedItem!).Name,
+        Halftone = (string)_halftoneCombo.SelectedItem!,
+        WhiteMode = (string)_whiteModeCombo.SelectedItem!,
+        ColourCorrection = (string)_colourCorrectionCombo.SelectedItem!,
+        NoCurlCorrection = _noCurlCheck.Checked,
+        UsedInks = new HashSet<string>(_usedInks),
+        PassesOverride = new Dictionary<string, int>(_passesOverride),
+        MagicRgbOverride = new Dictionary<string, int[]?>(_magicRgbOverride),
+    };
+
+    /// <summary>「保存...」ボタン。名前を尋ね(既定でいま選ばれているプリセット名)、
+    /// 同名があれば上書きの確認を出してから presets.json へ書き出す。
+    /// 保存したらコンボをその名前に切り替える。</summary>
+    private void SaveCurrentAsPreset()
+    {
+        // _current(プレビューの結果)は見ない — プリセットに入るのはコンボの値だけで、
+        // 「既定値として保存」が押せる状況ならこちらも押せる、と揃えてある。
+        if (_busy)
+        {
+            return;
+        }
+        string? name = PromptForPresetName(SelectedPreset()?.Name ?? string.Empty);
+        if (name is null)
+        {
+            return;
+        }
+        var existing = _presets.FirstOrDefault(p => PresetStore.NameComparer.Equals(p.Name, name));
+        if (existing is not null)
+        {
+            var overwrite = MessageBox.Show(
+                this,
+                $"プリセット「{existing.Name}」はすでにあります。いまの設定で上書きしますか?",
+                "Foilwright", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (overwrite != DialogResult.Yes)
+            {
+                return;
+            }
+        }
+
+        var updated = PresetStore.Upsert(_presets, BuildPresetFromUi(name));
+        if (!TrySavePresets(updated))
+        {
+            return;
+        }
+        _presets = updated;
+        PopulatePresetCombo(name);
+    }
+
+    /// <summary>「削除」ボタン。「(選択なし)」のときは何もしない(何をすればよいかは伝える)。
+    /// 選ばれているときは確認してから消す。</summary>
+    private void DeleteSelectedPreset()
+    {
+        if (_busy)
+        {
+            return;
+        }
+        var selected = SelectedPreset();
+        if (selected is null)
+        {
+            // 黙って帰るとボタンが壊れているように見える(D-042 のボタンと同じ流儀)。
+            MessageBox.Show(
+                this, "先にプリセットを選んでください。", "Foilwright",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var confirm = MessageBox.Show(
+            this, $"プリセット「{selected.Name}」を削除します。よろしいですか?", "Foilwright",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (confirm != DialogResult.Yes)
+        {
+            return;
+        }
+
+        var updated = PresetStore.Remove(_presets, selected.Name);
+        if (!TrySavePresets(updated))
+        {
+            return;
+        }
+        _presets = updated;
+        // 消したものは選べない。「(選択なし)」へ戻す(画面の設定はそのまま)。
+        PopulatePresetCombo(null);
+    }
+
+    /// <summary>presets.json への書き出し。書けなかったときは、黙って成功したように
+    /// 見せず理由を出す(次に起動したときプリセットが消えている、を防ぐ)。</summary>
+    private bool TrySavePresets(IReadOnlyList<SettingsPreset> presets)
+    {
+        try
+        {
+            PresetStore.Save(presets);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"プリセットを保存できませんでした: {ex.Message}", "Foilwright",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
+    }
+
+    /// <summary>プリセット名を尋ねる。取り消されたら null を返す。
+    /// WinForms に標準の入力ダイアログは無いため、小さな Form を自前で持つ
+    /// (Microsoft.VisualBasic への参照追加も NuGet の追加もしない)。</summary>
+    private string? PromptForPresetName(string initialName)
+    {
+        using var dialog = new PresetNameDialog(initialName);
+        return dialog.ShowDialog(this) == DialogResult.OK ? dialog.PresetName : null;
+    }
+
+    /// <summary>プリセット名の入力欄だけを持つ小さなダイアログ。
+    /// 名前の妥当性は <see cref="PresetStore.IsValidPresetName"/> が決める
+    /// (空白のみは不可・長すぎるものも不可)。OK を押しても妥当でなければ閉じない。</summary>
+    private sealed class PresetNameDialog : Form
+    {
+        private readonly TextBox _nameBox;
+
+        /// <summary>入力された名前(前後の空白は落とす)。</summary>
+        internal string PresetName => _nameBox.Text.Trim();
+
+        internal PresetNameDialog(string initialName)
+        {
+            Text = "Foilwright — プリセットの名前";
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            StartPosition = FormStartPosition.CenterParent;
+            MinimizeBox = false;
+            MaximizeBox = false;
+            ShowInTaskbar = false;
+            ClientSize = new Size(440, 132);
+
+            var label = new Label
+            {
+                Text = $"プリセットの名前({PresetStore.MaxPresetNameLength} 文字まで):",
+                AutoSize = true,
+                Location = new Point(12, 14),
+            };
+            _nameBox = new TextBox
+            {
+                Text = initialName,
+                Location = new Point(12, 40),
+                Width = 416,
+                MaxLength = PresetStore.MaxPresetNameLength,
+            };
+            var okButton = new Button
+            {
+                Text = "OK",
+                Location = new Point(244, 84),
+                Size = new Size(88, 30),
+            };
+            var cancelButton = new Button
+            {
+                Text = "キャンセル",
+                DialogResult = DialogResult.Cancel,
+                Location = new Point(340, 84),
+                Size = new Size(88, 30),
+            };
+            // 妥当でない名前のまま閉じない(DialogResult は妥当だったときだけ入れる)。
+            okButton.Click += (_, _) =>
+            {
+                if (!PresetStore.IsValidPresetName(PresetName))
+                {
+                    MessageBox.Show(
+                        this,
+                        $"名前を入力してください(空白だけは使えません。{PresetStore.MaxPresetNameLength} 文字まで)。",
+                        "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                DialogResult = DialogResult.OK;
+            };
+            AcceptButton = okButton;
+            CancelButton = cancelButton;
+            Controls.Add(label);
+            Controls.Add(_nameBox);
+            Controls.Add(okButton);
+            Controls.Add(cancelButton);
+        }
+    }
+
     // §7.2: プレビューは必須。誤爆はリボンと用紙を失うため、印刷開始できる
     // 状態は必ずこの再変換を経てから決める(古いプレビューのまま印刷ボタンを
     // 有効化しない)。
     private async Task RefreshPreviewAsync()
     {
-        if (_busy)
+        // プリセットの流し込み中(_applyingPreset)は、コンボを 1 つ書き換えるたびに
+        // ここへ来てしまう。全部書き終えてから ApplyPresetAsync が一度だけ呼ぶ。
+        if (_busy || _applyingPreset)
         {
             return;
         }
@@ -1059,7 +1489,7 @@ public sealed class PreviewForm : Form
         // 「色を既定に戻す」ボタンの役目であり、ここでは消さない。
         _magicRgbOverride[inkName] = rgb;
 
-        await RebuildAfterMagicRgbChangeAsync();
+        await RebuildFromCurrentImageAsync();
     }
 
     /// <summary>D-042: 「色を選ぶ...」ボタン。選択中の行に対して ColorDialog を開き、
@@ -1119,7 +1549,7 @@ public sealed class PreviewForm : Form
             return;
         }
 
-        await RebuildAfterMagicRgbChangeAsync();
+        await RebuildFromCurrentImageAsync();
     }
 
     /// <summary>D-042: 「全部の色を既定に戻す」ボタン。上書きを全部捨てて
@@ -1141,12 +1571,15 @@ public sealed class PreviewForm : Form
             return;
         }
         _magicRgbOverride.Clear();
-        await RebuildAfterMagicRgbChangeAsync();
+        await RebuildFromCurrentImageAsync();
     }
 
-    /// <summary>D-042: 色の上書きを変えたあとの再構成。OnInkUseChangedAsync /
-    /// OnPassesChangedAsync と同じ流儀で、Ghostscript は再実行しない。</summary>
-    private async Task RebuildAfterMagicRgbChangeAsync()
+    /// <summary>切り出し済みの画像を使い回したままジョブ組み立てだけをやり直す
+    /// (Ghostscript は再実行しない。D-028 補足)。OnInkUseChangedAsync /
+    /// OnPassesChangedAsync と同じ流儀。D-042 の色の変更と、プリセットの適用
+    /// (ApplyPresetAsync)が共有する経路であり、名前を「色を変えたあと」から
+    /// 一般化してある。</summary>
+    private async Task RebuildFromCurrentImageAsync()
     {
         SetBusy(true, "ジョブを再構成中...");
         try
@@ -1741,6 +2174,10 @@ public sealed class PreviewForm : Form
         _colourCorrectionCombo.Enabled = !busy;
         _noCurlCheck.Enabled = !busy;
         _saveDefaultsButton.Enabled = !busy;
+        // プリセットも他の設定と同じ扱い(送出・再構成の最中は触らせない)。
+        _presetCombo.Enabled = !busy;
+        _savePresetButton.Enabled = !busy;
+        _deletePresetButton.Enabled = !busy;
         _statusRefreshButton.Enabled = !busy;
         // D-028: 再構成中はチェック列(除外の切り替え)を編集不可にする。
         _inkGrid.Columns["Use"]!.ReadOnly = busy;
