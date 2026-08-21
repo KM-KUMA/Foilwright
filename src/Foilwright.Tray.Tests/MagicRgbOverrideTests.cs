@@ -381,6 +381,66 @@ public class MagicRgbOverrideTests
         Assert.Equal(new[] { 225, 160, 0 }, rgb);
     }
 
+    // --- PreviewForm.BuildMagicRgbWarning ------------------------------------
+    //
+    // 白版モード none のまま白へ色を割り当てると 1 ドットも出ない(実測)。
+    // 「割り当てたのに何も出ない」は気づきにくいので、その場で伝える。
+
+    private static IReadOnlyList<(string Name, int[]? Rgb, bool IsUndercoat, bool HasColourOverride)>
+        Inks(params (string, int[]?, bool, bool)[] items) => items
+            .Select(x => (Name: x.Item1, Rgb: x.Item2, IsUndercoat: x.Item3, HasColourOverride: x.Item4))
+            .ToList();
+
+    [Fact]
+    public void BuildMagicRgbWarning_NoProblemGivesEmptyText()
+    {
+        var text = PreviewForm.BuildMagicRgbWarning(
+            Inks(("white", new[] { 230, 230, 230 }, true, false), ("black", new[] { 0, 0, 0 }, false, false)),
+            "magic");
+        Assert.Equal(string.Empty, text);
+    }
+
+    [Fact]
+    public void BuildMagicRgbWarning_ReportsDuplicateColours()
+    {
+        var text = PreviewForm.BuildMagicRgbWarning(
+            Inks(("white", new[] { 0, 0, 0 }, true, true), ("black", new[] { 0, 0, 0 }, false, false)),
+            "magic");
+        Assert.Contains("#000000", text);
+        Assert.Contains("white", text);
+        Assert.Contains("black", text);
+    }
+
+    [Fact]
+    public void BuildMagicRgbWarning_WarnsWhenWhiteModeNoneBlocksTheAssignedColour()
+    {
+        var text = PreviewForm.BuildMagicRgbWarning(
+            Inks(("white", new[] { 0, 0, 0 }, true, true)),
+            "none");
+        Assert.Contains("none", text);
+        Assert.Contains("magic", text);
+    }
+
+    [Fact]
+    public void BuildMagicRgbWarning_DoesNotWarnWhenWhiteKeepsItsPaletteColour()
+    {
+        // 白の色を触っていなければ none でも警告しない(既定の運用を邪魔しない)。
+        var text = PreviewForm.BuildMagicRgbWarning(
+            Inks(("white", new[] { 230, 230, 230 }, true, false)),
+            "none");
+        Assert.Equal(string.Empty, text);
+    }
+
+    [Fact]
+    public void BuildMagicRgbWarning_DoesNotWarnForNonUndercoatInksUnderWhiteModeNone()
+    {
+        // 下地インク以外は白版モードの影響を受けない。
+        var text = PreviewForm.BuildMagicRgbWarning(
+            Inks(("cyan", new[] { 0, 0, 0 }, false, true)),
+            "none");
+        Assert.Equal(string.Empty, text);
+    }
+
     [Fact]
     public void TryParseColorCell_RejectsMalformedInput()
     {

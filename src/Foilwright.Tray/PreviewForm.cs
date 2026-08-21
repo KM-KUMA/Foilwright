@@ -443,8 +443,9 @@ public sealed class PreviewForm : Form
         _magicRgbWarningLabel = new Label
         {
             Dock = DockStyle.Bottom,
-            AutoSize = false,
-            Height = 32,
+            // 警告は 2 行になることがある(色の重複 + 白版モード)。高さを決め打ちに
+            // すると 2 行目が切れて読めなくなるため、内容にあわせて伸びるようにする。
+            AutoSize = true,
             ForeColor = Color.Red,
             Text = string.Empty,
         };
@@ -1086,18 +1087,64 @@ public sealed class PreviewForm : Form
     /// 分かりにくいため — ただし**印刷は止めない**(警告のみ。D-042)。</summary>
     private void UpdateMagicRgbWarning()
     {
-        var duplicates = _palette
+        var inks = _palette
             .Where(def => _usedInks.Contains(def.Name))
-            .Select(def => (def.Name, Rgb: ResolveMagicRgb(def)))
+            .Select(def => (
+                def.Name,
+                Rgb: ResolveMagicRgb(def),
+                IsUndercoat: def.AutoUndercoat,
+                HasColourOverride: _magicRgbOverride.TryGetValue(def.Name, out int[]? o) && o is not null))
+            .ToList();
+
+        _magicRgbWarningLabel.Text = BuildMagicRgbWarning(inks, _whiteModeCombo.SelectedItem as string);
+    }
+
+    /// <summary>D-042: 「色」の割り当てから警告文を組み立てる(画面に触らない純粋な処理。
+    /// ここが検出器になるよう Form から切り出してある)。警告が無ければ空文字。
+    ///
+    /// 2 種類を見る:
+    ///   ①同じ色が使用中のインク 2 つ以上に割り当たっている。画素がどちらへ行くかは
+    ///     判定の順序で決まり、利用者からは分かりにくい。
+    ///   ②下地インク(白)に色を割り当てたのに、白版モードが "none" になっている。
+    ///     "none" は「白版を作らない」であり magic_rgb への直接一致すら作らないため、
+    ///     **割り当てても 1 ドットも出ない**(2026-08-21 実測 / DOMAIN §14.6)。
+    ///     割り当てたのに何も出ないという気づきにくい形になるので、その場で伝える。
+    ///
+    /// どちらも**印刷は止めない**(警告のみ。D-042)。</summary>
+    internal static string BuildMagicRgbWarning(
+        IReadOnlyList<(string Name, int[]? Rgb, bool IsUndercoat, bool HasColourOverride)> usedInks,
+        string? whiteMode)
+    {
+        var messages = new List<string>();
+
+        var duplicates = usedInks
             .Where(x => x.Rgb is not null)
             .GroupBy(x => FormatColorCell(x.Rgb), StringComparer.Ordinal)
             .Where(g => g.Count() >= 2)
             .Select(g => $"{g.Key} ({string.Join(", ", g.Select(x => x.Name))})")
             .ToList();
+        if (duplicates.Count > 0)
+        {
+            messages.Add(
+                $"⚠ 同じ色が複数のインクに割り当てられています: {string.Join(" / ", duplicates)}" +
+                "(使わないインクはチェックを外してください)");
+        }
 
-        _magicRgbWarningLabel.Text = duplicates.Count == 0
-            ? string.Empty
-            : $"⚠ 同じ色が複数のインクに割り当てられています: {string.Join(" / ", duplicates)}";
+        if (whiteMode == "none")
+        {
+            var blocked = usedInks
+                .Where(x => x.IsUndercoat && x.HasColourOverride)
+                .Select(x => x.Name)
+                .ToList();
+            if (blocked.Count > 0)
+            {
+                messages.Add(
+                    $"⚠ 白版モードが none のため、{string.Join(", ", blocked)} に割り当てた色は無視されます" +
+                    "(1 ドットも刷られません)。白版モードを magic にしてください。");
+            }
+        }
+
+        return string.Join(Environment.NewLine, messages);
     }
 
     /// <summary>新しい PreviewResult を画面へ反映し、古いものを破棄する
