@@ -51,6 +51,13 @@ public sealed class PreviewForm : Form
     private readonly Button _printButton;
     private readonly Button _cancelButton;
 
+    /// <summary>D-044: 部数。ドライバ側の部数は使えない(2 以上にすると PScript5 が
+    /// 複数ページの PostScript を吐き、D-043 のエラーで止まる)ため、Foilwright 側で持つ。
+    /// 「設定(このジョブに適用)」の枠には置かない — あの枠には「この設定を既定値として
+    /// 保存」ボタンがあり、部数が保存されると誤解を招く(D-044 決定 3: 部数は保存しない)。
+    /// 下端のボタン列に置くことで、構造的に保存の対象にならないようにしてある。</summary>
+    private readonly NumericUpDown _copiesUpDown;
+
     // D-038: 送出後、印刷が終わるまでプレビューを開いたまま見張る枠。
     private readonly GroupBox _monitorGroup;
     private readonly Label _monitorStatusLabel;
@@ -68,6 +75,31 @@ public sealed class PreviewForm : Form
     /// <summary>D-038: 見張りループを打ち切るためのトークン。「見張りを中止」ボタンが
     /// これを Cancel する — 印刷そのものは止めない。見張りをやめるだけ。</summary>
     private CancellationTokenSource? _monitorCts;
+
+    /// <summary>D-044: 部数として受け付ける範囲。打ち間違いで生産終了品のリボンを
+    /// 大量に失わないよう上限を設ける(パス数の 1〜8 と同じ方針)。</summary>
+    private const int MinCopies = 1;
+    private const int MaxCopies = 20;
+
+    /// <summary>D-044: 今何部目を刷っているか(1 始まり)と、全部で何部か。
+    /// 見張りの表示に「N 部目 / 全 M 部」を出すためだけに使う。部数が 1 のときは
+    /// 表示を一切変えない(1 部しか刷らない人の画面を変えないため)。</summary>
+    private int _copyIndex = 1;
+    private int _copyTotal = 1;
+
+    /// <summary>D-044: まだ刷っていない部が残っているか。部と部のあいだ(見張りは
+    /// 終わったが次の部をまだ送っていない状態)を表す。窓を閉じさせないためと、
+    /// 「閉じる」ボタンを出さないための判定に使う。</summary>
+    private bool HasRemainingCopies => HasRemainingCopiesFor(_copyIndex, _copyTotal);
+
+    /// <summary>D-044: 「まだ刷っていない部が残っているか」の判定(画面に触らない
+    /// 純粋な処理。ここが検出器になるよう切り出してある)。
+    ///
+    /// これが true のあいだは窓を閉じさせない。**印刷が終わったら必ず false に
+    /// 戻ること**が要で、戻し忘れると窓が二度と閉じられなくなる — PrintAsync の
+    /// finally が全部の抜け道(完走・エラー・中止・例外)で 1 に戻している。</summary>
+    internal static bool HasRemainingCopiesFor(int copyIndex, int copyTotal) =>
+        copyTotal > 1 && copyIndex < copyTotal;
 
     /// <summary>D-030: このジョブで使うインクの許可リスト(name の集合)。
     /// TraySettings.ResolveUsedInks で解決した既定値を初期状態とし、以後は
@@ -551,6 +583,26 @@ public sealed class PreviewForm : Form
         _printButton.Click += async (_, _) => await PrintAsync();
         buttonPanel.Controls.Add(_cancelButton);
         buttonPanel.Controls.Add(_printButton);
+        // D-044: 部数は「印刷開始」の左隣に置く。buttonPanel は RightToLeft 送りなので
+        // 後から追加したものほど左へ並ぶ — 数値欄・ラベルの順に足すと、画面上は
+        // 「部数: [1] 印刷開始 取り消し」の並びになる。
+        _copiesUpDown = new NumericUpDown
+        {
+            Minimum = MinCopies,
+            Maximum = MaxCopies,
+            Value = MinCopies,
+            Width = 56,
+            // ボタン(Height = 32)と高さを揃えると縦位置が揃って見える。
+            Margin = new Padding(3, 6, 3, 3),
+        };
+        buttonPanel.Controls.Add(_copiesUpDown);
+        buttonPanel.Controls.Add(new Label
+        {
+            Text = "部数:",
+            AutoSize = true,
+            TextAlign = ContentAlignment.MiddleRight,
+            Margin = new Padding(3, 10, 0, 3),
+        });
         rightContainer.Controls.Add(buttonPanel);
 
         // D-038: 送出後、印刷が終わるまでプレビューを開いたまま見張る枠。
@@ -614,6 +666,21 @@ public sealed class PreviewForm : Form
                     this,
                     "印刷の完了を見張っている間は閉じられません。「見張りを中止」を押してください" +
                     "(押しても印刷は止まりません。見張りをやめるだけです)。",
+                    "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            // D-044 決定 5: 部と部のあいだも閉じさせない。見張りが 1 部ぶん
+            // 終わると _monitoring が false に戻るため、ここを見ないと
+            // 「次の紙を入れてください」が出るまでの隙に閉じられてしまう。
+            // 閉じた後もループは次の部を送りに行くので、破棄済みの窓へ触って
+            // 落ちるうえ、残りの部が黙って失われる。
+            if (HasRemainingCopies)
+            {
+                e.Cancel = true;
+                MessageBox.Show(
+                    this,
+                    $"まだ {_copyTotal} 部のうち {_copyIndex} 部目までしか刷っていません。" +
+                    "残りをやめるときは「次の紙を入れてください」の確認で「キャンセル」を押してください。",
                     "Foilwright", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         };
@@ -1321,10 +1388,12 @@ public sealed class PreviewForm : Form
             return;
         }
 
+        // D-044: 部数はこのジョブ限りの量であり、保存しない(毎回 1 に戻る)。
+        int copies = (int)_copiesUpDown.Value;
+
         var confirm = MessageBox.Show(
             this,
-            "プレビューのとおりに印刷します。よろしいですか?\n" +
-            "(マジックカラー方式は誤爆するとリボンと用紙を失います。プレビューを確認してください)",
+            BuildPrintConfirmText(copies),
             "Foilwright — 印刷確認",
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Question);
@@ -1362,19 +1431,64 @@ public sealed class PreviewForm : Form
             };
             var planes = _current.Planes;
 
-            await Task.Run(() => JobPipeline.Print(
-                planes, job, route, route.Vid,
-                (done, total) => BeginInvoke(() =>
-                {
-                    _progressBar.Maximum = Math.Max(total, 1);
-                    _progressBar.Value = Math.Min(done, _progressBar.Maximum);
-                })));
+            // D-044: 部数ぶん繰り返す。planes / job は送出で消費されないので
+            // そのまま使い回せる(Ghostscript を走らせ直す必要も無い)。
+            _copyTotal = copies;
+            for (int copy = 1; copy <= copies; copy++)
+            {
+                _copyIndex = copy;
 
-            // D-038: 送出が終わっても印刷はまだこれから進む(プリンタは受け取った
-            // 分を溜めて刷り続ける)。ここで閉じずに見張りへ移る。送出中に状態を
-            // 読んではならない(§15.2.1)ため、見張りは Print が返った後にしか
-            // 始められない。
-            await MonitorPrintCompletionAsync(route);
+                // 2 部目以降は見張りが進捗バーを隠したままなので、出し直して 0 に戻す。
+                _progressBar.Value = 0;
+                _progressBar.Visible = true;
+
+                await Task.Run(() => JobPipeline.Print(
+                    planes, job, route, route.Vid,
+                    (done, total) => BeginInvoke(() =>
+                    {
+                        _progressBar.Maximum = Math.Max(total, 1);
+                        _progressBar.Value = Math.Min(done, _progressBar.Maximum);
+                    })));
+
+                // D-038: 送出が終わっても印刷はまだこれから進む(プリンタは受け取った
+                // 分を溜めて刷り続ける)。ここで閉じずに見張りへ移る。送出中に状態を
+                // 読んではならない(§15.2.1)ため、見張りは Print が返った後にしか
+                // 始められない。
+                // D-044: 最後の部だけ従来どおり自動で閉じる(D-039)。
+                bool ok = await MonitorPrintCompletionAsync(route, isLastCopy: copy == copies);
+                if (!ok)
+                {
+                    // D-044 決定 4: 途中でエラー(や打ち切り・上限時間)が出たら残りを中止する。
+                    // 何部刷って何部やめたかを画面に残す — 黙って終わらない。
+                    if (copies > 1)
+                    {
+                        // 見張りが残した文言(エラーの中身・上限時間切れ等)は消さずに
+                        // 下へ足す — 原因が読めなくなると直しようが無い。
+                        _monitorStatusLabel.Text += Environment.NewLine + BuildCopiesStoppedText(
+                            copy - 1, copies, "印刷の完了を確認できませんでした");
+                    }
+                    break;
+                }
+
+                if (copy < copies)
+                {
+                    // D-044 決定 2: この機械は手差し運用(給紙レバー M)であり、紙が無い状態で
+                    // 連続送出すると給紙エラーで機構が動き、詰まる危険がある。次の紙が
+                    // 入ったことを人に確認してもらうまで次の部を送らない。
+                    var next = MessageBox.Show(
+                        this,
+                        BuildNextCopyPrompt(copy, copies),
+                        "Foilwright — 次の紙を入れてください",
+                        MessageBoxButtons.OKCancel,
+                        MessageBoxIcon.Information);
+                    if (next != DialogResult.OK)
+                    {
+                        _monitorStatusLabel.Text += Environment.NewLine + BuildCopiesStoppedText(
+                            copy, copies, "利用者が中止しました");
+                        break;
+                    }
+                }
+            }
         }
         catch (Exception ex) when (ex is TransportException or ConfigException)
         {
@@ -1383,15 +1497,32 @@ public sealed class PreviewForm : Form
         }
         finally
         {
-            SetBusy(false, string.Empty);
+            // D-044: ループを抜けたら(全部刷った/エラー/中止/例外のいずれでも)
+            // 「部が残っている」状態を必ず解く。ここで戻さないと、途中で中止した
+            // ときに HasRemainingCopies が true のまま残り、**窓が二度と閉じられなく
+            // なる**(FormClosing がずっと止め続ける)。
+            _copyTotal = 1;
+            _copyIndex = 1;
+            // 最後の部が成功すると、見張りの中で 3 秒待ってから Close() している
+            // (D-039)。その場合ここへ来たときには窓が閉じ始めているため、
+            // 破棄済みのコントロールに触らないよう確認する(1615 行付近と同じ流儀)。
+            if (!IsDisposed)
+            {
+                _monitorCloseButton.Enabled = true;
+                SetBusy(false, string.Empty);
+            }
         }
     }
 
     /// <summary>D-038: 送出後、印刷が終わるまでプレビューを開いたまま見張る。
     /// 4 秒おきに状態(`05 01`)を読み、StatusDecoder.Describe の結果を
     /// PrintWatchDecision に渡して次の一手(継続/完了/エラー)を決める。
-    /// 上限時間・中止ボタン・猶予期間は下の定数を参照。</summary>
-    private async Task MonitorPrintCompletionAsync(MachineRoute route)
+    /// 上限時間・中止ボタン・猶予期間は下の定数を参照。
+    ///
+    /// D-044: 戻り値は「正常に刷り終わったか」。エラー・打ち切り・上限時間切れは false で、
+    /// 呼び出し元(PrintAsync)は残りの部を中止する。isLastCopy が false のときは
+    /// 自動で閉じない — まだ次の部を送るため。</summary>
+    private async Task<bool> MonitorPrintCompletionAsync(MachineRoute route, bool isLastCopy)
     {
         // D-038: 4 秒周期は純正のステータスモニタと同じ(§11.1.1 の USBPcap 採取で確認済み)。
         const int PollIntervalMs = 4_000;
@@ -1411,7 +1542,7 @@ public sealed class PreviewForm : Form
         _monitorGroup.Visible = true;
         _monitorAbortButton.Enabled = true;
         _monitorCloseButton.Enabled = false;
-        _monitorStatusLabel.Text = "経過: 00:00 — 見張りを開始しました。";
+        _monitorStatusLabel.Text = $"経過: 00:00{CopyProgressSuffix()} — 見張りを開始しました。";
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         string resultText;
@@ -1436,7 +1567,7 @@ public sealed class PreviewForm : Form
                     break;
                 }
 
-                _monitorStatusLabel.Text = $"経過: {FormatElapsed(stopwatch.Elapsed)} — 状態を確認中...";
+                _monitorStatusLabel.Text = $"経過: {FormatElapsed(stopwatch.Elapsed)}{CopyProgressSuffix()} — 状態を確認中...";
 
                 PrinterStatusReport? report = null;
                 try
@@ -1449,7 +1580,7 @@ public sealed class PreviewForm : Form
                     // 読み取りに失敗しても見張りは続ける(一時的な通信の乱れの
                     // 可能性がある)。次の周期でまた読み直す。
                     _monitorStatusLabel.Text =
-                        $"経過: {FormatElapsed(stopwatch.Elapsed)} — 状態の読み取りに失敗しました: {ex.Message}";
+                        $"経過: {FormatElapsed(stopwatch.Elapsed)}{CopyProgressSuffix()} — 状態の読み取りに失敗しました: {ex.Message}";
                 }
 
                 if (report is not null)
@@ -1468,7 +1599,7 @@ public sealed class PreviewForm : Form
                         break;
                     }
                     _monitorStatusLabel.Text =
-                        $"経過: {FormatElapsed(stopwatch.Elapsed)} — 直近の状態: {report.StatusSummary}";
+                        $"経過: {FormatElapsed(stopwatch.Elapsed)}{CopyProgressSuffix()} — 直近の状態: {report.StatusSummary}";
                 }
 
                 try
@@ -1485,14 +1616,19 @@ public sealed class PreviewForm : Form
         {
             _monitoring = false;
             _monitorAbortButton.Enabled = false;
-            _monitorCloseButton.Enabled = true;
+            // D-044: まだ次の部が残っているなら「閉じる」も出さない。ここを
+            // 無条件に true にすると、部と部のあいだだけ押せる状態が生まれる
+            // (FormClosing 側でも止めてはいるが、押せるボタンが何も起きない
+            // のは分かりにくい)。閉じられるのは最後の部が終わってから。
+            _monitorCloseButton.Enabled = isLastCopy;
             _monitorCts?.Dispose();
             _monitorCts = null;
         }
 
-        _monitorStatusLabel.Text = $"経過: {FormatElapsed(stopwatch.Elapsed)} — {resultText}";
+        _monitorStatusLabel.Text = $"経過: {FormatElapsed(stopwatch.Elapsed)}{CopyProgressSuffix()} — {resultText}";
 
-        if (completedSuccessfully)
+        // D-044: まだ次の部が残っているときは閉じない。閉じるのは最後の部だけ。
+        if (completedSuccessfully && isLastCopy)
         {
             // D-039: すぐには閉じない — 結果の文言を読めるだけの間を置く。
             // 【推測】3 秒: 印刷結果(紙)自体は目視できており長く待たせる理由が
@@ -1508,7 +1644,48 @@ public sealed class PreviewForm : Form
                 Close();
             }
         }
+
+        return completedSuccessfully;
     }
+
+    /// <summary>D-044: 見張りの表示に添える「N 部目 / 全 M 部」。部数が 1 のときは
+    /// 空文字を返し、表示を今までどおりに保つ(1 部しか刷らない人の画面を変えない)。</summary>
+    private string CopyProgressSuffix() =>
+        _copyTotal <= 1 ? string.Empty : $"({_copyIndex} 部目 / 全 {_copyTotal} 部)";
+
+    /// <summary>D-044: 印刷前の確認文。部数が 1 のときは従来の文言のまま。
+    /// 2 部以上のときは、部数・1 部ごとに止まること・カセット交換が部数ぶん増えることを
+    /// 伝える(D-044 補足: 5 部刷れば交換も 5 回。機械の摩耗としては安くない)。
+    /// 画面に触らない純粋な処理として切り出してあり、ここが検出器になる。</summary>
+    internal static string BuildPrintConfirmText(int copies)
+    {
+        const string baseText =
+            "プレビューのとおりに印刷します。よろしいですか?\n" +
+            "(マジックカラー方式は誤爆するとリボンと用紙を失います。プレビューを確認してください)";
+        if (copies <= 1)
+        {
+            return baseText;
+        }
+
+        return
+            $"プレビューのとおりに {copies} 部印刷します。よろしいですか?\n" +
+            "(マジックカラー方式は誤爆するとリボンと用紙を失います。プレビューを確認してください)\n" +
+            "\n" +
+            "1 部ごとに止まります。次の紙を入れてから続きを進めてください。\n" +
+            $"カセットの交換も {copies} 回ぶん増えます。";
+    }
+
+    /// <summary>D-044: 1 部刷り終わったあと、次の紙を入れてもらうための文。
+    /// この機械は手差し運用(給紙レバー M)であり、紙が無い状態で送ると詰まる危険がある。</summary>
+    internal static string BuildNextCopyPrompt(int finished, int total) =>
+        $"{finished} 部目が終わりました(全 {total} 部)。\n" +
+        $"次の紙を入れてから「OK」を押してください。残り {total - finished} 部です。\n" +
+        "やめるときは「キャンセル」を押してください。";
+
+    /// <summary>D-044: 途中でやめたときに残す文。何部刷って何部やめたかを画面に残す
+    /// (黙って終わらない)。</summary>
+    internal static string BuildCopiesStoppedText(int finished, int total, string reason) =>
+        $"{total} 部のうち {finished} 部を刷ったところで中止しました({reason})。";
 
     private static string FormatElapsed(TimeSpan elapsed) => elapsed.ToString(@"mm\:ss");
 
@@ -1536,6 +1713,8 @@ public sealed class PreviewForm : Form
         _resetColorButton.Enabled = !busy;
         _resetAllColorsButton.Enabled = !busy;
         _cancelButton.Enabled = !busy;
+        // D-044: 送出中に部数を変えられると、途中で刷る枚数が変わって混乱する。
+        _copiesUpDown.Enabled = !busy;
         _printButton.Enabled = !busy && _current is { Inks.Count: > 0 };
         Text = busy && statusMessage.Length > 0
             ? $"Foilwright — 印刷プレビュー ({statusMessage})"
