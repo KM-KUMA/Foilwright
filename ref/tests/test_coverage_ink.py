@@ -217,11 +217,48 @@ def test_default_palette_coverage_inks(tmp_path):
     assert glossy["barcode"] == 19
     assert glossy["order"] == 95
 
-    # Every other ink keeps coverage False -- the nine original entries
-    # were not touched.
-    for name, ink in by_name.items():
-        if name not in ("mf_ink", "glossy_finish"):
-            assert ink["coverage"] is False, name
+    # The nine original entries were not touched. Check them by name rather
+    # than "everything else": D-050 added more coverage inks, and what matters
+    # is that the original nine were not dragged in.
+    original_nine = (
+        "white",
+        "metallic_gold",
+        "metallic_silver",
+        "metallic_magenta",
+        "metallic_cyan",
+        "cyan",
+        "magenta",
+        "yellow",
+        "black",
+    )
+    for name in original_nine:
+        assert by_name[name]["coverage"] is False, name
+
+    # D-050: the five-layer entries reuse the same cassettes at different
+    # positions. printer_code and barcode repeat on purpose; only the name
+    # and the order differ. Getting the order wrong puts the undercoat on
+    # top of the artwork, so pin it here.
+    assert [
+        by_name[n]["order"]
+        for n in (
+            "black",
+            "mf_ink_under_gloss",
+            "glossy_mid",
+            "mf_ink_under_white",
+            "white_over",
+        )
+    ] == [90, 91, 92, 93, 94]
+    assert by_name["mf_ink_under_gloss"]["printer_code"] == 0x10
+    assert by_name["mf_ink_under_white"]["printer_code"] == 0x10
+    assert by_name["glossy_mid"]["printer_code"] == 0x0E
+    assert by_name["white_over"]["printer_code"] == 0x0B
+    for name in (
+        "mf_ink_under_gloss",
+        "glossy_mid",
+        "mf_ink_under_white",
+        "white_over",
+    ):
+        assert by_name[name]["coverage"] is True, name
 
 
 # ---------------------------------------------------------------------------

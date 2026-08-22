@@ -158,8 +158,11 @@ public class CassetteCheckTests
         string repoRoot = FindRepoRoot();
         var palette = ConfigLoader.LoadPalette(Path.Combine(repoRoot, "palette", "default.yaml"));
 
-        // D-048 で coverage インク 2 色(mf_ink / glossy_finish)が加わって 11 になった。
-        Assert.Equal(11, palette.Count);
+        // D-048 で coverage インク 2 色(mf_ink / glossy_finish)が加わって 11 になり、
+        // D-050 で 5 層構成用の 4 色(同じカセットを違う位置で使うための重複項目)が
+        // 加わって 15 になった。**printer_code と barcode の重複は想定内**であり、
+        // ここが「全インクにバーコードがある」ことだけを見ているのはそのため。
+        Assert.Equal(15, palette.Count);
         foreach (var ink in palette)
         {
             Assert.True(ink.Barcode.HasValue, $"ink '{ink.Name}' is missing 'barcode'");

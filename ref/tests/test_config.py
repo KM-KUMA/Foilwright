@@ -240,7 +240,15 @@ def test_load_palette_default_orders_metallics_by_file_order():
     assert names[0] == "mf_ink"
     assert names[-1] == "glossy_finish"
     assert names[1] == "white"
-    assert names[-2] == "black"
+    # D-050 added the five-layer entries (orders 91..94) between black (90)
+    # and glossy_finish (95), so black is no longer second from the end.
+    assert names[-6] == "black"
+    assert names[-5:-1] == [
+        "mf_ink_under_gloss",
+        "glossy_mid",
+        "mf_ink_under_white",
+        "white_over",
+    ]
 
     metallic_names = [n for n in names if n.startswith("metallic_")]
     assert metallic_names == [

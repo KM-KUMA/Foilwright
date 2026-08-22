@@ -295,14 +295,40 @@ public class CoverageInkTests
         Assert.Equal(19, glossy.Barcode);
         Assert.Equal(95, glossy.Order);
 
-        // 既存 9 色は触っていない。
-        foreach (var (name, ink) in byName)
+        // 既存 9 色は触っていない。**塗る範囲で決まるインクだけが coverage** で
+        // あること — D-050 で 5 層構成用の重複項目が増えたので、名前で数え上げる
+        // のではなく「9 色の側」を列挙して確かめる(インクが増えても、
+        // **既存 9 色が巻き込まれていないこと**だけを見張れば足りる)。
+        string[] originalNine =
         {
-            if (name != "mf_ink" && name != "glossy_finish")
-            {
-                Assert.False(ink.Coverage, name);
-            }
+            "white", "metallic_gold", "metallic_silver", "metallic_magenta",
+            "metallic_cyan", "cyan", "magenta", "yellow", "black",
+        };
+        foreach (string name in originalNine)
+        {
+            Assert.False(byName[name].Coverage, name);
         }
+
+        // D-050: 5 層構成用の項目も coverage であること(既定で無効になり、
+        // 塗る範囲を選ぶまでプレーンが作られない)。
+        foreach (string name in new[] { "mf_ink_under_gloss", "glossy_mid", "mf_ink_under_white", "white_over" })
+        {
+            Assert.True(byName[name].Coverage, name);
+        }
+
+        // 同じカセットを違う位置で使うので、printer_code と barcode は重複する。
+        Assert.Equal(0x10, byName["mf_ink_under_gloss"].PrinterCode);
+        Assert.Equal(0x10, byName["mf_ink_under_white"].PrinterCode);
+        Assert.Equal(0x0B, byName["white_over"].PrinterCode);
+        Assert.Equal(0x0E, byName["glossy_mid"].PrinterCode);
+
+        // 層の順序: 黒(90) → 下地(91) → 光沢(92) → 下地(93) → 白(94)。
+        // **ここを間違えると下地が絵の上に来る。**
+        Assert.Equal(90, byName["black"].Order);
+        Assert.Equal(91, byName["mf_ink_under_gloss"].Order);
+        Assert.Equal(92, byName["glossy_mid"].Order);
+        Assert.Equal(93, byName["mf_ink_under_white"].Order);
+        Assert.Equal(94, byName["white_over"].Order);
     }
 
     // --- BuildJobPlanes: coverageModes(D-048 決定 2/3) -----------------------

@@ -128,6 +128,53 @@ inks:
     coverage: true
     passes: 1
 
+  # --- 黒の上に白を重ねるための層(DOMAIN §10.8.1 / D-050) -------------------
+  #
+  # 実運用者の報告: **黒の上に特色ホワイトを直接重ねると剥がれる。光沢仕上げを
+  # 1 層挟むだけでは防げず、アンダーコートを前後に挟む 5 層構成が必要だった。**
+  #
+  #     黒(90) → 下地(91) → 光沢(92) → 下地(93) → 白(94)
+  #
+  # **同じカセットを違う位置で 2 回使う。** パレットは配列なので、printer_code と
+  # barcode が同じ項目を名前と order を変えて並べれば表現できる(名前と channel の
+  # 重複だけが検証で弾かれる)。カセットの過不足判定は重複を想定済み。
+  #
+  # **どれも coverage(塗る範囲で決まるインク)にしてある。** 既定で無効になり、
+  # 塗る範囲を選ぶまでプレーンも作られないので、使わない人の出力は変わらない。
+  # 白の 2 個目を magic_rgb にしないのは、既存の white と同じ色を取り合って
+  # しまうため(D-042 の重複警告が常時出る)。
+  #
+  # **この 5 層構成は第三者の報告であり、実機で確かめていない。**
+  # 「アンダーコート」が MF インクである確証も無い(§14.7: 蓋然性は高いが、
+  # 純正ドライバには「アンダーコート(ホワイト)」も別に存在する)。
+  - name: mf_ink_under_gloss
+    label: 紙用 MF インク (MDC-PREP) — 光沢の下
+    printer_code: 0x10
+    barcode: 18
+    order: 91
+    coverage: true
+    passes: 1
+  - name: glossy_mid
+    label: 紙用光沢仕上げ2 (MDC-FRVG) — 中間層
+    printer_code: 0x0E
+    barcode: 19
+    order: 92
+    coverage: true
+    passes: 1
+  - name: mf_ink_under_white
+    label: 紙用 MF インク (MDC-PREP) — 白の下
+    printer_code: 0x10
+    barcode: 18
+    order: 93
+    coverage: true
+    passes: 1
+  - name: white_over
+    label: 紙用特色ホワイト (MDC-SCWH) — 最上層
+    printer_code: 0x0B
+    barcode: 16
+    order: 94
+    coverage: true
+    passes: 1
   - name: glossy_finish
     label: 紙用光沢仕上げ2 (MDC-FRVG)
     printer_code: 0x0E
