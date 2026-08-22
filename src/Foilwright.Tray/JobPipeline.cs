@@ -271,6 +271,11 @@ public static class JobPipeline
                 Name = jp.Ink.Name,
                 PrinterCode = jp.Ink.PrinterCode,
                 Passes = ResolvePasses(jp.Ink, passesOverride),
+                // §14.8: 印字色が 5 本以上になると転送モードが multiPlane へ上がり、
+                // **カセット一覧コマンドにバーコードが要る**。ここで渡さないと
+                // 5 本以上のジョブが送出の直前で止まる(D-050 の 5 層構成が該当する)。
+                // 誤って刷りはしないが、機能としては未接続になる。
+                Barcode = jp.Ink.Barcode,
             })
             .ToList();
         var inkInfos = jobPlanes

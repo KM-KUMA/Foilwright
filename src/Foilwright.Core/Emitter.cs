@@ -4,11 +4,13 @@
 // tests/golden/ の golden fixture が行使する範囲の ppmtomd 1.6 RGL コマンド
 // 生成を再現する:
 //
-// - 単一ページ・単一パス・単一転送モードグループ(転送モードは常に
-//   "colourPlane" = 0x04; ppmtomd.c:1312-1313)
-// - カール補正なし、LF/印字ヘッド補正なし、光沢仕上げなし、カセットの
-//   バーコード一覧なし、x/y シフトなし(golden のコマンド列はどれもこれらを
-//   有効化するオプションを使っていない)
+// - 単一ページ・単一パス・単一転送モードグループ(既定は "colourPlane" =
+//   0x04; ppmtomd.c:1312-1313。印字色が 4 本を超えると "multiPlane" = 0x08
+//   へ自動的に切り替わる; ppmtomd.c:1780-1783)
+// - multiPlane が要求するカセット一覧(ESC & l {本数} 00 C + バーコード列;
+//   ppmtomd.c:2526-2544、golden g25-g27)
+// - LF/印字ヘッド補正なし、光沢仕上げなし、オーバーレイモードなし
+//   (golden のコマンド列はどれもこれらを有効化するオプションを使っていない)
 // - PackBits 圧縮は ppmtomd.c:2362-2452(packbits())のとおり
 // - ppmtomd の「余ったプレーンはスクラッチバッファへ回し、バックフィード
 //   コマンドで後から継ぎ足す」挙動(fd のルーティングは ppmtomd.c:2092-2138、
@@ -28,6 +30,12 @@ public sealed class JobInk
 {
     public required string Name { get; init; }
     public required int PrinterCode { get; init; }
+
+    /// <summary>カセットのバーコード番号(DOMAIN §6.5)。色選択に使う
+    /// PrinterCode とは別体系なので、パレットの InkDefinition.Barcode を
+    /// そのまま渡すこと(印字色が 4 本以下なら送らないので null でよい)。
+    /// 5 本以上(= multi_plane)では必須で、欠けていれば例外になる。</summary>
+    public int? Barcode { get; init; }
 
     /// <summary>重ね塗り回数(DOMAIN §6.2)。既定 1。ref/ の
     /// job["inks"][i]["passes"] に対応する(config.load_palette の既定値と
@@ -59,7 +67,9 @@ public sealed class PrintJob
     public bool NoCurlCorrection { get; init; }
 
     /// <summary>転送モード。"colour_plane"(既定、ppmtomd の既定)か
-    /// "black_raster"(-black、単一プレーン、色選択コマンドなし)。</summary>
+    /// "black_raster"(-black、単一プレーン、色選択コマンドなし)。
+    /// "colour_plane" は印字色が Emitter.MaxColourPlaneInks 本を超えると
+    /// 自動的に "multi_plane" へ格上げされる(ppmtomd.c:1780-1783)。</summary>
     public string TransferMode { get; init; } = "colour_plane";
 }
 
@@ -84,14 +94,27 @@ public static class Emitter
     // 転送モード(mddata.h の transferMode)。データ部全体の形を決める
     // (単一プレーンのモードは色選択コマンドを一切持たない)。
     //
-    // 以下の 2 つのみ実装する。カセットモードはここでは扱わないカートリッジ
-    // バーコードを送る(DOMAIN §6.5)し、ラスタモードはデータレイアウトが
+    // 以下の 3 つのみ実装する。カセットモードは色選択コマンドの末尾を 'r' では
+    // なく 'c' にする(ppmtomd.c:2262-2263)し、ラスタモードはデータレイアウトが
     // 異なる。
     private static readonly Dictionary<string, int> TransferModes = new()
     {
         ["black_raster"] = 0x00, // 単一プレーン、色選択なし(-black)
         ["colour_plane"] = 0x04, // 選択 1 回 + インクごとの行(ppmtomd 既定)
+        ["multi_plane"] = 0x08,  // 形は同じで 5〜7 本用(下記)
     };
+
+    /// <summary>colourPlane のジョブが持てる印字色の上限。これを超えると
+    /// ppmtomd はジョブ全体を multiPlane へ切り替える(ppmtomd.c:1780-1783)。
+    /// データレイアウトが変わるわけではなく — 色選択もラスタも 1 バイト違わない —
+    /// モードバイトが変わり、初期化にカセット一覧が 1 つ増えるだけ
+    /// (ppmtomd.c:2526-2544)。</summary>
+    public const int MaxColourPlaneInks = 4;
+
+    /// <summary>1 パスで印字ヘッドに載るカートリッジの本数。ppmtomd はこれを
+    /// 超えると誤った印刷をせずエラーにする(ppmtomd.c:1778
+    /// "Too many printing colours")。</summary>
+    public const int MaxPrintingColours = 7;
 
     /// <summary>ppmtomd の packbits()(ppmtomd.c:2362-2452)の移植。
     ///
@@ -250,6 +273,30 @@ public static class Emitter
             pageWidth *= 2;
         }
 
+        var inks = job.Inks;
+
+        // 転送モード。ppmtomd は colourPlane から出発し、印字色が 4 本を超えた
+        // 時点でジョブ全体を multiPlane へ格上げする(ppmtomd.c:1780-1783)。
+        // 単一プレーンのモードが明示されていればそのまま — ppmtomd と同じ。
+        //
+        // passes(DOMAIN §6.2)は同じインク = 同じカセットの繰り返しなので
+        // 印字色は増えず、ここでは意図的に数えない。数えているのは「利用者に
+        // 何本のカセットを載せてもらうか」で、下のカセット一覧が並べるものと
+        // 同じ。(ppmtomd に passes は無く、g21/g22 は同じインクを複数
+        // コンポーネントに割り当てて同じ形を得ているので、golden はこの点を
+        // 決めていない。)
+        string modeName = job.TransferMode;
+        if (modeName == "colour_plane" && inks.Count > MaxColourPlaneInks)
+        {
+            modeName = "multi_plane";
+        }
+        int mode = TransferModes[modeName];
+        if (mode != TransferModes["black_raster"] && inks.Count > MaxPrintingColours)
+        {
+            throw new ArgumentException(
+                $"too many printing colours: {inks.Count} inks, the print head holds at most {MaxPrintingColours}");
+        }
+
         var outBytes = new List<byte>();
 
         // rgl_init_page (ppmtomd.c:2484-2564)、golden fixture が使うフィールド
@@ -265,6 +312,33 @@ public static class Emitter
         outBytes.AddRange(new byte[] { Esc, 0x26, 0x6C, (byte)paper.Code, 0, 0x41 });
         outBytes.AddRange(new byte[] { Esc, 0x26, 0x6C, (byte)(pageLength % 256), (byte)(pageLength / 256), 0x50 });
         outBytes.AddRange(new byte[] { Esc, 0x26, 0x61, (byte)(pageWidth % 256), (byte)(pageWidth / 256), 0x4D });
+
+        // カセット一覧。multiPlane のときだけ送る(ppmtomd.c:2526-2544):
+        // ESC & l {本数} 00 C のあとに、印刷順でインク 1 本につき 1 バイトの
+        // カセットバーコード番号が続く。バーコードの番号体系は色選択バイトとは
+        // 別物なので(DOMAIN §6.5)、パレットの barcode をそのまま使い、
+        // printer_code から導出しない。
+        if (mode == TransferModes["multi_plane"])
+        {
+            var barcodes = new List<byte>();
+            foreach (var ink in inks)
+            {
+                if (ink.Barcode is null)
+                {
+                    throw new ArgumentException(
+                        $"ink '{ink.Name}': 'barcode' is required with more than {MaxColourPlaneInks} inks (the cassette list command carries it)");
+                }
+                int barcode = ink.Barcode.Value;
+                if (barcode < 0 || barcode > 255)
+                {
+                    throw new ArgumentException(
+                        $"ink '{ink.Name}': 'barcode' must be an integer in 0..255, got {barcode}");
+                }
+                barcodes.Add((byte)barcode);
+            }
+            outBytes.AddRange(new byte[] { Esc, 0x26, 0x6C, (byte)barcodes.Count, 0, 0x43 });
+            outBytes.AddRange(barcodes);
+        }
 
         // x/y オフセット(出力解像度基準のドット)。ppmtomd はシフトが正の
         // ときだけコマンドを出す(ppmtomd.c:2546-2555)。
@@ -299,11 +373,8 @@ public static class Emitter
         byte curl = job.NoCurlCorrection ? (byte)1 : (byte)0;
         outBytes.AddRange(new byte[] { Esc, 0x1A, curl, 0, 0x43 });
 
-        int mode = TransferModes[job.TransferMode];
         outBytes.AddRange(new byte[] { Esc, 0x2A, 0x72, (byte)mode, 0x55 });
         outBytes.AddRange(new byte[] { Esc, 0x2A, 0x72, 0, 0x41 }); // ラスタグラフィックス開始
-
-        var inks = job.Inks;
 
         if (mode == TransferModes["black_raster"])
         {

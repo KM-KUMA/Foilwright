@@ -631,7 +631,15 @@ internal static class Program
 
             var planes = jobPlanes.ToDictionary(jp => jp.Ink.Name, jp => jp.Plane);
             var inks = jobPlanes
-                .Select(jp => new JobInk { Name = jp.Ink.Name, PrinterCode = jp.Ink.PrinterCode, Passes = jp.Ink.Passes })
+                .Select(jp => new JobInk
+                {
+                    Name = jp.Ink.Name,
+                    PrinterCode = jp.Ink.PrinterCode,
+                    // 印字色 5 本以上ではカセット一覧に載る(DOMAIN §14.8)。
+                    // 4 本以下では使われないので null のままでも構わない。
+                    Barcode = jp.Ink.Barcode,
+                    Passes = jp.Ink.Passes,
+                })
                 .ToList();
 
             var job = new PrintJob
@@ -831,7 +839,15 @@ internal static class Program
 
         var planes = jobPlanes.ToDictionary(jp => jp.Ink.Name, jp => jp.Plane);
         var inks = jobPlanes
-            .Select(jp => new JobInk { Name = jp.Ink.Name, PrinterCode = jp.Ink.PrinterCode, Passes = jp.Ink.Passes })
+            .Select(jp => new JobInk
+            {
+                Name = jp.Ink.Name,
+                PrinterCode = jp.Ink.PrinterCode,
+                // 印字色 5 本以上ではカセット一覧に載る(DOMAIN §14.8)。
+                // 4 本以下では使われないので null のままでも構わない。
+                Barcode = jp.Ink.Barcode,
+                Passes = jp.Ink.Passes,
+            })
             .ToList();
 
         var job = new PrintJob

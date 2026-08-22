@@ -127,6 +127,9 @@ def _render_python(
             {
                 "name": ink["name"],
                 "printer_code": ink["printer_code"],
+                # 印字色 5 本以上ではカセット一覧に載る(DOMAIN §14.8)。
+                # C# 側(Program.cs の JobInk.Barcode)と同じ値を渡す。
+                "barcode": ink["barcode"],
                 "passes": ink["passes"],
             }
             for ink in inks

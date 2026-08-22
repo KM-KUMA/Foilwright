@@ -115,6 +115,49 @@ public class GoldenTests
         new JobInk { Name = "black", PrinterCode = 0x00 },
     };
 
+    // `-spotcolours 1=Finish=k`(6 本目は `,2=Finish=c`): 印字色 5 本・6 本、
+    // つまり ppmtomd が colourPlane を multiPlane に差し替えてカセット一覧を
+    // 送る条件(DOMAIN §14.8)。
+    //
+    // 特色に Finish を選ぶのは、Finish だけが下の CMYK を消さない特色だから
+    // (ppmtomd.c:3028-3044 の isspot が立たない)。おかげでこの fixture は
+    // ラスタ層を巻き込まずに emitter の変更だけを切り出せる。
+    //
+    // 特色のプレーンは既存の CMYK チャンネルの完全な複製になる: ppmtomd は
+    // 特色の k / c を、色補正なし・Plain の下色除去で生の画素から求めており
+    // (ppmtomd.c:2977-2991)、これは colcorPlain と同じ式(ppmtomd.c:2933-2937)。
+    // 特色はディザも通らない。だから下では "finish_k" -> "K"、"finish_c" -> "C"。
+    //
+    // バーコードはカセットの番号体系(mddata.h の barCode、DOMAIN §6.5)で
+    // printer_code とは別物: Cyan=3, Magenta=2, Yellow=1, Black=0, Finish II=19。
+    private static readonly Dictionary<string, string> FiveInkPalette = new()
+    {
+        ["cyan"] = "C",
+        ["magenta"] = "M",
+        ["yellow"] = "Y",
+        ["black"] = "K",
+        ["finish_k"] = "K",
+    };
+
+    private static readonly List<JobInk> FiveInks = new()
+    {
+        new JobInk { Name = "cyan", PrinterCode = 0x01, Barcode = 3 },
+        new JobInk { Name = "magenta", PrinterCode = 0x02, Barcode = 2 },
+        new JobInk { Name = "yellow", PrinterCode = 0x03, Barcode = 1 },
+        new JobInk { Name = "black", PrinterCode = 0x00, Barcode = 0 },
+        new JobInk { Name = "finish_k", PrinterCode = 0x0E, Barcode = 19 },
+    };
+
+    private static readonly Dictionary<string, string> SixInkPalette = new(FiveInkPalette)
+    {
+        ["finish_c"] = "C",
+    };
+
+    private static readonly List<JobInk> SixInks = new(FiveInks)
+    {
+        new JobInk { Name = "finish_c", PrinterCode = 0x0E, Barcode = 19 },
+    };
+
     private static (PaperSpec Paper, MediaSpec Media) BuildJobBasics(int resolution, string model, out ProfileSpec profile)
     {
         profile = ConfigLoader.LoadProfile(Path.Combine(ProfilesDir, model + ".yaml"));
@@ -440,7 +483,10 @@ public class GoldenTests
             }
             else if (kind == 0x26)
             {
-                i += 6;
+                // ESC & l {本数} 00 C は multiPlane のカセット一覧で、ペイロードを
+                // 持つ唯一の ESC & コマンド。ヘッダの後ろにバーコードが
+                // {本数} バイト続く(ppmtomd.c:2526-2544)。
+                i += 6 + (data[i + 5] == 0x43 ? data[i + 3] : 0);
             }
             else if (kind == 0x2A)
             {
@@ -531,6 +577,37 @@ public class GoldenTests
             "c1_black_120x120.ppm", 600, "md-5000", inks, palette,
             colourCorrection: "none");
         AssertGoldenMatch(actual, "g22_c1_white_thrice_md5000_600.bin");
+    }
+
+    [Fact]
+    public void G25FiveInksMd5000_600()
+    {
+        // 印字色 5 本: 転送モードが 0x04 ではなく 0x08(multiPlane)になり、
+        // ページ幅コマンドの直後にカセット一覧
+        // `ESC & l 05 00 C 03 02 01 00 13` が入る。それ以外 — 選択・ラスタ・
+        // バックフィード — は colourPlane と 1 バイトも違わない(DOMAIN §14.8)。
+        var actual = Render("c6_fullcolour_240x120.ppm", 600, "md-5000", FiveInks, FiveInkPalette);
+        AssertGoldenMatch(actual, "g25_c6_five_inks_md5000_600.bin");
+    }
+
+    [Fact]
+    public void G26SixInksMd5000_600()
+    {
+        // 印字色 6 本。カセット一覧が 1 エントリ増え、本数バイトも追従する。
+        // バーコード 19 が 2 回並ぶのは意図どおり — ppmtomd は「カセットの
+        // 種類ごと」ではなく「印字コンポーネントごと」に 1 エントリ出す。
+        var actual = Render("c6_fullcolour_240x120.ppm", 600, "md-5000", SixInks, SixInkPalette);
+        AssertGoldenMatch(actual, "g26_c6_six_inks_md5000_600.bin");
+    }
+
+    [Fact]
+    public void G27FiveInksMd5000_1200()
+    {
+        // 1200dpi の multiPlane。特色はディザも 1200dpi の subrow 合成も
+        // 通らない(ppmtomd.c:2970-2972)ので、5 本目は元画像 1 行あたり
+        // 1 回の素の閾値処理になる — カセット一覧は解像度に影響されない。
+        var actual = Render("c6_fullcolour_240x120.ppm", 1200, "md-5000", FiveInks, FiveInkPalette);
+        AssertGoldenMatch(actual, "g27_c6_five_inks_md5000_1200.bin");
     }
 
     [Fact]

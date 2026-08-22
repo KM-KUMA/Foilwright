@@ -84,6 +84,46 @@ _WHITE_FINISH_INKS = [
 ]
 
 
+# `-spotcolours 1=Finish=k` (and `,2=Finish=c` for the six-ink fixture):
+# five and six printing colours, which is what makes ppmtomd swap
+# colourPlane for multiPlane and send the cassette list (DOMAIN §14.8).
+#
+# Finish is the spot colour that leaves the CMYK planes alone -- ppmtomd's
+# `isspot` (ppmtomd.c:3028-3044) blanks whatever sits under an ordinary
+# spot colour, but Finish is exempt. So these fixtures isolate the emitter
+# change instead of dragging the raster layer in with them.
+#
+# The spot planes themselves are exact copies of existing CMYK channels:
+# ppmtomd computes a spot's `k`/`c` from the raw pixel with plain UCR and
+# no colour correction (ppmtomd.c:2977-2991), which is the same expression
+# colcorPlain uses (ppmtomd.c:2933-2937), and spot colours skip dithering
+# entirely. Hence "finish_k" -> "K" and "finish_c" -> "C" below.
+#
+# Barcodes come from the cassette numbering (mddata.h `barCode`, DOMAIN
+# §6.5), not from printer_code: Cyan=3, Magenta=2, Yellow=1, Black=0,
+# Finish II=19.
+_FIVE_INK_PALETTE = {
+    "cyan": "C",
+    "magenta": "M",
+    "yellow": "Y",
+    "black": "K",
+    "finish_k": "K",
+}
+_FIVE_INKS = [
+    {"name": "cyan", "printer_code": 0x01, "barcode": 3},
+    {"name": "magenta", "printer_code": 0x02, "barcode": 2},
+    {"name": "yellow", "printer_code": 0x03, "barcode": 1},
+    {"name": "black", "printer_code": 0x00, "barcode": 0},
+    {"name": "finish_k", "printer_code": 0x0E, "barcode": 19},
+]
+
+_SIX_INK_PALETTE = dict(_FIVE_INK_PALETTE, finish_c="C")
+_SIX_INKS = [
+    *_FIVE_INKS,
+    {"name": "finish_c", "printer_code": 0x0E, "barcode": 19},
+]
+
+
 def _job(resolution: int, model: str, inks: list) -> dict:
     profile = config.load_profile(str(PROFILES_DIR / f"{model}.yaml"))
     paper_table = config.resolve_paper_table(profile, str(PAPERS_DIR))
@@ -266,7 +306,10 @@ def _count_ejects(data: bytes) -> int:
         elif kind == 0x1A:  # ESC SUB {a} {b} {cmd} -- colour select, backfeed…
             i += 5
         elif kind == 0x26:  # ESC & {x} {lo} {hi} {cmd} -- page geometry
-            i += 6
+            # ESC & l {count} 00 C is the multiPlane cassette list, and is
+            # the one ESC & command with a payload: {count} barcode bytes
+            # follow the header (ppmtomd.c:2526-2544).
+            i += 6 + (data[i + 3] if data[i + 5] == 0x43 else 0)
         elif kind == 0x2A:
             sub = data[i + 2]
             if sub == 0x74:  # ESC * t {res} R + stray NUL (ppmtomd quirk)
@@ -528,6 +571,37 @@ def test_g23_and_g24_are_byte_identical():
         colour_correction="plain",
     )
     assert actual_coarse == actual_halftone
+
+
+def test_g25_five_inks_md5000_600():
+    """Five printing colours: transfer mode 0x08 (multiPlane) instead of
+    0x04, plus the cassette list `ESC & l 05 00 C 03 02 01 00 13` right
+    after the page-width command. Everything else -- selections, rasters,
+    backfeeds -- is byte for byte what colourPlane emits (DOMAIN §14.8)."""
+    job = _job(600, "md-5000", _FIVE_INKS)
+    actual = _render(CASES_DIR / "c6_fullcolour_240x120.ppm", job, _FIVE_INK_PALETTE)
+    _assert_golden_match(actual, GOLDEN_DIR / "g25_c6_five_inks_md5000_600.bin")
+
+
+def test_g26_six_inks_md5000_600():
+    """Six printing colours. The cassette list grows by one entry and its
+    count byte follows; the repeated barcode (19 twice) is deliberate --
+    ppmtomd lists one entry per printing component, not per distinct
+    cassette."""
+    job = _job(600, "md-5000", _SIX_INKS)
+    actual = _render(CASES_DIR / "c6_fullcolour_240x120.ppm", job, _SIX_INK_PALETTE)
+    _assert_golden_match(actual, GOLDEN_DIR / "g26_c6_six_inks_md5000_600.bin")
+
+
+def test_g27_five_inks_md5000_1200():
+    """multiPlane at 1200dpi. Spot colours skip both dithering and the
+    1200dpi subrow pass (ppmtomd.c:2970-2972), so the fifth plane is the
+    plain per-source-row threshold while the CMYK four go through the
+    subrow AND-combine -- and the cassette list is unaffected by
+    resolution."""
+    job = _job(1200, "md-5000", _FIVE_INKS)
+    actual = _render(CASES_DIR / "c6_fullcolour_240x120.ppm", job, _FIVE_INK_PALETTE)
+    _assert_golden_match(actual, GOLDEN_DIR / "g27_c6_five_inks_md5000_1200.bin")
 
 
 def test_g16_blackraster_md5000_600():

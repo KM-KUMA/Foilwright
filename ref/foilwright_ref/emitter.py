@@ -3,13 +3,15 @@
 This reproduces the subset of ppmtomd 1.6's RGL command generation that
 the golden fixtures under tests/golden/ exercise:
 
-- single page, single transfer-mode group (transfer mode is always
-  "colourPlane" = 0x04; ppmtomd.c:1312-1313); an ink's `passes` (DOMAIN
+- single page, single transfer-mode group ("colourPlane" = 0x04 by
+  default, ppmtomd.c:1312-1313, automatically upgraded to "multiPlane"
+  = 0x08 past four inks, ppmtomd.c:1780-1783); an ink's `passes` (DOMAIN
   §6.2) repeats that ink's colour-selection + raster N times within the
   job, for overprinting (opaque white hiding power; DOMAIN §4.3)
-- no curl correction, no LF/print-head adjustment, no glossy finish,
-  no cassette barcode list, no x/y shift (none of the golden command
-  lines use the options that would turn these on)
+- the cassette list (ESC & l {count} 00 C + barcodes) that multiPlane
+  requires (ppmtomd.c:2526-2544; goldens g25-g27)
+- no LF/print-head adjustment, no glossy finish, no overlay mode (none
+  of the golden command lines use the options that would turn these on)
 - PackBits compression exactly as ppmtomd.c:2362-2452 (packbits())
 - ppmtomd's "extra planes go to a scratch buffer and get spliced back
   in with a backfeed command" behaviour (ppmtomd.c:2092-2138 for the
@@ -41,13 +43,26 @@ _RESOLUTION_CODES = {300: 0x02, 600: 0x03, 1200: 0x04}
 # whole data section, not just a flag: the single-plane modes carry no
 # colour-selection commands at all.
 #
-# Only the two below are implemented. The cassette modes send a cartridge
-# barcode we do not model (DOMAIN §6.5), and the raster modes use a
-# different data layout.
+# Only the three below are implemented. The cassette modes send the
+# selection command with 'c' instead of 'r' (ppmtomd.c:2262-2263), and the
+# raster modes use a different data layout.
 _TRANSFER_MODES = {
     "black_raster": 0x00,  # single plane, no colour selection (-black)
     "colour_plane": 0x04,  # one selection + rows per ink (ppmtomd default)
+    "multi_plane": 0x08,  # same shape, but for 5..7 inks (see below)
 }
+
+# A colourPlane job holds at most four printing colours; past that ppmtomd
+# switches the whole job to multiPlane (ppmtomd.c:1780-1783). It is not a
+# different data layout -- the selection commands and rasters are byte for
+# byte the same -- only the mode byte changes and an extra cassette list
+# goes out during initialisation (ppmtomd.c:2526-2544).
+MAX_COLOUR_PLANE_INKS = 4
+
+# The print head can hold seven cartridges in one pass; ppmtomd refuses
+# anything beyond that rather than printing something wrong
+# (ppmtomd.c:1778 "Too many printing colours").
+MAX_PRINTING_COLOURS = 7
 
 
 def _packbits(row: bytes) -> tuple[int, bytes]:
@@ -157,7 +172,10 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
             this is the full set of active inks for the job (an entry
             here with an all-blank plane still gets a (blank) selection
             command emitted, matching ppmtomd's default -colours
-            behaviour of always driving C/M/Y/K).
+            behaviour of always driving C/M/Y/K). Each entry also needs
+            a "barcode" (the cassette's barcode number, DOMAIN §6.5) once
+            there are more than MAX_COLOUR_PLANE_INKS of them, because
+            multi_plane sends the cassette list.
         "width": int, "height": int,  # image pixel dimensions
         "x_shift": int, "y_shift": int,  # optional, default 0; dots
     }
@@ -176,6 +194,29 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
     elif resolution == 1200:
         page_width *= 2
 
+    inks = job["inks"]
+
+    # Transfer mode. ppmtomd starts from colourPlane and upgrades the whole
+    # job to multiPlane once there are more than four printing colours
+    # (ppmtomd.c:1780-1783); an explicitly requested single-plane mode is
+    # left alone, exactly as there.
+    #
+    # `passes` (DOMAIN §6.2) repeats one ink, i.e. one cassette, so it does
+    # not add a printing colour and is deliberately not counted here. The
+    # count is the number of cassettes the job asks the user to load, which
+    # is also what the cassette list below enumerates. (ppmtomd has no
+    # `passes`; the g21/g22 fixtures reach the same byte shape by handing
+    # the same ink to several components, so no golden decides this.)
+    mode_name = job.get("transfer_mode", "colour_plane")
+    if mode_name == "colour_plane" and len(inks) > MAX_COLOUR_PLANE_INKS:
+        mode_name = "multi_plane"
+    mode = _TRANSFER_MODES[mode_name]
+    if mode != _TRANSFER_MODES["black_raster"] and len(inks) > MAX_PRINTING_COLOURS:
+        raise ValueError(
+            f"too many printing colours: {len(inks)} inks, "
+            f"the print head holds at most {MAX_PRINTING_COLOURS}"
+        )
+
     out = bytearray()
 
     # rgl_init_page (ppmtomd.c:2484-2564), reduced to the fields every
@@ -191,6 +232,33 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
     out += bytes([ESC, 0x26, 0x6C, paper["code"], 0, 0x41])
     out += bytes([ESC, 0x26, 0x6C, page_length % 256, page_length // 256, 0x50])
     out += bytes([ESC, 0x26, 0x61, page_width % 256, page_width // 256, 0x4D])
+
+    # Cassette list, sent only in multiPlane (ppmtomd.c:2526-2544):
+    # ESC & l {count} 00 C followed by one cassette barcode number per ink,
+    # in print order. The barcode numbering is a different scheme from the
+    # colour-selection byte (DOMAIN §6.5), so it comes from the palette
+    # entry's own `barcode` field and is never derived from printer_code.
+    if mode == _TRANSFER_MODES["multi_plane"]:
+        barcodes = []
+        for ink in inks:
+            barcode = ink.get("barcode")
+            if barcode is None:
+                raise ValueError(
+                    f"ink '{ink.get('name')}': 'barcode' is required with "
+                    f"more than {MAX_COLOUR_PLANE_INKS} inks (the cassette "
+                    "list command carries it)"
+                )
+            if (
+                not isinstance(barcode, int)
+                or isinstance(barcode, bool)
+                or not 0 <= barcode <= 255
+            ):
+                raise ValueError(
+                    f"ink '{ink.get('name')}': 'barcode' must be an integer "
+                    f"in 0..255, got {barcode!r}"
+                )
+            barcodes.append(barcode)
+        out += bytes([ESC, 0x26, 0x6C, len(barcodes), 0, 0x43]) + bytes(barcodes)
 
     # x/y offsets, in dots at the output resolution. ppmtomd emits a
     # command only when the shift is positive (ppmtomd.c:2546-2555).
@@ -224,11 +292,8 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
     curl = 1 if job.get("no_curl_correction") else 0
     out += bytes([ESC, 0x1A, curl, 0, 0x43])
 
-    mode = _TRANSFER_MODES[job.get("transfer_mode", "colour_plane")]
     out += bytes([ESC, 0x2A, 0x72, mode, 0x55])
     out += bytes([ESC, 0x2A, 0x72, 0, 0x41])  # start raster graphics
-
-    inks = job["inks"]
 
     if mode == _TRANSFER_MODES["black_raster"]:
         # Single-plane modes carry no colour-selection command at all:

@@ -83,6 +83,30 @@ gen g23_c6_plain_coarse_md5000_1200.bin -model MD-5000 -resolution 1200 \
 gen g24_c6_plain_halftone_md5000_1200.bin -model MD-5000 -resolution 1200 \
     -colourcorrection Plain -dither Halftone tests/cases/c6_fullcolour_240x120.ppm
 
+# 印字色 5 本以上 = 転送モード multiPlane(0x08)+ カセット一覧コマンド
+# (DOMAIN §14.8 / ppmtomd.c:1780-1783, 2526-2544)。CMYK 4 本では届かない経路。
+#
+# 5 本目以降は -spotcolours で足す。特色に Finish を選ぶのは、Finish だけが
+# 「下の CMYK を消さない」特色だから(ppmtomd.c:3028-3044 の isspot が立たない)。
+# White などの通常の特色を使うと、その画素の CMYK が全部 0 に潰され、
+# ラスタ層まで巻き込む別の話になる(§14.8 の範囲外)。
+#
+# 入力指定 k / c は「色補正なし・Plain の UCR で求めた K / C が半分以上」で、
+# -colourcorrection Plain + ディザ無しのときの K / C プレーンと一致する
+# (ppmtomd.c:2977-2991 と 2933-2937 が同じ式)。よって ref 側は
+# 既存の to_planes に同じチャンネルを 2 つの名前で割り当てるだけで再現できる。
+gen g25_c6_five_inks_md5000_600.bin -model MD-5000 -resolution 600 \
+    -colourcorrection Plain -spotcolours 1=Finish=k \
+    tests/cases/c6_fullcolour_240x120.ppm
+gen g26_c6_six_inks_md5000_600.bin -model MD-5000 -resolution 600 \
+    -colourcorrection Plain -spotcolours 1=Finish=k,2=Finish=c \
+    tests/cases/c6_fullcolour_240x120.ppm
+# 解像度との組み合わせ。特色はディザも subrow 合成も通らない
+# (ppmtomd.c:2970-2972)ので、1200dpi でも 1 行 1 回しか書かれない
+gen g27_c6_five_inks_md5000_1200.bin -model MD-5000 -resolution 1200 \
+    -colourcorrection Plain -spotcolours 1=Finish=k \
+    tests/cases/c6_fullcolour_240x120.ppm
+
 if cmp -s tests/golden/g1_c1_black_md5000_600.bin tests/golden/g5_c1_black_md5500_600.bin; then
   echo "MODEL_DIFF_ZERO (MD-5000 == MD-5500)"
 else
