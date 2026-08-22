@@ -272,14 +272,19 @@ public sealed class PreviewForm : Form
         _presets = PresetStore.Load();
 
         Text = "Foilwright — 印刷プレビュー";
-        Width = 1200;
-        Height = 820;
+        // ジョブ内容の表は列が 7 本(使う/順序/色/インク/パス数/塗る範囲/ドット数)
+        // まで増えた。1200 幅・38% では右側が 450px ほどしか無く、1 列 65px で
+        // インク名も「絵のあるところ」も読めなかった(2026-08-22 に利用者から指摘)。
+        // 窓を広げ、右側の取り分も増やす。**最小サイズは変えない** — 小さい画面でも
+        // 開けること自体は保つ(そのときは表を横スクロールして使う)。
+        Width = 1400;
+        Height = 860;
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(900, 600);
 
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
         Controls.Add(root);
 
         // --- 左: プレビュー画像 ---------------------------------------------
@@ -563,6 +568,17 @@ public sealed class PreviewForm : Form
         _inkGrid.Columns["Label"]!.ReadOnly = true;
         _inkGrid.Columns["DotCount"]!.ReadOnly = true;
         _inkGrid.Columns["DotCount"]!.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
+        // 列の幅の配分。AutoSizeColumnsMode = Fill は既定で全列を等分するが、
+        // **列が 7 本になった今、等分すると「紙用光沢仕上げ2 (MDC-FRVG)」のような
+        // 長いインク名も、「絵のあるところ」も読めなくなる。**
+        // 中身の長さに合わせて重みを付ける(数字は幅そのものではなく、余った幅の
+        // 取り分の比)。**列を足したらここも見直すこと。**
+        _inkGrid.Columns["Use"]!.FillWeight = 40;
+        _inkGrid.Columns["Order"]!.FillWeight = 40;
+        _inkGrid.Columns["Color"]!.FillWeight = 75;
+        _inkGrid.Columns["Label"]!.FillWeight = 155;
+        _inkGrid.Columns["Passes"]!.FillWeight = 50;
+        _inkGrid.Columns["DotCount"]!.FillWeight = 80;
         // D-031: パス数(重ね塗り回数)を編集可能にする。範囲は 1〜8
         // (TraySettings.MinPasses/MaxPasses)で、CellValidating がその場で拒否する。
         var passesColumn = _inkGrid.Columns["Passes"]!;
@@ -578,6 +594,8 @@ public sealed class PreviewForm : Form
         // coverage インクの行だけがコンボで選べる — それ以外の行は
         // PopulateInkGrid が読み取り専用のテキストセルへ差し替える。
         var coverageColumn = CreateCoverageColumn();
+        // 「絵のあるところ」が入る。上の配分と同じ考え方で、中身の長さに合わせる。
+        coverageColumn.FillWeight = 110;
         _inkGrid.Columns.Insert(passesColumn.Index + 1, coverageColumn);
         // チェックボックス列は確定(コミット)が 1 セル遅れる既知の挙動があるため、
         // CurrentCellDirtyStateChanged で即座にコミットしてから CellValueChanged を拾う。
