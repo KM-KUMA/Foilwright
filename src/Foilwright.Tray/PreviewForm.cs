@@ -2244,16 +2244,11 @@ public sealed class PreviewForm : Form
         return records;
     }
 
-    /// <summary>リボン消費の記録(usage.jsonl)をインクごとに集計して見せる小さな窓。
-    ///
-    /// **「カセットを新品に替えた」を記録する機能はまだ無い。** 履歴が貯まってから
-    /// どういう形がよいかを決めたいので、まず記録を取り始めることを優先している
-    /// (UsageLog の冒頭コメント)。そのあいだ手で区切りたい人のために、
-    /// 記録ファイルの場所をこの窓に出しておく。</summary>
+    /// <summary>リボン消費の記録を見せる。窓そのものは UsageDialog にある
+    /// (タスクトレイのメニューからも同じ窓を開くため。D-046)。ここでやるのは
+    /// 「いま読み込んでいるパレットから表示名を引けるようにする」ことだけ。</summary>
     private void ShowUsageDialog()
     {
-        var summaries = UsageLog.Summarise(UsageLog.Load());
-
         // インクの表示名(label)は、いま読み込んでいるパレットから引く。引けない
         // ものは記録に入っている識別子をそのまま出す — 古い記録や、いまのパレットに
         // 無いインクを落とさないため。
@@ -2266,105 +2261,8 @@ public sealed class PreviewForm : Form
             }
         }
 
-        using var dialog = new Form
-        {
-            Text = "Foilwright — リボン消費の記録",
-            StartPosition = FormStartPosition.CenterParent,
-            ClientSize = new Size(720, 360),
-            MinimizeBox = false,
-            MaximizeBox = false,
-            ShowInTaskbar = false,
-        };
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 3,
-            Padding = new Padding(8),
-        };
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-        if (summaries.Count == 0)
-        {
-            layout.Controls.Add(
-                new Label
-                {
-                    Dock = DockStyle.Fill,
-                    Text = "まだ記録がありません。印刷すると貯まります。",
-                },
-                0,
-                0);
-        }
-        else
-        {
-            var grid = new DataGridView
-            {
-                Dock = DockStyle.Fill,
-                AllowUserToAddRows = false,
-                AllowUserToDeleteRows = false,
-                ReadOnly = true,
-                RowHeadersVisible = false,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-            };
-            grid.Columns.Add("Ink", "インク");
-            grid.Columns.Add("TotalDots", "累計ドット");
-            grid.Columns.Add("TotalPasses", "パス数");
-            grid.Columns.Add("Jobs", "ジョブ数");
-            grid.Columns.Add("FirstUsed", "最初");
-            grid.Columns.Add("LastUsed", "最後");
-            foreach (var summary in summaries)
-            {
-                grid.Rows.Add(
-                    labels.TryGetValue(summary.Ink, out string? label) ? label : summary.Ink,
-                    // 「ドット数」列と同じ桁区切り(例 181,422)で表示する。
-                    summary.TotalDots.ToString("N0"),
-                    summary.TotalPasses.ToString("N0"),
-                    summary.Jobs.ToString("N0"),
-                    FormatUsageDate(summary.FirstUsed),
-                    FormatUsageDate(summary.LastUsed));
-            }
-            layout.Controls.Add(grid, 0, 0);
-        }
-
-        layout.Controls.Add(
-            new TextBox
-            {
-                Dock = DockStyle.Fill,
-                ReadOnly = true,
-                BorderStyle = BorderStyle.None,
-                BackColor = dialog.BackColor,
-                // 中身を見たり、カセットを替えたときに手で編集したりできるよう、
-                // 場所を出しておく(選択してコピーできるよう TextBox にする)。
-                Text = "記録ファイル: " + UsageLog.FilePath,
-            },
-            0,
-            1);
-
-        var closeButtonPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.RightToLeft,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-        };
-        var closeButton = new Button { Text = "閉じる", AutoSize = true, Height = 28 };
-        closeButton.Click += (_, _) => dialog.Close();
-        closeButtonPanel.Controls.Add(closeButton);
-        layout.Controls.Add(closeButtonPanel, 0, 2);
-
-        dialog.Controls.Add(layout);
-        dialog.AcceptButton = closeButton;
-        dialog.CancelButton = closeButton;
-        dialog.ShowDialog(this);
+        UsageDialog.Show(this, labels);
     }
-
-    /// <summary>記録の時刻(UTC)を現地時間の日付にして出す。利用者が見るのは
-    /// 「いつごろ使ったか」なので、時分までは出さない。</summary>
-    private static string FormatUsageDate(DateTimeOffset? timestamp) =>
-        timestamp is null ? string.Empty : timestamp.Value.ToLocalTime().ToString("yyyy-MM-dd");
 
     private async Task RefreshStatusAsync()
     {

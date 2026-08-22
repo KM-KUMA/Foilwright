@@ -37,6 +37,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _uiMarshal.Hide();
 
         var menu = new ContextMenuStrip();
+        // リボン消費を確かめたいのは「刷り終わった直後」だが、正常終了すると
+        // プレビューは 3 秒で自動的に閉じる(D-038 5.1)ため、成功したときほど
+        // プレビューの「リボン消費を見る」ボタンに手が届かない。ここから開けるようにする。
+        menu.Items.Add("リボン消費を見る", null, (_, _) => ShowUsage());
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("終了", null, (_, _) => ExitThread());
         _notifyIcon = new NotifyIcon
         {
@@ -101,6 +106,48 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var settings = TraySettings.Load();
         using var form = new PreviewForm(psPath, settings);
         form.ShowDialog();
+    }
+
+    /// <summary>リボン消費の記録の窓を開く。**PipeLoop は止まらない** —
+    /// パイプの待ち受けは別スレッド(_pipeThread)にあり、この窓の ShowDialog が
+    /// 回す入れ子のメッセージループが _uiMarshal.Invoke を捌くため、開いている
+    /// あいだにジョブが来てもプレビューは通常どおり開く。</summary>
+    private void ShowUsage()
+    {
+        var labels = LoadInkLabels();
+        try
+        {
+            _uiMarshal.Invoke(() => UsageDialog.Show(null, labels));
+        }
+        catch (ObjectDisposedException)
+        {
+            // 終了処理中に押された場合は何もしない(ShowBalloon と同じ扱い)。
+        }
+    }
+
+    /// <summary>インクの識別子 → 表示名。パレット(D-040 の置き場所)から作る。
+    ///
+    /// **読めなくても落ちない。** 空の辞書を返し、窓は識別子のまま表示する —
+    /// 記録を見るだけの操作が、設定ファイルの不備で使えなくなってはいけない。</summary>
+    private static Dictionary<string, string> LoadInkLabels()
+    {
+        var labels = new Dictionary<string, string>(StringComparer.Ordinal);
+        try
+        {
+            string assetRoot = AssetRoot.ResolveDefault();
+            foreach (var ink in ConfigLoader.LoadPalette(Path.Combine(assetRoot, "palette", "default.yaml")))
+            {
+                labels[ink.Name] = ink.Label;
+            }
+        }
+        catch (Exception)
+        {
+            // 例外の種類を絞らないのは意図的。置き場所の解決・ファイル読み込み・
+            // YAML の解釈のどこでも失敗しうり、投げられる型は開いている。
+            // ここで落とすくらいなら識別子のまま見せるほうがよい。
+            labels.Clear();
+        }
+        return labels;
     }
 
     private void ShowBalloon(string text, ToolTipIcon icon)
