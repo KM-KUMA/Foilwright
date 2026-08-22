@@ -171,6 +171,11 @@ public sealed class PreviewForm : Form
 
     /// <summary>D-044: 部数として受け付ける範囲。打ち間違いで生産終了品のリボンを
     /// 大量に失わないよう上限を設ける(パス数の 1〜8 と同じ方針)。</summary>
+    /// <summary>正常終了してから窓が自分で閉じるまでの時間(ミリ秒)。
+    /// 当初 3 秒だったが、刷り終わった直後に消費や状態を確かめる間が無く、
+    /// 実際に 3 回続けて取り逃がした(2026-08-22)。15 秒へ延ばした。</summary>
+    private const int AutoCloseDelayMs = 15_000;
+
     private const int MinCopies = 1;
 
     /// <summary>D-044 改訂(2026-08-21): 部数の上限は設けない。当初は打ち間違い対策に
@@ -1905,10 +1910,21 @@ public sealed class PreviewForm : Form
                 Mode: ResolveCoverageMode(def.Name)))
             .ToList();
 
+        // D-051: 1200dpi は特色インクに効かない(横幅 2 倍で刷られる)。
+        // 種別はパレットの印から取る — **インク名で判定しない**(DOMAIN §4.5)。
+        // CMYK のいずれでもない = 特色(magic_rgb を持つ)または塗る範囲で決まるインク。
+        var resolutionInks = _palette
+            .Select(def => (
+                def.Label,
+                IsNonProcess: def.Channel is null,
+                Used: _usedInks.Contains(def.Name)))
+            .ToList();
+
         string[] warnings =
         {
             BuildMagicRgbWarning(inks, _whiteModeCombo.SelectedItem as string),
             BuildCoverageWarning(coverageInks),
+            BuildResolutionWarning(_resolutionCombo.SelectedItem as string, resolutionInks),
         };
         _magicRgbWarningLabel.Text = string.Join(
             Environment.NewLine, warnings.Where(text => text.Length > 0));
@@ -2023,6 +2039,39 @@ public sealed class PreviewForm : Form
             .ToList();
 
         return string.Join(Environment.NewLine, messages);
+    }
+
+    /// <summary>D-051: 1200dpi と特色・塗る範囲インクが混ざっていることの警告。
+    /// 混ざっていなければ空文字(画面に触らない純粋な処理)。
+    ///
+    /// **1200dpi は特色インクに効かない。** 実測(2026-08-22)で、5 層構成を 1200x600 で
+    /// 刷ったところ**白だけが横幅 2 倍になった**。こちらのラスタも送出バイトも
+    /// インクによらず同一であることを確かめてあり(D-051)、**プリンタ側が特色のパスを
+    /// 600dpi で刷っている**とみられる。ppmtomd の man も
+    /// 「undercolours と spot colours は常に Standard モードで刷られる」と書いている。
+    ///
+    /// **止めはしない。** 混ぜられること自体は害ではなく、知らずに刷ることが害である。
+    ///
+    /// isNonProcess: そのインクが CMYK のいずれでもないこと(特色 = magic_rgb を持つ、
+    /// または塗る範囲で決まるインク)。**インク名で判定しない**(DOMAIN §4.5)。</summary>
+    internal static string BuildResolutionWarning(
+        string? resolutionKey,
+        IReadOnlyList<(string Label, bool IsNonProcess, bool Used)> inks)
+    {
+        // 1200 が横方向にしか効かないことは §5.5 / D-051。判定は解像度キーの先頭で足りる。
+        if (resolutionKey is null || !resolutionKey.StartsWith("1200", StringComparison.Ordinal))
+        {
+            return string.Empty;
+        }
+        var affected = inks.Where(i => i.IsNonProcess && i.Used).Select(i => i.Label).ToList();
+        if (affected.Count == 0)
+        {
+            return string.Empty;
+        }
+        return
+            $"⚠ 1200dpi は特色インクに効きません。次のインクは横幅 2 倍で刷られます: {string.Join(", ", affected)}" +
+            Environment.NewLine +
+            "  特色を含むジョブは解像度を 600 にしてください(D-051)。";
     }
 
     /// <summary>新しい PreviewResult を画面へ反映し、古いものを破棄する
@@ -2692,10 +2741,13 @@ public sealed class PreviewForm : Form
         if (completedSuccessfully && isLastCopy)
         {
             // D-039: すぐには閉じない — 結果の文言を読めるだけの間を置く。
-            // 【推測】3 秒: 印刷結果(紙)自体は目視できており長く待たせる理由が
-            // 無い一方、"経過: mm:ss — 印刷が完了しました。" を読み切るのに
-            // 必要な最短程度の見込みとして 3 秒とした(実測の裏付けは無い)。
-            await Task.Delay(3_000);
+            //
+            // **当初 3 秒にしたが短すぎた。** 刷り終わった直後に確かめたいものが
+            // 文言だけではなかった — 「リボン消費を見る」「状態を読む」に手が届かず、
+            // 2026-08-22 に 3 回続けて取り逃がした(1200dpi の切り分けの最中)。
+            // どちらもタスクトレイのメニューへ出したうえで、**ここも 15 秒に延ばす**
+            // (利用者の判断)。放っておけば閉じる、という性質は保つ。
+            await Task.Delay(AutoCloseDelayMs);
             // 待っている間に利用者が「閉じる」やタイトルバーの × を押して
             // 既に閉じている場合がある(FormClosing は _monitoring=false の
             // 今は通す)。二重に Close すると例外になるため確認する。
