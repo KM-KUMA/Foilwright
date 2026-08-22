@@ -608,12 +608,6 @@ public class GoldenTests
         // 1 回の素の閾値処理になる — カセット一覧は解像度に影響されない。
         var actual = Render("c6_fullcolour_240x120.ppm", 1200, "md-5000", FiveInks, FiveInkPalette);
         AssertGoldenMatch(actual, "g27_c6_five_inks_md5000_1200.bin");
-        // D-052 との関係: この fixture の JobInk は IsProcess を指定せず既定
-        // (true = 縮めない)のままにしてある。だからこれは純粋な ppmtomd
-        // 等価性の検査であり続ける。実運用では finish_k は特色なので、
-        // JobPipeline / Cli が IsProcess=false を渡し、1200dpi では
-        // このプレーンが横 1/2 になる = **golden とは意図的に食い違う**
-        // (ppmtomd は縮めない)。その挙動は Shrink1200Tests.cs が守る。
     }
 
     [Fact]

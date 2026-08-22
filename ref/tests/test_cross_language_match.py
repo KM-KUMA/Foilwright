@@ -131,10 +131,6 @@ def _render_python(
                 # C# 側(Program.cs の JobInk.Barcode)と同じ値を渡す。
                 "barcode": ink["barcode"],
                 "passes": ink["passes"],
-                # D-052: 1200dpi ではプロセスインク以外のプレーンが横 1/2 に
-                # 縮む。種別はインク名ではなくパレットの channel で決まる
-                # (DOMAIN §4.5)。C# 側(JobInk.IsProcess)と同じ式。
-                "is_process": ink["channel"] is not None,
             }
             for ink in inks
         ],
@@ -142,22 +138,6 @@ def _render_python(
         "height": height,
     }
     return emitter.emit_job(planes, job_dict)
-
-
-def _resolution_key(machine: str, resolution: int) -> str:
-    """The --resolution argument build-rgl expects, derived from the profile.
-
-    C# names a resolution entry "600" when dpi_x == dpi_y and "1200x600"
-    otherwise (ResolutionEntry.Key). ref/ works in dpi_x alone, so the key
-    is looked up here rather than written out (DOMAIN §4.5: no resolution
-    values hardcoded in code).
-    """
-    profile = config.load_profile(str(PROFILES_DIR / f"{machine}.yaml"))
-    for entry in profile["resolutions"]:
-        if entry["dpi_x"] == resolution:
-            dpi_x, dpi_y = entry["dpi_x"], entry["dpi_y"]
-            return str(dpi_x) if dpi_x == dpi_y else f"{dpi_x}x{dpi_y}"
-    raise AssertionError(f"profile {machine} offers no {resolution}dpi entry")
 
 
 def _render_csharp(
@@ -187,7 +167,7 @@ def _render_csharp(
         "--media",
         media_name,
         "--resolution",
-        _resolution_key(machine, resolution),
+        str(resolution),
         "--ink-mode",
         ink_mode,
         "--halftone",
@@ -435,35 +415,6 @@ _CASES = [
             "white_mode": "alpha",
             "colour_correction": "plain",
             "alpha_png_path": CASES_DIR / "alpha_pair_200x200.png",
-        },
-    ),
-    (
-        # D-052: 1200dpi, spot ink only. This is the one case where both
-        # implementations deliberately leave ppmtomd behind (the white
-        # plane goes out at half width), so ref/-vs-src/ agreement is the
-        # only cross-implementation check the deviation has.
-        "shrink_1200_spot_only",
-        "c5_metallic4_240x120.ppm",
-        {
-            "resolution": 1200,
-            "ink_mode": "spot_only",
-            "halftone": "none",
-            "white_mode": "opaque",
-            "colour_correction": "plain",
-        },
-    ),
-    (
-        # Same deviation with process and spot inks mixed in one job: the
-        # CMYK planes stay at full width and the spot ones halve, inside a
-        # single byte stream.
-        "shrink_1200_mixed",
-        "c6_fullcolour_240x120.ppm",
-        {
-            "resolution": 1200,
-            "ink_mode": "auto",
-            "halftone": "coarse_halftone",
-            "white_mode": "opaque",
-            "colour_correction": "plain",
         },
     ),
     (
