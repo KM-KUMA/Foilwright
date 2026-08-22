@@ -239,6 +239,11 @@ if ($trayProcesses.Count -gt 0 -and -not $pipeFound) {
     if ($runTarget) { $candidates += $runTarget }
     $candidates += (Join-Path (Join-Path $env:LOCALAPPDATA 'Foilwright') $trayExeName)
     $candidates += (Join-Path (Join-Path $PSScriptRoot 'app') $trayExeName)
+    # 開発ツリーから走らせたとき用(tools\package\ の 2 つ上がリポジトリの根)。
+    # 配布 zip にはこの場所が無いので、存在確認で自然に外れる。
+    # **開発環境には自動起動を登録しない方針**(D-049 補足)なので、再起動のたび
+    # 手で起こすことになる — そのときにこのスクリプトが使えるようにしておく。
+    $candidates += (Join-Path $PSScriptRoot '..\..\src\Foilwright.Tray\bin\Debug\net10.0-windows\Foilwright.Tray.exe')
 
     $trayExe = $null
     foreach ($candidate in $candidates) {
