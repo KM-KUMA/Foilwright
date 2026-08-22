@@ -110,10 +110,10 @@ foreach ($item in $configItems) {
 # install.ps1 が manifest に版数を記録できるように残しておく。
 Set-Content -Path (Join-Path $appDir 'version.txt') -Value $version -NoNewline -Encoding utf8
 
-# --- install.ps1 / uninstall.ps1 / README.txt を添える --------------------------
+# --- install.ps1 / uninstall.ps1 / troubleshoot.ps1 / README.txt を添える -------
 Write-Step '導入・削除スクリプトを添える'
 $sourcePackageDir = Join-Path $repoRoot 'tools\package'
-foreach ($name in @('install.ps1', 'uninstall.ps1', 'README.txt')) {
+foreach ($name in @('install.ps1', 'uninstall.ps1', 'troubleshoot.ps1', 'README.txt')) {
     Copy-Item -Path (Join-Path $sourcePackageDir $name) -Destination (Join-Path $packageRoot $name) -Force
     Write-Host "  添えた: $name"
 }

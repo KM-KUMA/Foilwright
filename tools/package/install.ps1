@@ -137,6 +137,8 @@ if ($existing) {
     $manifest.autostartCreated = $true
     Write-Host '  登録した'
 }
+# 登録した値が指すファイルが本当にあるか確かめる(無いと次のログオンで黙って上がらない)。
+if (Test-Path -LiteralPath $trayExe) { Write-Host "  登録先を確認した: $trayExe" } else { Fail "自動起動の登録先が実在しない: $trayExe" }
 
 # --- 7. トレイを起こし、パイプの待ち受けを確認する ---------------------------
 Write-Step '7. トレイの起動確認'
@@ -163,3 +165,5 @@ $manifestPath = Join-Path $installDir 'install-manifest.json'
 $manifest | ConvertTo-Json | Set-Content -Path $manifestPath -Encoding utf8
 Write-Host "`n導入を記録した: $manifestPath" -ForegroundColor Green
 Write-Host '導入が完了した。' -ForegroundColor Green
+Write-Host "印刷しても何も起きないときは、この zip の中の troubleshoot.ps1 を実行してください(管理者権限は要らない)。"
+Write-Host "  $(Join-Path $packageRoot 'troubleshoot.ps1')"

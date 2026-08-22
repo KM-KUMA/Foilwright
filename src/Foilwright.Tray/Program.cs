@@ -12,6 +12,12 @@
 // 渡すと、ウィンドウを一切開かずプレビュー画像だけを PNG として保存して
 // 終了する。対話的デスクトップが無い環境(自動検証など)でも、実際に
 // 生成されるプレビュー画像を確認できるようにするための経路。
+//
+// 二重起動の防止: 常駐モード(Application.Run(new TrayApplicationContext()))
+// だけは同時に 1 つしか動かさない。パイプ \\.\pipe\foilwright は同時インスタンス
+// 数 1 で作られるため、2 個目のトレイはパイプを作れず例外 → バルーン → 再試行を
+// 延々と繰り返す。デバッグ経路(--debug-ps / --debug-preview-png / --debug-rgl)は
+// パイプを使わないので、この判定を通さない(トレイが常駐していても検証できること)。
 
 using System.Runtime.CompilerServices;
 using System.Windows.Forms;
@@ -53,7 +59,136 @@ internal static class Program
             return;
         }
 
-        Application.Run(new TrayApplicationContext());
+        // ここから先が常駐モード。デバッグ経路は上で return 済みなので、
+        // 二重起動の判定を受けるのはこの経路だけになる。
+        if (!TryAcquireSingleInstance(SingleInstanceMutexName, out Mutex? instanceMutex))
+        {
+            // 既に動いている。例外にせず、1 回だけ伝えて静かに終わる(終了コード 0)。
+            NotifyAlreadyRunning();
+            return;
+        }
+
+        try
+        {
+            Application.Run(new TrayApplicationContext());
+        }
+        finally
+        {
+            ReleaseSingleInstance(instanceMutex);
+        }
+    }
+
+    /// <summary>二重起動の判定に使う名前付きミューテックスの名前。
+    ///
+    /// **必ず `Global\` で始めること。** 守るべき資源は名前付きパイプ
+    /// \\.\pipe\foilwright であり、これは**計算機全体で 1 本**しか無い。
+    /// `Local\`(= セッションごと)にすると、別のログオンセッションで動いている
+    /// トレイを取りこぼし、2 個目がパイプを作れず失敗し続ける状態に戻る。</summary>
+    internal const string SingleInstanceMutexName = @"Global\Foilwright.Tray.SingleInstance";
+
+    /// <summary>既に動いていたときに出す文言。</summary>
+    internal const string AlreadyRunningMessage =
+        "Foilwright は既に起動しています。タスクトレイのアイコンを確認してください。";
+
+    /// <summary>「既に起動しています」のバルーンを出しておく時間(ミリ秒)。
+    /// これを過ぎたら自分で終わる。</summary>
+    private const int AlreadyRunningNoticeMs = 4000;
+
+    /// <summary>既に動いていることを 1 回だけ伝える。
+    ///
+    /// MessageBox にしないのは、**押されるまでプロセスが残る**ため —
+    /// ログオン時に自動起動が二重に走ったとき、利用者が気づいて押すまで
+    /// 2 個目が居座ることになる。ここでは一時的な NotifyIcon でバルーンを出し、
+    /// 数秒で自分から終わる(伝わることと、居座らないことの両立)。
+    ///
+    /// Application.Run() でメッセージポンプを回すのは、回さないとバルーンが
+    /// 描画されないため。タイマで ExitThread して抜ける。</summary>
+    private static void NotifyAlreadyRunning()
+    {
+        using var icon = new NotifyIcon
+        {
+            Icon = System.Drawing.SystemIcons.Information,
+            Visible = true,
+            Text = "Foilwright",
+            BalloonTipTitle = "Foilwright",
+            BalloonTipText = AlreadyRunningMessage,
+            BalloonTipIcon = ToolTipIcon.Info,
+        };
+        icon.ShowBalloonTip(AlreadyRunningNoticeMs);
+
+        using var timer = new System.Windows.Forms.Timer { Interval = AlreadyRunningNoticeMs };
+        timer.Tick += (_, _) => Application.ExitThread();
+        timer.Start();
+        Application.Run();
+
+        icon.Visible = false;
+    }
+
+    /// <summary>二重起動の判定。<paramref name="name"/> のミューテックスを取れたら
+    /// true を返し、取れたミューテックスを <paramref name="mutex"/> に入れる
+    /// (呼び出し元は終了時に <see cref="ReleaseSingleInstance"/> で解放すること)。
+    ///
+    /// 取れなかった場合(= 既に誰かが動いている)は false を返す。
+    /// <see cref="UnauthorizedAccessException"/> も「既に起動している」として扱う —
+    /// 別のユーザーが `Global\` のミューテックスを持っていると、開く権利が無くて
+    /// この例外になるが、状況としては「もう動いている」と同じである。
+    ///
+    /// <see cref="AbandonedMutexException"/> は「取れた」として扱う。前のトレイが
+    /// 解放せずに落ちた場合であり、ここで諦めると**次から二度と起動できなくなる**。
+    ///
+    /// 注意: 名前付きミューテックスの所有はスレッド単位で、同じスレッドから
+    /// 2 度取ると 2 度目も成功する(再入)。別プロセス・別スレッドからの 2 度目が
+    /// false になるのが、この関数の守る性質である。</summary>
+    internal static bool TryAcquireSingleInstance(string name, out Mutex? mutex)
+    {
+        mutex = null;
+        Mutex candidate;
+        try
+        {
+            candidate = new Mutex(initiallyOwned: false, name, out _);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        bool acquired;
+        try
+        {
+            acquired = candidate.WaitOne(TimeSpan.Zero, exitContext: false);
+        }
+        catch (AbandonedMutexException)
+        {
+            acquired = true;
+        }
+
+        if (!acquired)
+        {
+            candidate.Dispose();
+            return false;
+        }
+
+        mutex = candidate;
+        return true;
+    }
+
+    /// <summary>取ったミューテックスを解放する。null(取れていない)なら何もしない。
+    /// 解放し損ねると、次の起動が「既に動いている」と誤判定されうる。</summary>
+    internal static void ReleaseSingleInstance(Mutex? mutex)
+    {
+        if (mutex is null)
+        {
+            return;
+        }
+        try
+        {
+            mutex.ReleaseMutex();
+        }
+        catch (ApplicationException)
+        {
+            // 所有していないスレッドからの解放。プロセス終了で結局解放されるため無視する。
+        }
+        mutex.Dispose();
     }
 
     /// <summary>実機・パイプ無しでプレビューだけを確認するための経路。
