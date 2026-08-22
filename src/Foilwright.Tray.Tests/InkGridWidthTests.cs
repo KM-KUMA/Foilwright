@@ -32,7 +32,7 @@ public class InkGridWidthTests(Xunit.Abstractions.ITestOutputHelper output)
         ["Label"] = 155,     // 紙用光沢仕上げ2 (MDC-FRVG) — いちばん長い
         ["Passes"] = 50,     // 1 桁の数字
         ["Coverage"] = 110,  // 絵のあるところ
-        ["DotCount"] = 80,   // 1,234,567
+        ["DotCount"] = 130,  // 92,883 (30,961×3) — 消費と内訳の両方が入る
     };
 
     [Fact]

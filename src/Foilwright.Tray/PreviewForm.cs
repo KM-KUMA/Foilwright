@@ -578,7 +578,8 @@ public sealed class PreviewForm : Form
         _inkGrid.Columns["Color"]!.FillWeight = 75;
         _inkGrid.Columns["Label"]!.FillWeight = 155;
         _inkGrid.Columns["Passes"]!.FillWeight = 50;
-        _inkGrid.Columns["DotCount"]!.FillWeight = 80;
+        // 「92,883 (30,961×3)」が入るので、単なる数字より広く取る。
+        _inkGrid.Columns["DotCount"]!.FillWeight = 130;
         // D-031: パス数(重ね塗り回数)を編集可能にする。範囲は 1〜8
         // (TraySettings.MinPasses/MaxPasses)で、CellValidating がその場で拒否する。
         var passesColumn = _inkGrid.Columns["Passes"]!;
@@ -2144,6 +2145,26 @@ public sealed class PreviewForm : Form
         InkDefinition def, IReadOnlyDictionary<string, int> passesOverride) =>
         passesOverride.TryGetValue(def.Name, out int overridden) ? overridden : def.Passes;
 
+    /// <summary>「ドット数」欄の表示。**そのジョブで実際に消費する量**を出す。
+    ///
+    /// 版の点の数はパス数を変えても変わらない(同じ版を同じ場所へ重ねるだけ)。
+    /// ところが**この道具でいちばんきつい制約はリボン**であり、刷る前に知りたいのは
+    /// 「このジョブでどれだけ使うか」= 版の点の数 × パス数 のほうである。
+    /// 2026-08-22 に利用者から「パス数を変えてもドット数が変わらないが、それでよいのか」
+    /// と問われて足した — **疑問を持たれた時点で、列が仕事をしていなかった。**
+    ///
+    /// 掛け算の内訳も括弧で残す。版の形が合っているかの確認には、こちらが要る。
+    /// パス数が 1 のときは掛け算を出さない(内訳が同じ数字の繰り返しになるため)。</summary>
+    internal static string FormatDotCount(long dotsPerPass, int passes)
+    {
+        if (passes <= 1)
+        {
+            return dotsPerPass.ToString("N0");
+        }
+        long total = dotsPerPass * passes;
+        return $"{total:N0} ({dotsPerPass:N0}×{passes})";
+    }
+
     private void PopulateInkGrid(PreviewResult result)
     {
         // チェックボックスのセルが編集中(コミット直後で IsCurrentCellInEditMode
@@ -2214,7 +2235,8 @@ public sealed class PreviewForm : Form
                 // 足して ApplyCoverageCell に任せる(コンボの選択肢に無い値を先に
                 // 入れると DataError になる)。
                 int rowIndex = _inkGrid.Rows.Add(
-                    row.Used, row.Order, row.MagicText, row.Label, row.Passes, null!, row.DotCount.ToString("N0"));
+                    row.Used, row.Order, row.MagicText, row.Label, row.Passes, null!,
+                    FormatDotCount(row.DotCount, row.Passes));
                 var gridRow = _inkGrid.Rows[rowIndex];
                 ApplyCoverageCell(gridRow, row.IsCoverage, row.CoverageMode);
                 // D-042: セルの背景色は「プレビューでそのインクを描いている色」のまま
