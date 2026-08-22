@@ -41,6 +41,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // プレビューは 3 秒で自動的に閉じる(D-038 5.1)ため、成功したときほど
         // プレビューの「リボン消費を見る」ボタンに手が届かない。ここから開けるようにする。
         menu.Items.Add("リボン消費を見る", null, (_, _) => ShowUsage());
+        // 状態も同じ理由でここから読めるようにする(刷り終わった直後に確かめたいのに、
+        // 正常終了するとプレビューが 3 秒で閉じて手が届かない)。
+        menu.Items.Add("プリンタの状態を読む", null, (_, _) => ShowStatus());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("終了", null, (_, _) => ExitThread());
         _notifyIcon = new NotifyIcon
@@ -101,11 +104,79 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    /// <summary>プレビューを開いているあいだ true。トレイのメニューから
+    /// 状態を読ませないための目印(§15.2.1: 送出中に状態問い合わせを挟まない)。
+    /// プレビューが出ているあいだは、そのジョブがインターフェースを所有している。</summary>
+    private volatile bool _previewOpen;
+
     private void ShowPreview(string psPath)
     {
         var settings = TraySettings.Load();
-        using var form = new PreviewForm(psPath, settings);
-        form.ShowDialog();
+        _previewOpen = true;
+        try
+        {
+            using var form = new PreviewForm(psPath, settings);
+            form.ShowDialog();
+        }
+        finally
+        {
+            _previewOpen = false;
+        }
+    }
+
+    /// <summary>プリンタの状態を読んで見せる。リボン消費と同じ理由でここに置く —
+    /// 確かめたいのは「刷り終わった直後」なのに、正常終了するとプレビューは
+    /// 3 秒で閉じてしまい、画面の「状態を読む」に手が届かない
+    /// (2026-08-22 に 1200dpi の切り分け中、実際に押せなかった)。
+    ///
+    /// **プレビューが開いているあいだは読まない。** §15.2.1 のとおり、
+    /// 送出中に状態問い合わせを挟んではならない。プレビューが出ている =
+    /// そのジョブがインターフェースを所有している、とみなして断る。</summary>
+    private void ShowStatus()
+    {
+        if (_previewOpen)
+        {
+            ShowBalloon(
+                "印刷の確認中は読めません(送出とぶつかるため)。" +
+                "プレビューの画面にある「状態を読む(05 01)」を使ってください。",
+                ToolTipIcon.Info);
+            return;
+        }
+
+        string text;
+        try
+        {
+            var route = MachineRoute.Resolve(TraySettings.Load().Machine);
+            var status = JobPipeline.ReadRawStatus(route, route.Vid);
+            var report = StatusDecoder.Describe(status);
+            // 画面の枠と同じ材料を出す。エラーの中身は、あるときだけ足す。
+            text =
+                $"状態: {report.StatusSummary}\r\n" +
+                (string.IsNullOrEmpty(report.ErrorDetail)
+                    ? string.Empty
+                    : $"エラー: {report.ErrorDetail}\r\n") +
+                $"\r\n状態バイト: 0x{status.StatusByte:x2}\r\n" +
+                "スロット(先頭バイトがバーコード番号、0xff = 未装着):\r\n" +
+                string.Join(
+                    "\r\n",
+                    status.SlotBarcodes.Select((b, i) =>
+                        $"  slot[{i,2}] = 0x{b:x2}"
+                        + (i == CassetteStatus.HeadSlotIndex ? "  <- ヘッドに装着中" : string.Empty)));
+        }
+        catch (Exception ex) when (ex is TransportException or ConfigException or MachineRouteException)
+        {
+            text = $"状態を読めませんでした: {ex.Message}";
+        }
+
+        try
+        {
+            _uiMarshal.Invoke(() => MessageBox.Show(
+                text, "Foilwright — プリンタ状態", MessageBoxButtons.OK, MessageBoxIcon.Information));
+        }
+        catch (ObjectDisposedException)
+        {
+            // 終了処理中に押された場合は何もしない(ShowUsage と同じ扱い)。
+        }
     }
 
     /// <summary>リボン消費の記録の窓を開く。**PipeLoop は止まらない** —
