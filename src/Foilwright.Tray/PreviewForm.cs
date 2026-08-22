@@ -2131,13 +2131,37 @@ public sealed class PreviewForm : Form
     /// これにより、まだ一度も使われていないメタリックを「これから使う」意思表示
     /// としてチェックを入れることも、原稿にあるのに許可リストから外れている
     /// インクのチェックを外すことも、再ラスタライズ無しで自由に行き来できる。</summary>
+    /// <summary>ジョブに出ていないインクの「パス数」欄に出す値。
+    ///
+    /// **必ず 1〜8(TraySettings.MinPasses/MaxPasses)に収まること。**
+    /// この欄は編集でき、CellValidating が範囲外を拒否する。**範囲外の値を置くと、
+    /// 利用者が触っていないセルでも確定も中止もできなくなり、表を作り直す
+    /// Rows.Clear() が落ちる**(2026-08-22 に実機で発生。以前はここが 0 だった)。
+    ///
+    /// 上書きがあればそれ、無ければパレットの既定を出す — そのインクを有効に
+    /// したとき実際に使われる値であり、表示として正しい。</summary>
+    internal static int ResolveDisplayedPasses(
+        InkDefinition def, IReadOnlyDictionary<string, int> passesOverride) =>
+        passesOverride.TryGetValue(def.Name, out int overridden) ? overridden : def.Passes;
+
     private void PopulateInkGrid(PreviewResult result)
     {
         // チェックボックスのセルが編集中(コミット直後で IsCurrentCellInEditMode
         // が残っている場合がある)のまま Rows.Clear() で行を消すと、
         // DataGridView の内部状態(現在セル・編集コントロール)が不正になる。
         // 行を作り直す前に必ず編集を終了させておく。
-        _inkGrid.EndEdit();
+        //
+        // **EndEdit() だけでは足りない。** 現在セルの値が CellValidating を通らない
+        // 場合、EndEdit は確定できずに false を返し、続く Rows.Clear() が
+        // 「セル値の変更をコミットまたは中止できないため、操作は成功しませんでした」
+        // で落ちる(2026-08-22 に実機で発生)。値の側は「入力欄に不正な値を置かない」
+        // ことで直したが、**確定できないセルが残っていても表の作り直しは通るべき**
+        // なので、通らなかったら編集を捨てて現在セルも外す。
+        if (!_inkGrid.EndEdit())
+        {
+            _inkGrid.CancelEdit();
+            _inkGrid.CurrentCell = null;
+        }
 
         // Rows.Add/Clear と「塗る範囲」セルへの値の書き込みは CellValueChanged を
         // 発火させる。_busy だけでは足りない(ハンドラは BeginInvoke で後回しにされ、
@@ -2165,7 +2189,21 @@ public sealed class PreviewForm : Form
                 }
                 else
                 {
-                    rows.Add((def.Name, def.Order, def.Label, 0, PreviewRenderer.ResolveDisplayColor(def), used, false, dotCount, magicText, def.Coverage, coverageMode));
+                    // ジョブに出ていないインクでも、パス数の欄には**必ず 1〜8 の値**を置く。
+                    //
+                    // 以前はここが 0 だった。ところが「パス数」は編集できる欄で、
+                    // CellValidating が 1〜8 の外を拒否する。**利用者が触っていない 0 の
+                    // セルへ現在セルが移ると、そのセルを確定も中止もできなくなり、
+                    // 表を作り直す Rows.Clear() が
+                    // 「セル値の変更をコミットまたは中止できないため、操作は成功しませんでした」
+                    // で落ちる**(2026-08-22 に実機で発生。別の行のパス数を変えた直後、
+                    // Enter で選択が 0 の行へ移ったことが引き金だった)。
+                    //
+                    // **入力欄に、入力として不正な値を置かない。** そのインクを有効にしたら
+                    // 実際に使われる値(上書きがあればそれ、無ければパレットの既定)を出す。
+                    // ジョブに出ているかどうかは「ドット数」と行の灰色が示す。
+                    int inactivePasses = ResolveDisplayedPasses(def, _passesOverride);
+                    rows.Add((def.Name, def.Order, def.Label, inactivePasses, PreviewRenderer.ResolveDisplayColor(def), used, false, dotCount, magicText, def.Coverage, coverageMode));
                 }
             }
 
