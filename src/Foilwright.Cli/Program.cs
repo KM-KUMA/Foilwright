@@ -639,6 +639,9 @@ internal static class Program
                     // 4 本以下では使われないので null のままでも構わない。
                     Barcode = jp.Ink.Barcode,
                     Passes = jp.Ink.Passes,
+                    // D-052: 1200dpi のときプロセスインク以外だけ横 1/2 に縮める。
+                    // 種別はインク名ではなくパレットの channel で決まる(DOMAIN §4.5)。
+                    IsProcess = jp.Ink.Channel is not null,
                 })
                 .ToList();
 
@@ -847,6 +850,9 @@ internal static class Program
                 // 4 本以下では使われないので null のままでも構わない。
                 Barcode = jp.Ink.Barcode,
                 Passes = jp.Ink.Passes,
+                // D-052: 1200dpi のときプロセスインク以外だけ横 1/2 に縮める。
+                // 種別はインク名ではなくパレットの channel で決まる(DOMAIN §4.5)。
+                IsProcess = jp.Ink.Channel is not null,
             })
             .ToList();
 

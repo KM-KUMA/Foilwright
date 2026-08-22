@@ -18,6 +18,12 @@
 //   ジョブでも黒しかインクが無いのに空の Cyan/Magenta/Yellow プレーンが
 //   出力される理由。
 //
+// ppmtomd から意図的に離れる箇所が 1 つだけある(D-052): 1200dpi のとき、
+// プロセスインクでないインクのプレーンだけ横 1/2 に縮める。プリンタが特色 /
+// 塗る範囲のカセットを 600dpi で走らせるため(DOMAIN §14.7.1)。ppmtomd は
+// これをやらないので golden では守れない — 代わりに
+// Foilwright.Core.Tests/Shrink1200Tests.cs の不変条件で守る。
+//
 // 機種による分岐はここに一切書かない(DOMAIN §4.4): 上記はすべて固定の
 // プロトコル挙動か、job(呼び出し側)によって決まる。
 //
@@ -41,6 +47,17 @@ public sealed class JobInk
     /// job["inks"][i]["passes"] に対応する(config.load_palette の既定値と
     /// 揃えてある — config.py:181)。</summary>
     public int Passes { get; init; } = 1;
+
+    /// <summary>プロセスインク(CMYK)かどうか。パレットの
+    /// InkDefinition.Channel が非 null なら true(DOMAIN §4.5 — インク名で
+    /// 判定しない)。
+    ///
+    /// false のインクは 1200dpi のときプレーンが横 1/2 に縮む(D-052)。
+    /// **既定は true**、つまり「知らないインクは縮めない」= ppmtomd と
+    /// 1 バイトも違わない挙動。逆にするとインク種別を渡し忘れた呼び出し元が
+    /// CMYK を半分幅で刷ってしまうので、安全側の既定はこちら。
+    /// ref/ の job["inks"][i]["is_process"] に対応する。</summary>
+    public bool IsProcess { get; init; } = true;
 }
 
 /// <summary>emit_job に渡すジョブ記述。ここには機種プロファイルの参照ロジックを
@@ -213,6 +230,53 @@ public static class Emitter
         return (num, outu);
     }
 
+    /// <summary>1bpp プレーンを横 1/2 に縮める。横に並ぶ 2 ドットの OR を取る
+    /// (D-052)。
+    ///
+    /// プリンタは走査解像度をカセットのバーコードで決めており、特色 /
+    /// 塗る範囲のカセットはジョブが 1200 を指定していても 600dpi で走る
+    /// (DOMAIN §14.7.1)。開始位置は 1200 として正しく解釈され、ラスタの
+    /// ドットだけが 600 ピッチで打たれる = 横 2 倍になる。ここで半分に
+    /// しておくとちょうど打ち消し合う。
+    ///
+    /// 間引き(偶数列だけ採る)ではなく OR にするのは意図的: 特色は下地・
+    /// 上掛け・ベタが主用途で、細い線が 600dpi の 1 ドット太るより
+    /// 消えるほうが害が大きい(D-052)。
+    ///
+    /// width が奇数のとき、最後のソースドットには相棒がいない。**単独で
+    /// 1 ドットとして残す**(出力幅は ceil(width / 2))。捨てると絵の右端に
+    /// 塗り残しの列が出るが、それは OR を選んだ理由そのもの(インクの
+    /// 欠落)である。
+    ///
+    /// 入力も出力も 1bpp・MSB 先頭・行はバイト境界に揃う。出力の行末
+    /// パディングビットは 0 のまま。</summary>
+    private static byte[] ShrinkPlaneHalfWidth(byte[] plane, int width, int height)
+    {
+        int srcRowBytes = (width + 7) / 8;
+        int dstWidth = (width + 1) / 2;
+        int dstRowBytes = (dstWidth + 7) / 8;
+        var outPlane = new byte[dstRowBytes * height];
+        for (int row = 0; row < height; row++)
+        {
+            int srcBase = row * srcRowBytes;
+            int dstBase = row * dstRowBytes;
+            for (int x = 0; x < dstWidth; x++)
+            {
+                int sx = 2 * x;
+                int bit = (plane[srcBase + (sx >> 3)] >> (7 - (sx & 7))) & 1;
+                if (bit == 0 && sx + 1 < width)
+                {
+                    bit = (plane[srcBase + ((sx + 1) >> 3)] >> (7 - ((sx + 1) & 7))) & 1;
+                }
+                if (bit != 0)
+                {
+                    outPlane[dstBase + (x >> 3)] |= (byte)(1 << (7 - (x & 7)));
+                }
+            }
+        }
+        return outPlane;
+    }
+
     private static byte[] EmitPlaneRows(byte[] plane, int width, int height)
     {
         int rowBytes = (width + 7) / 8;
@@ -295,6 +359,23 @@ public static class Emitter
         {
             throw new ArgumentException(
                 $"too many printing colours: {inks.Count} inks, the print head holds at most {MaxPrintingColours}");
+        }
+
+        // D-052: 1200dpi ではプロセスインク以外のカセットが 600 ピッチで走る
+        // ので、そのプレーンだけ横 1/2 で送る。上のページ幅コマンドはジョブに
+        // 1 回であり 1200 のまま変えない — CMYK は実際に 1200 で刷られ、
+        // 縮んだインクの行の長さだけが変わる。
+        //
+        // インク名には一切依存しない(DOMAIN §4.5)。種別は呼び出し元が
+        // パレットから読んで渡す。
+        (byte[] Plane, int Width) PlaneAndWidth(JobInk ink)
+        {
+            byte[] plane = planes[ink.Name];
+            if (resolution == 1200 && !ink.IsProcess)
+            {
+                return (ShrinkPlaneHalfWidth(plane, width, height), (width + 1) / 2);
+            }
+            return (plane, width);
         }
 
         var outBytes = new List<byte>();
@@ -387,7 +468,8 @@ public static class Emitter
             {
                 throw new ArgumentException($"black_raster carries exactly one plane, got {inks.Count}");
             }
-            outBytes.AddRange(EmitPlaneRows(planes[inks[0].Name], width, height));
+            var (singlePlane, singleWidth) = PlaneAndWidth(inks[0]);
+            outBytes.AddRange(EmitPlaneRows(singlePlane, singleWidth, height));
         }
         else
         {
@@ -419,7 +501,8 @@ public static class Emitter
                 var ink = occurrences[index];
                 byte flag = index == lastIndex ? (byte)0x80 : (byte)0x00;
                 var buf = new List<byte> { Esc, 0x1A, (byte)ink.PrinterCode, flag, 0x72 };
-                buf.AddRange(EmitPlaneRows(planes[ink.Name], width, height));
+                var (inkPlane, inkWidth) = PlaneAndWidth(ink);
+                buf.AddRange(EmitPlaneRows(inkPlane, inkWidth, height));
                 return buf.ToArray();
             }
 

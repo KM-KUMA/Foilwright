@@ -22,6 +22,12 @@ the golden fixtures under tests/golden/ exercise:
   `ppmtomd -colours C=White,M=White` capture: two White selections
   separated by one backfeed, final flag only on the second).
 
+One deliberate departure from ppmtomd lives here (D-052): at 1200dpi the
+plane of a non-process ink is halved horizontally, because the printer
+runs spot / coverage cassettes at 600dpi regardless of what the job asked
+for (DOMAIN §14.7.1). ppmtomd does not do this, so no golden fixture can
+cover it -- the invariant tests in tests/test_shrink_1200.py stand in.
+
 No model-specific branching lives here (DOMAIN.md §4.4): all of the
 above is either fixed protocol behaviour or driven by `profile`.
 
@@ -129,6 +135,44 @@ def _packbits(row: bytes) -> tuple[int, bytes]:
     return num, outu
 
 
+def _shrink_plane_half_width(plane: bytes, width: int, height: int) -> bytes:
+    """Halve a 1bpp plane horizontally by OR-ing each pair of dots (D-052).
+
+    The printer decides its scan resolution from the cassette barcode, so
+    spot / coverage cassettes always run at 600dpi even when the job asked
+    for 1200 (DOMAIN §14.7.1). The start position is interpreted at 1200
+    correctly -- only the raster dots come out at the 600 pitch, i.e. twice
+    as wide. Halving the plane here cancels that out exactly.
+
+    OR (rather than dropping every second column) is deliberate: spot inks
+    are used for undercoats, overcoats and solid fills, where losing a thin
+    line is worse than growing it by at most one 600dpi dot (D-052).
+
+    Odd `width`: the last source dot has no partner. It is kept as a dot of
+    its own, so the output width is ceil(width / 2). Dropping it would leave
+    a bare column unprinted at the right edge of the artwork, which is the
+    very failure mode (missing ink) that OR is chosen to avoid.
+
+    Input and output are both 1bpp, MSB first, with rows padded to a byte
+    boundary; the padding bits of the output stay 0.
+    """
+    src_row_bytes = (width + 7) // 8
+    dst_width = (width + 1) // 2
+    dst_row_bytes = (dst_width + 7) // 8
+    out = bytearray(dst_row_bytes * height)
+    for row in range(height):
+        src_base = row * src_row_bytes
+        dst_base = row * dst_row_bytes
+        for x in range(dst_width):
+            sx = 2 * x
+            bit = (plane[src_base + (sx >> 3)] >> (7 - (sx & 7))) & 1
+            if not bit and sx + 1 < width:
+                bit = (plane[src_base + ((sx + 1) >> 3)] >> (7 - ((sx + 1) & 7))) & 1
+            if bit:
+                out[dst_base + (x >> 3)] |= 1 << (7 - (x & 7))
+    return bytes(out)
+
+
 def _emit_plane_rows(plane: bytes, width: int, height: int) -> bytes:
     row_bytes = (width + 7) // 8
     out = bytearray()
@@ -175,7 +219,13 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
             behaviour of always driving C/M/Y/K). Each entry also needs
             a "barcode" (the cassette's barcode number, DOMAIN §6.5) once
             there are more than MAX_COLOUR_PLANE_INKS of them, because
-            multi_plane sends the cassette list.
+            multi_plane sends the cassette list. An entry may also carry
+            "is_process" (bool, default True): False marks a spot or
+            coverage cassette, whose plane gets halved horizontally at
+            1200dpi (D-052, see _shrink_plane_half_width). The default is
+            True so that a caller that knows nothing about ink kinds keeps
+            ppmtomd's byte-for-byte behaviour; only a caller that has the
+            palette in hand can say otherwise.
         "width": int, "height": int,  # image pixel dimensions
         "x_shift": int, "y_shift": int,  # optional, default 0; dots
     }
@@ -216,6 +266,19 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
             f"too many printing colours: {len(inks)} inks, "
             f"the print head holds at most {MAX_PRINTING_COLOURS}"
         )
+
+    # D-052: at 1200dpi every non-process cassette prints at the 600 pitch,
+    # so its plane goes out at half width. The page-width command above is
+    # per job and stays at the 1200 value: CMYK really is printed at 1200,
+    # and only the length of the shrunk ink's rows changes.
+    #
+    # Nothing here depends on the ink's *name* (DOMAIN §4.5) -- the caller
+    # passes the kind it read from the palette.
+    def _plane_and_width(ink: dict) -> tuple[bytes, int]:
+        plane = planes[ink["name"]]
+        if resolution == 1200 and not ink.get("is_process", True):
+            return _shrink_plane_half_width(plane, width, height), (width + 1) // 2
+        return plane, width
 
     out = bytearray()
 
@@ -303,7 +366,8 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
         # colourPlane one minus 4 selections and 3 backfeeds (35 bytes).
         if len(inks) != 1:
             raise ValueError(f"black_raster carries exactly one plane, got {len(inks)}")
-        out += _emit_plane_rows(planes[inks[0]["name"]], width, height)
+        plane, plane_width = _plane_and_width(inks[0])
+        out += _emit_plane_rows(plane, plane_width, height)
     else:
         # `passes` (DOMAIN §6.2): repeat an ink's (colour-selection +
         # raster) that many times. Default 1 when omitted, matching
@@ -326,7 +390,8 @@ def emit_job(planes: dict[str, bytes], job: dict) -> bytes:
             ink = occurrences[index]
             flag = 0x80 if index == last_index else 0x00
             buf = bytearray([ESC, 0x1A, ink["printer_code"], flag, 0x72])
-            buf += _emit_plane_rows(planes[ink["name"]], width, height)
+            plane, plane_width = _plane_and_width(ink)
+            buf += _emit_plane_rows(plane, plane_width, height)
             return bytes(buf)
 
         # The first (direct) occurrence's bytes land immediately on the

@@ -276,6 +276,9 @@ public static class JobPipeline
                 // 5 本以上のジョブが送出の直前で止まる(D-050 の 5 層構成が該当する)。
                 // 誤って刷りはしないが、機能としては未接続になる。
                 Barcode = jp.Ink.Barcode,
+                // D-052: 1200dpi のときプロセスインク以外だけ横 1/2 に縮める。
+                // 種別はインク名ではなくパレットの channel で決まる(DOMAIN §4.5)。
+                IsProcess = jp.Ink.Channel is not null,
             })
             .ToList();
         var inkInfos = jobPlanes
